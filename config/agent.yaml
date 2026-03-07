@@ -1,0 +1,16 @@
+name: AlizaAI
+
+description: >
+  Personal AI Assistant yang membantu mencari informasi,
+  menjawab pertanyaan, dan membantu aktivitas harian.
+
+model: gpt-4o
+
+skills:
+  - web_search
+  - browser
+  - summarize
+  - calculator
+  - datetime
+  - weather
+  - python_executor

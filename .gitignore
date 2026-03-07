@@ -1,0 +1,18 @@
+# python
+__pycache__/
+*.pyc
+
+# virtual env
+venv/
+
+# env file
+.env
+
+# logs
+logs/
+
+# uploads
+uploads/
+
+# system
+.DS_Store

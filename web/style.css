@@ -1,0 +1,165 @@
+/* ============================= */
+/* GLOBAL STYLE */
+/* ============================= */
+
+body{
+margin:0;
+font-family:Arial, Helvetica, sans-serif;
+background:#343541;
+color:white;
+}
+
+
+/* ============================= */
+/* LAYOUT */
+/* ============================= */
+
+.layout{
+display:flex;
+height:100vh;
+}
+
+
+/* ============================= */
+/* SIDEBAR */
+/* ============================= */
+
+.sidebar{
+width:230px;
+background:#202123;
+padding:20px;
+}
+
+.sidebar h2{
+margin-top:0;
+}
+
+.sidebar button{
+width:100%;
+padding:10px;
+margin-top:10px;
+background:#444654;
+color:white;
+border:none;
+border-radius:5px;
+cursor:pointer;
+}
+
+.sidebar button:hover{
+background:#565869;
+}
+
+
+/* ============================= */
+/* MAIN AREA */
+/* ============================= */
+
+.main{
+flex:1;
+display:flex;
+flex-direction:column;
+}
+
+
+/* ============================= */
+/* TOPBAR */
+/* ============================= */
+
+.topbar{
+padding:10px;
+background:#40414f;
+display:flex;
+gap:10px;
+}
+
+
+/* ============================= */
+/* CHAT AREA */
+/* ============================= */
+
+#chatbox{
+flex:1;
+overflow-y:auto;
+padding:20px;
+display:flex;
+flex-direction:column;
+gap:10px;
+}
+
+
+/* ============================= */
+/* MESSAGE STYLE */
+/* ============================= */
+
+.message{
+max-width:70%;
+padding:12px;
+border-radius:10px;
+line-height:1.5;
+font-size:14px;
+}
+
+
+/* USER MESSAGE */
+
+.user{
+background:#19c37d;
+color:black;
+align-self:flex-end;
+}
+
+
+/* AI MESSAGE */
+
+.ai{
+background:#444654;
+align-self:flex-start;
+}
+
+
+/* ============================= */
+/* INPUT AREA */
+/* ============================= */
+
+.input-area{
+display:flex;
+padding:15px;
+background:#40414f;
+gap:10px;
+}
+
+input{
+flex:1;
+padding:10px;
+border-radius:5px;
+border:none;
+outline:none;
+}
+
+button{
+padding:10px 15px;
+background:#19c37d;
+border:none;
+border-radius:5px;
+cursor:pointer;
+color:black;
+font-weight:bold;
+}
+
+button:hover{
+background:#16a46a;
+}
+
+
+/* ============================= */
+/* SCROLLBAR */
+/* ============================= */
+
+#chatbox::-webkit-scrollbar{
+width:6px;
+}
+
+#chatbox::-webkit-scrollbar-thumb{
+background:#555;
+border-radius:5px;
+}
