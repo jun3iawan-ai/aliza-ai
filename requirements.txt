@@ -1,9 +1,64 @@
-crewai
-crewai-tools
-python-dotenv
-requests
+# =========================
+# CORE AI
+# =========================
+
 sentence-transformers
+transformers
+torch
+
+# =========================
+# LANGCHAIN
+# =========================
+
+langchain
+langchain-core
+langchain-community
+langchain-text-splitters
+
+# =========================
+# VECTOR DATABASE
+# =========================
+
 faiss-cpu
+
+# =========================
+# DOCUMENT PROCESSING
+# =========================
+
+pandas
+openpyxl
+python-docx
 pypdf
+unstructured
+
+# =========================
+# API SERVER
+# =========================
+
 fastapi
 uvicorn
+
+# =========================
+# TELEGRAM BOT
+# =========================
+
+python-telegram-bot
+
+# =========================
+# ENVIRONMENT
+# =========================
+
+python-dotenv
+
+# =========================
+# INTERNET SEARCH TOOL
+# =========================
+
+google-search-results
+
+# =========================
+# UTILITIES
+# =========================
+
+tqdm
+numpy
