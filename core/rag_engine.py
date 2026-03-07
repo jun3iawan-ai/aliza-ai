@@ -1,10 +1,14 @@
 import os
+import pandas as pd
+
+from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings
 
 from langchain_community.document_loaders import (
     PyPDFLoader,
     TextLoader,
-    UnstructuredExcelLoader,
-    UnstructuredWordDocumentLoader
+    UnstructuredWordDocumentLoader,
+    UnstructuredPowerPointLoader
 )
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -12,8 +16,6 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.retrievers import BM25Retriever
 
 from sentence_transformers import SentenceTransformer
-from langchain.embeddings.base import Embeddings
-
 
 # =========================
 # EMBEDDING MODEL
@@ -35,7 +37,7 @@ embedding = SentenceTransformerEmbeddings()
 
 
 # =========================
-# DOCUMENT LOADER
+# FILE LOADER
 # =========================
 
 def load_file(file_path):
@@ -44,31 +46,104 @@ def load_file(file_path):
 
     try:
 
+        # =========================
+        # PDF
+        # =========================
         if ext == ".pdf":
+
             loader = PyPDFLoader(file_path)
+            docs = loader.load()
 
+            for d in docs:
+                d.metadata["source"] = file_path
+
+            return docs
+
+        # =========================
+        # TXT
+        # =========================
         elif ext == ".txt":
+
             loader = TextLoader(file_path, encoding="utf-8")
+            docs = loader.load()
 
-        elif ext == ".xlsx":
-            loader = UnstructuredExcelLoader(file_path)
+            for d in docs:
+                d.metadata["source"] = file_path
 
+            return docs
+
+        # =========================
+        # WORD
+        # =========================
         elif ext == ".docx":
+
             loader = UnstructuredWordDocumentLoader(file_path)
+            docs = loader.load()
 
-        else:
-            return []
+            for d in docs:
+                d.metadata["source"] = file_path
 
-        return loader.load()
+            return docs
+
+        # =========================
+        # POWERPOINT
+        # =========================
+        elif ext == ".pptx":
+
+            loader = UnstructuredPowerPointLoader(file_path)
+            docs = loader.load()
+
+            for d in docs:
+                d.metadata["source"] = file_path
+
+            return docs
+
+        # =========================
+        # CSV
+        # =========================
+        elif ext == ".csv":
+
+            df = pd.read_csv(file_path)
+
+            if df.empty:
+                return []
+
+            text = df.to_string(index=False)
+
+            return [Document(page_content=text, metadata={"source": file_path})]
+
+        # =========================
+        # EXCEL
+        # =========================
+        elif ext == ".xlsx":
+
+            sheets = pd.read_excel(file_path, sheet_name=None)
+
+            text = ""
+
+            for sheet_name, df in sheets.items():
+
+                if df.empty:
+                    continue
+
+                text += f"\nSheet: {sheet_name}\n"
+                text += df.to_string(index=False)
+                text += "\n\n"
+
+            if text.strip() == "":
+                return []
+
+            return [Document(page_content=text[:8000], metadata={"source": file_path})]
 
     except Exception as e:
 
-        print(f"Gagal memuat dokumen {file_path}: {e}")
-        return []
+        print("ERROR LOAD FILE:", file_path, e)
+
+    return []
 
 
 # =========================
-# LOAD DOCUMENTS
+# LOAD DOCUMENTS (FOLDER)
 # =========================
 
 def load_documents():
@@ -201,19 +276,11 @@ def search_knowledge(query):
     vector_results = vector_search(query)
     keyword_results = keyword_search(query)
 
-    context = ""
-
-    context += "=== Vector Search Result ===\n"
-    context += vector_results
-
-    context += "\n=== Keyword Search Result ===\n"
-    context += keyword_results
-
-    return context
+    return vector_results + keyword_results
 
 
 # =========================
-# ADD DOCUMENT TO VECTOR STORE
+# ADD DOCUMENT TO VECTOR
 # =========================
 
 def add_document_to_vector_store(file_path):
