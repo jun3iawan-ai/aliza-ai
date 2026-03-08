@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from typing import Optional
 
 from engine.aliza_engine import ask_aliza
 from core.database import conn, cursor
@@ -16,7 +17,7 @@ app = FastAPI(
 # REGISTER AUTH ROUTER
 # =========================
 
-app.include_router(auth_router)
+app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
 
 
 # =========================
@@ -25,7 +26,7 @@ app.include_router(auth_router)
 
 class ChatRequest(BaseModel):
     message: str
-    user_id: int | None = None
+    user_id: Optional[int] = None
     channel: str = "web"
 
 
@@ -42,19 +43,22 @@ def home():
 # CHAT ENDPOINT
 # =========================
 
-@app.post("/chat")
+@app.post("/api/chat")
 def chat(req: ChatRequest):
 
-    if not req.message.strip():
+    message = req.message.strip()
+
+    if not message:
         raise HTTPException(status_code=400, detail="Message kosong")
 
     user_id = req.user_id or 1
+    channel = req.channel
 
     # =========================
     # AI RESPONSE
     # =========================
 
-    answer = ask_aliza(req.message)
+    answer = ask_aliza(message)
 
     # =========================
     # SAVE CHAT HISTORY
@@ -65,14 +69,14 @@ def chat(req: ChatRequest):
         INSERT INTO chats (user_id, message, response)
         VALUES (?, ?, ?)
         """,
-        (user_id, req.message, answer)
+        (user_id, message, answer)
     )
 
     # =========================
     # USAGE TRACKING
     # =========================
 
-    tokens = len(req.message.split()) + len(answer.split())
+    tokens = len(message.split()) + len(answer.split())
 
     cursor.execute(
         """
@@ -84,7 +88,11 @@ def chat(req: ChatRequest):
 
     conn.commit()
 
-    return {"answer": answer}
+    return {
+        "answer": answer,
+        "tokens": tokens,
+        "channel": channel
+    }
 
 
 # =========================
@@ -103,8 +111,8 @@ def admin_stats():
     ).fetchone()[0]
 
     tokens = cursor.execute(
-        "SELECT SUM(tokens) FROM usage"
-    ).fetchone()[0] or 0
+        "SELECT COALESCE(SUM(tokens),0) FROM usage"
+    ).fetchone()[0]
 
     documents = cursor.execute(
         "SELECT COUNT(*) FROM documents"
@@ -129,13 +137,13 @@ def admin_users():
         "SELECT id, username, role FROM users"
     ).fetchall()
 
-    users = []
-
-    for r in rows:
-        users.append({
+    users = [
+        {
             "id": r[0],
             "username": r[1],
             "role": r[2]
-        })
+        }
+        for r in rows
+    ]
 
     return users

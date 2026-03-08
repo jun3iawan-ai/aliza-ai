@@ -1,17 +1,24 @@
-venv/
+# Python
 __pycache__/
 *.pyc
 *.pyo
-*.db
-*.sqlite
 
+# Virtual Environment
+venv/
+.env
+
+# Database
+*.db
+
+# Logs
 logs/
-uploads/
+
+# Vector Store
 knowledge/vector_store/
 
-.vscode-server/
+# Upload files
+knowledge/uploads/
 
-*.faiss
-*.pkl
-
-.env
+# OS
+.DS_Store
+Thumbs.db
