@@ -59,7 +59,7 @@ def register(user: User):
 
     # cek username sudah ada
     cursor.execute(
-        "SELECT id FROM users WHERE username=?",
+        "SELECT id FROM users WHERE username=%s",
         (user.username,)
     )
 
@@ -74,7 +74,7 @@ def register(user: User):
     password_hash = hash_password(user.password)
 
     cursor.execute(
-        "INSERT INTO users (username,password) VALUES (?,?)",
+        "INSERT INTO users (username,password) VALUES (%s,%s)",
         (user.username, password_hash)
     )
 
@@ -96,7 +96,7 @@ def login(user: User):
     password_hash = hash_password(user.password)
 
     cursor.execute(
-        "SELECT id FROM users WHERE username=? AND password=?",
+        "SELECT id FROM users WHERE username=%s AND password=%s",
         (user.username, password_hash)
     )
 

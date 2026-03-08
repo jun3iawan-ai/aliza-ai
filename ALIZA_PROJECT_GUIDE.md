@@ -1,19 +1,20 @@
 # ALIZA AI — PROJECT GUIDE
 
-## 1. Project Overview
+# 1. Project Overview
 
-AlizaAI adalah platform AI assistant yang dapat berjalan di berbagai channel:
+AlizaAI adalah platform AI assistant yang berjalan di berbagai channel:
 
-* Web Chat
-* Telegram Bot
-* WhatsApp (planned)
+• Web Chat
+• Telegram Bot
+• WhatsApp (planned)
 
-Tujuan project adalah membuat **AI platform mandiri** seperti mini ChatGPT yang dapat:
+Tujuan project adalah membuat **AI platform mandiri seperti mini ChatGPT** yang dapat:
 
-* menjawab pertanyaan
-* membaca dokumen
-* menyimpan chat history
-* melacak penggunaan AI
+• menjawab pertanyaan
+• membaca dokumen
+• menyimpan chat history
+• melacak penggunaan AI
+• memiliki memory pengguna
 
 ---
 
@@ -21,14 +22,18 @@ Tujuan project adalah membuat **AI platform mandiri** seperti mini ChatGPT yang 
 
 Server Environment
 
-* VPS Ubuntu
-* Nginx Reverse Proxy
-* HTTPS (Let's Encrypt)
-* Domain
+• VPS Ubuntu
+• Nginx Reverse Proxy
+• HTTPS (Let's Encrypt)
+• Domain publik
 
 Production URL:
 
 https://juniawan.web.id
+
+API internal berjalan di:
+
+http://127.0.0.1:8000
 
 ---
 
@@ -36,18 +41,21 @@ https://juniawan.web.id
 
 Backend menggunakan:
 
-* Python
-* FastAPI
-* SQLite Database
-* Custom AI Engine
+• Python
+• FastAPI
+• PostgreSQL Database
+• Custom AI Engine
+• RAG Document System
 
-API Server berjalan di:
+Server berjalan menggunakan:
 
-```
-http://127.0.0.1:8000
-```
+Uvicorn + Systemd service
 
-Nginx melakukan reverse proxy untuk domain.
+Service aktif:
+
+aliza-api
+aliza-telegram
+nginx
 
 ---
 
@@ -55,80 +63,71 @@ Nginx melakukan reverse proxy untuk domain.
 
 Frontend menggunakan endpoint:
 
-```
 POST /api/chat
-```
 
-Nginx menerjemahkan ke:
+FastAPI endpoint:
 
-```
-POST /chat
-```
-
-FastAPI Endpoint:
-
-```
-@app.post("/chat")
-```
+POST /api/chat
 
 Example request:
 
-```
-curl -X POST https://juniawan.web.id/api/chat \
--H "Content-Type: application/json" \
+curl -X POST https://juniawan.web.id/api/chat 
+-H "Content-Type: application/json" 
 -d '{"message":"halo"}'
-```
 
 Example response:
 
-```
 {
- "answer": "Halo! Bagaimana kabarmu?"
+"answer": "Halo! Apa yang bisa saya bantu?",
+"tokens": 10,
+"channel": "web"
 }
-```
 
 ---
 
 # 5. Project Structure
 
-```
 aliza-ai
-│
-├── api
-│   ├── auth.py
-│   └── server.py
-│
-├── core
-│   ├── agent.py
-│   ├── database.py
-│   ├── rag_engine.py
-│   ├── tools.py
-│   └── skill_loader.py
-│
-├── engine
-│   ├── aliza_engine.py
-│   └── document_analyzer.py
-│
-├── interfaces
-│   └── telegram_bot.py
-│
-├── memory
-│
-├── knowledge
-│
-├── web
-│   ├── index.html
-│   ├── app.js
-│   └── style.css
-│
-├── config
-│   └── agent.yaml
-│
-├── data
-│   └── aliza.db
-│
-└── main.py
-```
+
+api
+├── auth.py
+└── server.py
+
+core
+├── agent.py
+├── database.py
+├── rag_engine.py
+├── skill_loader.py
+├── tool_router.py
+└── tools.py
+
+engine
+├── aliza_engine.py
+└── document_analyzer.py
+
+interfaces
+└── telegram_bot.py
+
+memory
+
+knowledge
+├── documents
+├── uploads
+└── vector_store
+
+web
+├── index.html
+├── app.js
+└── style.css
+
+config
+└── agent.yaml
+
+data
+
+logs
+
+main.py
 
 ---
 
@@ -136,34 +135,34 @@ aliza-ai
 
 AI Core
 
-* AI chat engine
-* conversation memory
-* skill system
-* tool router
+• AI chat engine
+• conversation memory
+• skill system
+• tool router
 
 Document AI
 
-* upload PDF
-* extract text
-* RAG search
+• upload document
+• extract document text
+• RAG search
 
 Interfaces
 
-* Web Chat
-* Telegram Bot
+• Web Chat
+• Telegram Bot
 
 System
 
-* database
-* usage tracking
-* admin API
+• PostgreSQL database
+• usage tracking
+• admin API
 
 Deployment
 
-* VPS server
-* domain
-* HTTPS
-* nginx reverse proxy
+• VPS production server
+• HTTPS domain
+• nginx reverse proxy
+• systemd services
 
 ---
 
@@ -171,39 +170,33 @@ Deployment
 
 users
 
-```
 id
 username
 password
 role
-```
+created_at
 
 chats
 
-```
 id
 user_id
+channel
 message
 response
 timestamp
-```
 
 usage
 
-```
 id
 user_id
 tokens
 timestamp
-```
 
 documents
 
-```
 id
 filename
 upload_date
-```
 
 ---
 
@@ -211,21 +204,17 @@ upload_date
 
 Admin endpoints:
 
-```
 GET /admin/stats
 GET /admin/users
-```
 
-Stats response example:
+Example response:
 
-```
 {
- "total_users": 5,
- "total_chats": 230,
- "total_tokens": 12400,
- "documents": 12
+"total_users": 5,
+"total_chats": 230,
+"total_tokens": 12400,
+"documents": 12
 }
-```
 
 ---
 
@@ -237,79 +226,117 @@ https://github.com/jun3iawan-ai/aliza-ai
 
 Git digunakan untuk:
 
-* version control
-* deployment history
-* backup project
+• version control
+• backup project
+• deployment history
 
 ---
 
-# 10. Development Stages
+# 10. Deployment Services
 
-## Stage 1 (COMPLETED)
+Server services:
 
-* AI engine
-* Telegram bot
-* document analyzer
+aliza-api
 
-## Stage 2 (COMPLETED)
+Menjalankan FastAPI server.
 
-* Web chat UI
-* FastAPI API
-* VPS deployment
-* HTTPS domain
+systemctl status aliza-api
 
-## Stage 3 (CURRENT)
+aliza-telegram
 
-Target features:
+Menjalankan Telegram bot.
 
-* user login system
-* admin dashboard UI
-* usage analytics
+systemctl status aliza-telegram
+
+nginx
+
+Reverse proxy dan HTTPS.
+
+systemctl status nginx
 
 ---
 
-# 11. Next Development Tasks
+# 11. Development Stages
 
-Stage 3 development plan:
+Stage 1 (COMPLETED)
 
-1. Web Login system
-2. Admin dashboard
+• AI engine
+• Telegram bot
+• document analyzer
+
+Stage 2 (COMPLETED)
+
+• Web chat UI
+• FastAPI API
+• VPS deployment
+• HTTPS domain
+
+Stage 3 (CURRENT)
+
+Target:
+
+• user login system
+• admin dashboard UI
+• usage analytics
+• chat history per user
+
+---
+
+# 12. Next Development Tasks
+
+Stage 3 tasks:
+
+1. Web login system
+2. Admin dashboard UI
 3. Usage statistics UI
 4. Chat history per user
 5. Streaming AI responses
 
 ---
 
-# 12. Long Term Roadmap
+# 13. Long Term Roadmap
 
 Future features:
 
-* WhatsApp integration
-* vector database
-* conversation history UI
-* multi-user AI platform
-* AI agent system
-* SaaS deployment
+• WhatsApp integration
+• Vector database
+• conversation history UI
+• multi-user AI platform
+• AI agent system
+• SaaS deployment
 
 ---
 
-# 13. Important Notes
+# 14. Important Notes
 
-* API endpoint FastAPI: `/chat`
-* Nginx endpoint public: `/api/chat`
-* Frontend uses `fetch("/api/chat")`
-* Database: SQLite
+Frontend endpoint:
+
+/api/chat
+
+Backend endpoint:
+
+/api/chat
+
+Frontend uses:
+
+fetch("/api/chat")
+
+Database:
+
+PostgreSQL
+
+Production domain:
+
+https://juniawan.web.id
 
 ---
 
-# 14. How to Continue Development
+# 15. Continue Development
 
 When starting a new ChatGPT conversation, provide this context:
 
-```
 I am developing an AI platform called AlizaAI.
-Use the context from ALIZA_PROJECT_GUIDE.md
+Use the context from ALIZA_PROJECT_GUIDE.md.
 Continue development from Stage 3.
-```
 
-This ensures the AI understands the project structure correctly.
+This ensures the AI understands the project correctly.

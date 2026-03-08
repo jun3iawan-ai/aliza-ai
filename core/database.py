@@ -1,26 +1,18 @@
-import sqlite3
-import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 # =========================
-# DATABASE PATH
+# CONNECT POSTGRESQL
 # =========================
 
-DB_PATH = os.path.join("data", "aliza.db")
+conn = psycopg2.connect(
+    host="localhost",
+    database="aliza",
+    user="aliza_user",
+    password="Junjun!99!"
+)
 
-# pastikan folder data ada
-os.makedirs("data", exist_ok=True)
-
-# =========================
-# CONNECT DATABASE
-# =========================
-
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-conn.row_factory = sqlite3.Row
-cursor = conn.cursor()
-
-# aktifkan foreign key constraint
-cursor.execute("PRAGMA foreign_keys = ON")
-
+cursor = conn.cursor(cursor_factory=RealDictCursor)
 
 # =========================
 # USERS TABLE
@@ -28,14 +20,13 @@ cursor.execute("PRAGMA foreign_keys = ON")
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     username TEXT UNIQUE NOT NULL,
     password TEXT NOT NULL,
     role TEXT DEFAULT 'user',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """)
-
 
 # =========================
 # CHAT HISTORY
@@ -43,17 +34,16 @@ CREATE TABLE IF NOT EXISTS users (
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS chats (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     user_id INTEGER,
     channel TEXT DEFAULT 'web',
     message TEXT,
     response TEXT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 )
 """)
-
 
 # =========================
 # USAGE TRACKING
@@ -61,16 +51,15 @@ CREATE TABLE IF NOT EXISTS chats (
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS usage (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     user_id INTEGER,
     tokens INTEGER,
     endpoint TEXT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 )
 """)
-
 
 # =========================
 # DOCUMENTS (RAG FILES)
@@ -78,15 +67,14 @@ CREATE TABLE IF NOT EXISTS usage (
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS documents (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     user_id INTEGER,
     filename TEXT,
-    uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 )
 """)
-
 
 # =========================
 # COMMIT

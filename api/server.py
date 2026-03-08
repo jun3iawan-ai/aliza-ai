@@ -4,9 +4,12 @@ from typing import Optional
 
 from engine.aliza_engine import ask_aliza
 from core.database import conn, cursor
-
 from api.auth import router as auth_router
 
+
+# =========================
+# INIT FASTAPI
+# =========================
 
 app = FastAPI(
     title="AlizaAI API",
@@ -54,34 +57,25 @@ def chat(req: ChatRequest):
     user_id = req.user_id or 1
     channel = req.channel
 
-    # =========================
-    # AI RESPONSE
-    # =========================
-
-    answer = ask_aliza(message)
-
-    # =========================
-    # SAVE CHAT HISTORY
-    # =========================
+    try:
+        answer = ask_aliza(message)
+    except Exception as e:
+        answer = f"AI error: {str(e)}"
 
     cursor.execute(
         """
         INSERT INTO chats (user_id, message, response)
-        VALUES (?, ?, ?)
+        VALUES (%s, %s, %s)
         """,
         (user_id, message, answer)
     )
-
-    # =========================
-    # USAGE TRACKING
-    # =========================
 
     tokens = len(message.split()) + len(answer.split())
 
     cursor.execute(
         """
         INSERT INTO usage (user_id, tokens)
-        VALUES (?, ?)
+        VALUES (%s, %s)
         """,
         (user_id, tokens)
     )
@@ -102,21 +96,17 @@ def chat(req: ChatRequest):
 @app.get("/admin/stats")
 def admin_stats():
 
-    users = cursor.execute(
-        "SELECT COUNT(*) FROM users"
-    ).fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM users")
+    users = cursor.fetchone()[0]
 
-    chats = cursor.execute(
-        "SELECT COUNT(*) FROM chats"
-    ).fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM chats")
+    chats = cursor.fetchone()[0]
 
-    tokens = cursor.execute(
-        "SELECT COALESCE(SUM(tokens),0) FROM usage"
-    ).fetchone()[0]
+    cursor.execute("SELECT COALESCE(SUM(tokens),0) FROM usage")
+    tokens = cursor.fetchone()[0]
 
-    documents = cursor.execute(
-        "SELECT COUNT(*) FROM documents"
-    ).fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM documents")
+    documents = cursor.fetchone()[0]
 
     return {
         "total_users": users,
@@ -133,15 +123,15 @@ def admin_stats():
 @app.get("/admin/users")
 def admin_users():
 
-    rows = cursor.execute(
-        "SELECT id, username, role FROM users"
-    ).fetchall()
+    cursor.execute("SELECT id, username, role FROM users")
+
+    rows = cursor.fetchall()
 
     users = [
         {
-            "id": r[0],
-            "username": r[1],
-            "role": r[2]
+            "id": r["id"],
+            "username": r["username"],
+            "role": r["role"]
         }
         for r in rows
     ]

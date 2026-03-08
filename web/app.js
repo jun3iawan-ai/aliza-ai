@@ -1,6 +1,8 @@
 // =======================
-// ELEMENTS
+// WAIT DOM READY
 // =======================
+
+document.addEventListener("DOMContentLoaded", () => {
 
 const input = document.getElementById("messageInput");
 const chatbox = document.getElementById("chatbox");
@@ -22,6 +24,8 @@ async function sendMessage() {
 
     showTyping();
 
+    input.disabled = true;
+
     try {
 
         const res = await fetch("/api/chat", {
@@ -30,11 +34,11 @@ async function sendMessage() {
                 "Content-Type": "application/json"
             },
             body: JSON.stringify({
-                message: message
+                message: message,
+                channel: "web"
             })
         });
 
-        // cek jika server error
         if (!res.ok) {
             throw new Error("Server error");
         }
@@ -43,11 +47,7 @@ async function sendMessage() {
 
         removeTyping();
 
-        if (data.answer) {
-            addMessage("ai", data.answer);
-        } else {
-            addMessage("ai", "Terjadi kesalahan pada server.");
-        }
+        addMessage("ai", data.answer || "Terjadi kesalahan pada server.");
 
     } catch (err) {
 
@@ -56,7 +56,11 @@ async function sendMessage() {
         console.error("API ERROR:", err);
 
         addMessage("ai", "Server tidak merespon.");
+
     }
+
+    input.disabled = false;
+    input.focus();
 }
 
 
@@ -109,8 +113,7 @@ function removeTyping() {
 // CLEAR CHAT
 // =======================
 
-function clearChat() {
-
+window.clearChat = function() {
     chatbox.innerHTML = "";
 }
 
@@ -119,7 +122,7 @@ function clearChat() {
 // ENTER KEY SEND
 // =======================
 
-input.addEventListener("keypress", function(e) {
+input.addEventListener("keydown", function(e) {
 
     if (e.key === "Enter") {
 
@@ -128,4 +131,15 @@ input.addEventListener("keypress", function(e) {
         sendMessage();
     }
 
-})
+});
+
+
+// =======================
+// UPLOAD FILE (placeholder)
+// =======================
+
+window.uploadFile = function() {
+    alert("Fitur upload dokumen belum diaktifkan.");
+}
+
+});

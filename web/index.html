@@ -1,7 +1,10 @@
 <!DOCTYPE html>
-<html>
+<html lang="id">
 
 <head>
+
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 
 <title>AlizaAI Assistant</title>
 
@@ -13,39 +16,44 @@
 
 <div class="layout">
 
-<div class="sidebar">
+    <div class="sidebar">
 
-<h2>AlizaAI</h2>
+        <h2>AlizaAI</h2>
 
-<button onclick="clearChat()">Chat Baru</button>
+        <button onclick="clearChat()">Chat Baru</button>
+
+    </div>
+
+    <div class="main">
+
+        <div class="topbar">
+
+            <input type="file" id="fileUpload">
+
+            <button onclick="uploadFile()">Upload Dokumen</button>
+
+        </div>
+
+        <div id="chatbox"></div>
+
+        <div class="input-area">
+
+            <input 
+                id="messageInput"
+                type="text"
+                placeholder="Tulis pesan..."
+                autocomplete="off"
+            />
+
+            <button onclick="sendMessage()">Kirim</button>
+
+        </div>
+
+    </div>
 
 </div>
 
-<div class="main">
-
-<div class="topbar">
-
-<input type="file" id="fileUpload">
-
-<button onclick="uploadFile()">Upload Dokumen</button>
-
-</div>
-
-<div id="chatbox"></div>
-
-<div class="input-area">
-
-<input id="messageInput" placeholder="Tulis pesan..." />
-
-<button onclick="sendMessage()">Kirim</button>
-
-</div>
-
-</div>
-
-</div>
-
-<script src="app.js"></script>
+<script src="app.js" defer></script>
 
 </body>
 
