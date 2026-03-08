@@ -22,3 +22,7 @@ knowledge/uploads/
 # OS
 .DS_Store
 Thumbs.db
+
+uploads/
+hapus/
+original_files/
