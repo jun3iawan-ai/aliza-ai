@@ -1,6 +1,6 @@
-const chatbox = document.getElementById("chatbox")
+// ambil elemen
 const input = document.getElementById("messageInput")
-
+const chatbox = document.getElementById("chatbox")
 
 // =======================
 // SEND MESSAGE
@@ -34,9 +34,9 @@ const data = await res.json()
 
 removeTyping()
 
-if(data.response){
+if(data.answer){
 
-addMessage("ai", data.response)
+addMessage("ai", data.answer)
 
 }else{
 
@@ -53,7 +53,6 @@ addMessage("ai","Server tidak merespon.")
 }
 
 }
-
 
 // =======================
 // ADD MESSAGE
@@ -72,7 +71,6 @@ chatbox.appendChild(div)
 chatbox.scrollTop = chatbox.scrollHeight
 
 }
-
 
 // =======================
 // TYPING INDICATOR
@@ -102,7 +100,6 @@ if(typing) typing.remove()
 
 }
 
-
 // =======================
 // CLEAR CHAT
 // =======================
@@ -112,55 +109,6 @@ function clearChat(){
 chatbox.innerHTML = ""
 
 }
-
-
-// =======================
-// UPLOAD FILE
-// =======================
-
-async function uploadFile(){
-
-const fileInput = document.getElementById("fileUpload")
-
-const file = fileInput.files[0]
-
-if(!file) return
-
-addMessage("user","Mengupload dokumen: " + file.name)
-
-const formData = new FormData()
-
-formData.append("file", file)
-
-addMessage("ai","Memproses dokumen...")
-
-try{
-
-const res = await fetch("/upload",{
-method:"POST",
-body:formData
-})
-
-const data = await res.json()
-
-if(data.summary){
-
-addMessage("ai","Ringkasan dokumen:\n\n" + data.summary)
-
-}else{
-
-addMessage("ai","Gagal memproses dokumen.")
-
-}
-
-}catch(err){
-
-addMessage("ai","Upload gagal.")
-
-}
-
-}
-
 
 // =======================
 // ENTER KEY SEND
