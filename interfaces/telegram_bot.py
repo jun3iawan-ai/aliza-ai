@@ -1,6 +1,7 @@
 import os
 import sys
 import uuid
+import logging
 from dotenv import load_dotenv
 
 # =========================
@@ -42,6 +43,14 @@ if not BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN tidak ditemukan di file .env")
 
 # =========================
+# LOGGING
+# =========================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+# =========================
 # STORAGE CONFIG
 # =========================
 
@@ -69,7 +78,6 @@ def split_message(text, limit=4000):
     parts = []
 
     while len(text) > limit:
-
         parts.append(text[:limit])
         text = text[limit:]
 
@@ -101,7 +109,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
 
-        if update.message is None or update.message.text is None:
+        if not update.message or not update.message.text:
             return
 
         user_id = update.effective_user.id
@@ -132,7 +140,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
 
-        print("ERROR TEXT MESSAGE:", e)
+        logging.error(f"ERROR TEXT MESSAGE: {e}")
 
         await update.message.reply_text(
             "Terjadi kesalahan saat memproses pesan."
@@ -147,7 +155,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
 
-        if update.message is None or update.message.document is None:
+        if not update.message or not update.message.document:
             return
 
         document = update.message.document
@@ -155,7 +163,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_name = document.file_name
         file_size = document.file_size
 
-        print("Menerima file:", file_name)
+        logging.info(f"Menerima file: {file_name}")
 
         ext = os.path.splitext(file_name)[1].lower()
 
@@ -196,7 +204,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        print("File disimpan di:", save_path)
+        logging.info(f"File disimpan di: {save_path}")
 
         # =========================
         # SET ACTIVE DOCUMENT
@@ -229,7 +237,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
 
-        print("ERROR DOCUMENT:", e)
+        logging.error(f"ERROR DOCUMENT: {e}")
 
         await update.message.reply_text(
             "Terjadi kesalahan saat memproses dokumen."
@@ -254,7 +262,7 @@ def main():
         MessageHandler(filters.Document.ALL, handle_document)
     )
 
-    print("AlizaAI Telegram Bot aktif...")
+    logging.info("AlizaAI Telegram Bot aktif...")
 
     app.run_polling()
 

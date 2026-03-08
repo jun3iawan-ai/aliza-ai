@@ -18,46 +18,65 @@ def analyze_document():
 
     text = ""
 
-    # =========================
-    # HANDLE EXCEL FILE
-    # =========================
+    try:
 
-    if path.lower().endswith(".xlsx") or path.lower().endswith(".xls"):
+        # =========================
+        # HANDLE EXCEL FILE
+        # =========================
 
-        try:
+        if path.lower().endswith((".xlsx", ".xls")):
+
             df = pd.read_excel(path)
-            text = df.to_string()
 
-        except Exception as e:
-            return f"Gagal membaca file Excel: {str(e)}"
+            # batasi agar tidak terlalu panjang
+            text = df.head(100).to_string()
+
+        # =========================
+        # HANDLE FILE LAIN (PDF, DOCX, TXT)
+        # =========================
+
+        else:
+
+            documents = load_file(path)
+
+            if not documents:
+                return "Dokumen tidak dapat dibaca."
+
+            contents = []
+
+            for doc in documents:
+                contents.append(doc.page_content)
+
+            text = "\n".join(contents)
+
+    except Exception as e:
+
+        return f"Gagal membaca dokumen: {str(e)}"
 
     # =========================
-    # HANDLE FILE LAIN (PDF, DOCX, TXT)
+    # VALIDASI ISI
     # =========================
-
-    else:
-
-        documents = load_file(path)
-
-        if not documents:
-            return "Dokumen tidak dapat dibaca."
-
-        for doc in documents:
-            text += doc.page_content + "\n"
 
     if not text.strip():
         return "Isi dokumen kosong atau tidak dapat dibaca."
+
+    # =========================
+    # BATASI TEXT AGAR AI TIDAK KELEBIHAN TOKEN
+    # =========================
+
+    MAX_LENGTH = 5000
+    text = text[:MAX_LENGTH]
 
     # =========================
     # PROMPT KE ALIZA
     # =========================
 
     prompt = f"""
-Berikut isi dokumen berikut:
+Berikut isi dokumen:
 
-{text[:5000]}
+{text}
 
-Tolong buat ringkasan dokumen tersebut dalam bahasa Indonesia yang jelas.
+Tolong buat ringkasan dokumen tersebut dalam bahasa Indonesia yang jelas dan terstruktur.
 """
 
     result = ask_aliza(prompt)

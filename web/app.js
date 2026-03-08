@@ -1,125 +1,131 @@
-// ambil elemen
-const input = document.getElementById("messageInput")
-const chatbox = document.getElementById("chatbox")
+// =======================
+// ELEMENTS
+// =======================
+
+const input = document.getElementById("messageInput");
+const chatbox = document.getElementById("chatbox");
+
 
 // =======================
 // SEND MESSAGE
 // =======================
 
-async function sendMessage(){
+async function sendMessage() {
 
-const message = input.value.trim()
+    const message = input.value.trim();
 
-if(message === "") return
+    if (!message) return;
 
-addMessage("user", message)
+    addMessage("user", message);
 
-input.value = ""
+    input.value = "";
 
-showTyping()
+    showTyping();
 
-try{
+    try {
 
-const res = await fetch("/chat",{
-method:"POST",
-headers:{
-"Content-Type":"application/json"
-},
-body:JSON.stringify({
-message: message
-})
-})
+        const res = await fetch("/api/chat", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                message: message
+            })
+        });
 
-const data = await res.json()
+        // cek jika server error
+        if (!res.ok) {
+            throw new Error("Server error");
+        }
 
-removeTyping()
+        const data = await res.json();
 
-if(data.answer){
+        removeTyping();
 
-addMessage("ai", data.answer)
+        if (data.answer) {
+            addMessage("ai", data.answer);
+        } else {
+            addMessage("ai", "Terjadi kesalahan pada server.");
+        }
 
-}else{
+    } catch (err) {
 
-addMessage("ai","Terjadi kesalahan.")
+        removeTyping();
 
+        console.error("API ERROR:", err);
+
+        addMessage("ai", "Server tidak merespon.");
+    }
 }
 
-}catch(err){
-
-removeTyping()
-
-addMessage("ai","Server tidak merespon.")
-
-}
-
-}
 
 // =======================
 // ADD MESSAGE
 // =======================
 
-function addMessage(role, text){
+function addMessage(role, text) {
 
-const div = document.createElement("div")
+    const div = document.createElement("div");
 
-div.classList.add("message", role)
+    div.classList.add("message", role);
 
-div.innerText = text
+    div.textContent = text;
 
-chatbox.appendChild(div)
+    chatbox.appendChild(div);
 
-chatbox.scrollTop = chatbox.scrollHeight
-
+    chatbox.scrollTop = chatbox.scrollHeight;
 }
+
 
 // =======================
 // TYPING INDICATOR
 // =======================
 
-function showTyping(){
+function showTyping() {
 
-const div = document.createElement("div")
+    const div = document.createElement("div");
 
-div.id = "typing"
+    div.id = "typing";
 
-div.classList.add("message","ai")
+    div.classList.add("message", "ai");
 
-div.innerText = "Aliza sedang mengetik..."
+    div.textContent = "Aliza sedang mengetik...";
 
-chatbox.appendChild(div)
+    chatbox.appendChild(div);
 
-chatbox.scrollTop = chatbox.scrollHeight
-
+    chatbox.scrollTop = chatbox.scrollHeight;
 }
 
-function removeTyping(){
+function removeTyping() {
 
-const typing = document.getElementById("typing")
+    const typing = document.getElementById("typing");
 
-if(typing) typing.remove()
-
+    if (typing) typing.remove();
 }
+
 
 // =======================
 // CLEAR CHAT
 // =======================
 
-function clearChat(){
+function clearChat() {
 
-chatbox.innerHTML = ""
-
+    chatbox.innerHTML = "";
 }
+
 
 // =======================
 // ENTER KEY SEND
 // =======================
 
-input.addEventListener("keypress", function(e){
+input.addEventListener("keypress", function(e) {
 
-if(e.key === "Enter"){
+    if (e.key === "Enter") {
 
-sendMessage()
+        e.preventDefault();
 
-}
+        sendMessage();
+    }
 
 })

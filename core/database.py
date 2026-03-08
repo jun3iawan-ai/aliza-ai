@@ -1,12 +1,25 @@
 import sqlite3
+import os
+
+# =========================
+# DATABASE PATH
+# =========================
+
+DB_PATH = os.path.join("data", "aliza.db")
+
+# pastikan folder data ada
+os.makedirs("data", exist_ok=True)
 
 # =========================
 # CONNECT DATABASE
 # =========================
 
-conn = sqlite3.connect("aliza.db", check_same_thread=False)
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 conn.row_factory = sqlite3.Row
 cursor = conn.cursor()
+
+# aktifkan foreign key constraint
+cursor.execute("PRAGMA foreign_keys = ON")
 
 
 # =========================
@@ -37,7 +50,7 @@ CREATE TABLE IF NOT EXISTS chats (
     response TEXT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (user_id) REFERENCES users(id)
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 )
 """)
 
@@ -54,7 +67,7 @@ CREATE TABLE IF NOT EXISTS usage (
     endpoint TEXT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (user_id) REFERENCES users(id)
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 )
 """)
 
@@ -70,9 +83,13 @@ CREATE TABLE IF NOT EXISTS documents (
     filename TEXT,
     uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (user_id) REFERENCES users(id)
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 )
 """)
 
+
+# =========================
+# COMMIT
+# =========================
 
 conn.commit()

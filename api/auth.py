@@ -4,11 +4,17 @@ from core.database import conn, cursor
 import hashlib
 import jwt
 import datetime
+import os
 
-router = APIRouter()
+router = APIRouter(prefix="/auth", tags=["Auth"])
 
-SECRET_KEY = "ALIZA_SECRET_KEY"
+# =========================
+# SECURITY CONFIG
+# =========================
+
+SECRET_KEY = os.getenv("JWT_SECRET", "ALIZA_SECRET_KEY")
 ALGORITHM = "HS256"
+TOKEN_EXPIRE_HOURS = 24
 
 
 # =========================
@@ -36,7 +42,7 @@ def create_token(user_id: int):
 
     payload = {
         "user_id": user_id,
-        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=24)
+        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=TOKEN_EXPIRE_HOURS)
     }
 
     token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
@@ -102,7 +108,7 @@ def login(user: User):
             detail="Invalid username or password"
         )
 
-    user_id = result[0]
+    user_id = result["id"]
 
     token = create_token(user_id)
 

@@ -1,10 +1,22 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from engine.aliza_engine import ask_aliza
 from core.database import conn, cursor
 
-app = FastAPI()
+from api.auth import router as auth_router
+
+
+app = FastAPI(
+    title="AlizaAI API",
+    version="1.0"
+)
+
+# =========================
+# REGISTER AUTH ROUTER
+# =========================
+
+app.include_router(auth_router)
 
 
 # =========================
@@ -13,7 +25,7 @@ app = FastAPI()
 
 class ChatRequest(BaseModel):
     message: str
-    user_id: int = 1
+    user_id: int | None = None
     channel: str = "web"
 
 
@@ -33,7 +45,15 @@ def home():
 @app.post("/chat")
 def chat(req: ChatRequest):
 
-    # AI response
+    if not req.message.strip():
+        raise HTTPException(status_code=400, detail="Message kosong")
+
+    user_id = req.user_id or 1
+
+    # =========================
+    # AI RESPONSE
+    # =========================
+
     answer = ask_aliza(req.message)
 
     # =========================
@@ -42,10 +62,10 @@ def chat(req: ChatRequest):
 
     cursor.execute(
         """
-        INSERT INTO chats (user_id, channel, message, response)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO chats (user_id, message, response)
+        VALUES (?, ?, ?)
         """,
-        (req.user_id, req.channel, req.message, answer)
+        (user_id, req.message, answer)
     )
 
     # =========================
@@ -56,10 +76,10 @@ def chat(req: ChatRequest):
 
     cursor.execute(
         """
-        INSERT INTO usage (user_id, tokens, endpoint)
-        VALUES (?, ?, ?)
+        INSERT INTO usage (user_id, tokens)
+        VALUES (?, ?)
         """,
-        (req.user_id, tokens, "chat")
+        (user_id, tokens)
     )
 
     conn.commit()
@@ -99,19 +119,23 @@ def admin_stats():
 
 
 # =========================
-# USER LIST (ADMIN)
+# ADMIN USERS
 # =========================
 
 @app.get("/admin/users")
 def admin_users():
 
     rows = cursor.execute(
-        "SELECT id, username, role, created_at FROM users"
+        "SELECT id, username, role FROM users"
     ).fetchall()
 
     users = []
 
     for r in rows:
-        users.append(dict(r))
+        users.append({
+            "id": r[0],
+            "username": r[1],
+            "role": r[2]
+        })
 
     return users

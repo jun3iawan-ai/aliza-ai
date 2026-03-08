@@ -1,18 +1,17 @@
-# python
+venv/
 __pycache__/
 *.pyc
+*.pyo
+*.db
+*.sqlite
 
-# virtual env
-venv/
-
-# env file
-.env
-
-# logs
 logs/
-
-# uploads
 uploads/
+knowledge/vector_store/
 
-# system
-.DS_Store
+.vscode-server/
+
+*.faiss
+*.pkl
+
+.env
