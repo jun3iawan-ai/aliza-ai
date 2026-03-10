@@ -1,0 +1,154 @@
+body{
+background:#020617;
+color:#e5e7eb;
+font-family:Arial, Helvetica, sans-serif;
+margin:0;
+}
+
+.container{
+max-width:1200px;
+margin:auto;
+padding:40px 20px;
+}
+
+h1{
+margin-bottom:30px;
+letter-spacing:1px;
+font-weight:600;
+}
+
+/* GRID */
+
+.grid{
+display:grid;
+grid-template-columns:repeat(4,1fr);
+gap:20px;
+margin-bottom:20px;
+}
+
+/* CARD */
+
+.card{
+background:#0f172a;
+padding:20px;
+border-radius:10px;
+border:1px solid #1e293b;
+transition:0.2s;
+}
+
+.card:hover{
+border-color:#334155;
+}
+
+.card h3{
+margin:0;
+font-size:13px;
+color:#9ca3af;
+letter-spacing:0.5px;
+}
+
+.value{
+font-size:26px;
+margin-top:10px;
+font-weight:bold;
+}
+
+/* SIGNAL */
+
+.signal{
+margin:35px 0;
+padding:22px;
+text-align:center;
+font-size:34px;
+font-weight:bold;
+border-radius:14px;
+letter-spacing:1px;
+}
+
+.signal-buy{
+background:#052e16;
+color:#22c55e;
+}
+
+.signal-sell{
+background:#3b0a0a;
+color:#ef4444;
+}
+
+.signal-hold{
+background:#422006;
+color:#facc15;
+}
+
+/* SCORE BAR */
+
+.score-bar{
+width:100%;
+height:8px;
+background:#1e293b;
+border-radius:10px;
+margin-top:10px;
+}
+
+#score-fill{
+height:8px;
+width:0%;
+background:#22c55e;
+border-radius:10px;
+transition:0.4s;
+}
+
+/* CHART */
+
+.chart{
+margin-top:30px;
+border-radius:12px;
+overflow:hidden;
+border:1px solid #1e293b;
+}
+
+/* ANALYSIS */
+
+.analysis{
+margin-top:30px;
+background:#0f172a;
+padding:25px;
+border-radius:10px;
+border:1px solid #1e293b;
+}
+
+.analysis h3{
+margin-top:0;
+}
+
+.update{
+margin-top:10px;
+font-size:13px;
+color:#9ca3af;
+}
+
+/* RESPONSIVE */
+
+@media (max-width:1000px){
+
+.grid{
+grid-template-columns:repeat(2,1fr);
+}
+
+}
+
+@media (max-width:600px){
+
+.grid{
+grid-template-columns:1fr;
+}
+
+.container{
+padding:20px;
+}
+
+.signal{
+font-size:28px;
+}
+
+}

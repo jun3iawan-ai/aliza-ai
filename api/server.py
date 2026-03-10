@@ -3,8 +3,12 @@ from pydantic import BaseModel
 from typing import Optional
 
 from engine.aliza_engine import ask_aliza
+from engine.market_analyzer import btc_signal
+
 from core.database import conn, cursor
 from api.auth import router as auth_router
+
+from fastapi import APIRouter
 
 
 # =========================
@@ -16,11 +20,27 @@ app = FastAPI(
     version="1.0"
 )
 
+
 # =========================
 # REGISTER AUTH ROUTER
 # =========================
 
 app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
+
+
+# =========================
+# MARKET ROUTER
+# =========================
+
+market_router = APIRouter()
+
+
+@market_router.get("/btc")
+def btc_market():
+    return btc_signal()
+
+
+app.include_router(market_router, prefix="/api/market", tags=["market"])
 
 
 # =========================
