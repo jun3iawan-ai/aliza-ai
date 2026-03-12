@@ -8,7 +8,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from telegram import Bot
 
-from engine.market_analyzer import btc_signal
+from engine.market.market_analyzer import btc_signal
 
 load_dotenv()
 

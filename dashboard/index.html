@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AlizaAI Trading Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen p-4 md:p-6">
+  <div class="max-w-7xl mx-auto">
+    <header class="mb-8">
+      <h1 class="text-2xl md:text-3xl font-bold text-emerald-400">AlizaAI Trading Dashboard</h1>
+      <p class="text-slate-400 mt-1">Market, Signal & Portfolio Monitor</p>
+    </header>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <!-- Market Radar -->
+      <section class="bg-slate-800 rounded-xl p-6 border border-slate-700">
+        <h2 class="text-lg font-semibold text-amber-400 mb-4">📡 Market Radar</h2>
+        <div id="market-radar" class="text-sm text-slate-300 min-h-[120px]">
+          <span class="text-slate-500">Memuat...</span>
+        </div>
+      </section>
+
+      <!-- Market Score (Quant) -->
+      <section class="bg-slate-800 rounded-xl p-6 border border-slate-700">
+        <h2 class="text-lg font-semibold text-amber-400 mb-4">🧬 Market Score</h2>
+        <div id="quant-panel" class="text-sm text-slate-300 min-h-[120px]">
+          <span class="text-slate-500">Memuat...</span>
+        </div>
+      </section>
+
+      <!-- Predictive AI -->
+      <section class="bg-slate-800 rounded-xl p-6 border border-slate-700">
+        <h2 class="text-lg font-semibold text-amber-400 mb-4">🔮 Predictive AI</h2>
+        <div id="predict-panel" class="text-sm text-slate-300 min-h-[120px]">
+          <span class="text-slate-500">Memuat...</span>
+        </div>
+      </section>
+
+      <!-- Trading Signals -->
+      <section class="bg-slate-800 rounded-xl p-6 border border-slate-700">
+        <h2 class="text-lg font-semibold text-amber-400 mb-4">🎯 Trading Signals</h2>
+        <div id="signals-panel" class="text-sm text-slate-300 min-h-[120px]">
+          <span class="text-slate-500">Memuat...</span>
+        </div>
+      </section>
+
+      <!-- Portfolio -->
+      <section class="bg-slate-800 rounded-xl p-6 border border-slate-700 lg:col-span-2">
+        <h2 class="text-lg font-semibold text-amber-400 mb-4">💼 Portfolio</h2>
+        <div id="portfolio-panel" class="text-sm text-slate-300 min-h-[80px]">
+          <span class="text-slate-500">Memuat...</span>
+        </div>
+      </section>
+
+      <!-- BTC Live Chart -->
+      <section class="bg-slate-800 rounded-xl p-6 border border-slate-700 lg:col-span-2">
+        <h2 class="text-lg font-semibold text-amber-400 mb-4">📈 BTC Live Chart</h2>
+        <div class="rounded-lg overflow-hidden border border-slate-600">
+          <iframe
+            src="https://juniawan.web.id/btc/"
+            width="100%"
+            height="600"
+            frameborder="0"
+            title="BTC Live Chart">
+          </iframe>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const API = window.location.origin;
+
+    async function loadMarket() {
+      try {
+        const r = await fetch(API + '/api/dashboard/market');
+        const d = await r.json();
+        const el = document.getElementById('market-radar');
+        if (d.error) { el.textContent = 'Data tidak tersedia'; return; }
+        el.innerHTML = `
+          <p><span class="text-slate-500">Trend:</span> ${d.trend || '—'}</p>
+          <p><span class="text-slate-500">Price:</span> ${d.price != null ? d.price : '—'}</p>
+          <p><span class="text-slate-500">RSI:</span> ${d.rsi != null ? d.rsi : '—'}</p>
+          <p><span class="text-slate-500">Fear & Greed:</span> ${d.fear_greed != null ? d.fear_greed : '—'}</p>
+        `;
+      } catch (e) {
+        document.getElementById('market-radar').textContent = 'Gagal memuat';
+      }
+    }
+
+    async function loadQuant() {
+      try {
+        const r = await fetch(API + '/api/dashboard/quant');
+        const d = await r.json();
+        const el = document.getElementById('quant-panel');
+        el.innerHTML = `
+          <p><span class="text-slate-500">Market Score:</span> ${d.market_score != null ? d.market_score : '—'} / 100</p>
+          <p><span class="text-slate-500">Market Bias:</span> ${d.market_bias || '—'}</p>
+        `;
+      } catch (e) {
+        document.getElementById('quant-panel').textContent = 'Gagal memuat';
+      }
+    }
+
+    async function loadPredict() {
+      try {
+        const r = await fetch(API + '/api/dashboard/predict');
+        const d = await r.json();
+        const el = document.getElementById('predict-panel');
+        el.innerHTML = `
+          <p><span class="text-slate-500">Breakout:</span> ${d.breakout_probability != null ? d.breakout_probability : 0}%</p>
+          <p><span class="text-slate-500">Reversal:</span> ${d.reversal_probability != null ? d.reversal_probability : 0}%</p>
+          <p><span class="text-slate-500">Crash:</span> ${d.crash_probability != null ? d.crash_probability : 0}%</p>
+        `;
+      } catch (e) {
+        document.getElementById('predict-panel').textContent = 'Gagal memuat';
+      }
+    }
+
+    async function loadSignals() {
+      try {
+        const r = await fetch(API + '/api/dashboard/signals');
+        const list = await r.json();
+        const el = document.getElementById('signals-panel');
+        if (!Array.isArray(list) || list.length === 0) {
+          el.textContent = 'Tidak ada signal saat ini.';
+          return;
+        }
+        el.innerHTML = list.slice(0, 5).map(s =>
+          `<p class="mb-1">${s.coin} ${s.setup} — RR: ${s.rr}</p>`
+        ).join('');
+      } catch (e) {
+        document.getElementById('signals-panel').textContent = 'Gagal memuat';
+      }
+    }
+
+    async function loadPortfolio() {
+      try {
+        const r = await fetch(API + '/api/dashboard/portfolio');
+        const list = await r.json();
+        const el = document.getElementById('portfolio-panel');
+        if (!Array.isArray(list) || list.length === 0) {
+          el.textContent = 'Belum ada posisi aktif.';
+          return;
+        }
+        el.innerHTML = list.map(t =>
+          `<p class="mb-1">${t.coin} ${t.setup} — Entry: ${t.entry}</p>`
+        ).join('');
+      } catch (e) {
+        document.getElementById('portfolio-panel').textContent = 'Gagal memuat';
+      }
+    }
+
+    function refresh() {
+      loadMarket();
+      loadQuant();
+      loadPredict();
+      loadSignals();
+      loadPortfolio();
+    }
+
+    refresh();
+    setInterval(refresh, 60000);
+  </script>
+</body>
+</html>

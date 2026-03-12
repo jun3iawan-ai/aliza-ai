@@ -1,0 +1,17 @@
+[
+  {
+    "id": "deploy-aliza",
+    "execute-command": "/home/ubuntu/deploy/deploy.sh",
+    "command-working-directory": "/home/ubuntu/aliza-ai",
+    "trigger-rule": {
+      "match": {
+        "type": "value",
+        "value": "refs/heads/main",
+        "parameter": {
+          "source": "payload",
+          "name": "ref"
+        }
+      }
+    }
+  }
+]

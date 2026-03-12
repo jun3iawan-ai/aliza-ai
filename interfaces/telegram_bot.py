@@ -1,7 +1,8 @@
 import os
 import sys
-import uuid
+import atexit
 import logging
+from datetime import datetime
 from dotenv import load_dotenv
 
 # =========================
@@ -11,49 +12,47 @@ from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # =========================
-# PROJECT IMPORT
+# ENGINE IMPORT
 # =========================
 
-from engine.aliza_engine import ask_aliza
-from engine.document_analyzer import analyze_document
-from engine.market_analyzer import btc_signal
-from engine.market_report_formatter import format_market_report
-
-from memory.memory_manager import save_user_name, get_user_name
-from memory.active_document import set_active_document
-
-from core.rag_engine import add_document_to_vector_store
+from engine.market.market_analyzer import market_signal, multi_market_scan
+from engine.market.market_report_formatter import format_market_report
+from engine.trading.opportunity_scanner import opportunity_report
+from engine.trading.trade_manager import init_trade_db, create_trade, get_active_trades, close_trade
+from engine.trading.signal_engine import (
+    scan_for_signals,
+    format_signal_message,
+    can_send_signal,
+    record_signal_sent,
+)
+from engine.utils.market_cache import get_market_data
+from engine.market.market_universe import MAJOR_COINS
+from engine.brain.ai_trade_guardian import analyze_trades
+from engine.detectors.crash_detector import detect_market_crash
+from engine.detectors.whale_tracker import detect_whale_activity
+from engine.detectors.whale_signal_engine import scan_whale_signals, format_whale_alert
+from engine.detectors.altseason_detector import detect_altseason
+from engine.intelligence.market_intelligence import scan_market_intelligence
+from engine.intelligence.market_radar_pro import calculate_market_probabilities, format_radar_report
+from engine.intelligence.predictive_market_ai import calculate_market_predictions, format_prediction_report
+from engine.intelligence.quant_market_model import calculate_market_score, format_quant_report
 
 # =========================
-# TELEGRAM IMPORT
+# TELEGRAM
 # =========================
 
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    filters,
-    ContextTypes
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # =========================
-# LOAD ENV
+# ENV
 # =========================
 
 load_dotenv()
-
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 if not BOT_TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN tidak ditemukan di file .env")
-
-# =========================
-# TELEGRAM CHAT CONFIG
-# =========================
-
-CHAT_ID = 1490996477
-LAST_SIGNAL = None
+    raise ValueError("TELEGRAM_BOT_TOKEN tidak ditemukan")
 
 # =========================
 # LOGGING
@@ -65,359 +64,656 @@ logging.basicConfig(
 )
 
 # =========================
-# STORAGE CONFIG
+# SINGLE INSTANCE LOCK (PID FILE)
 # =========================
 
-UPLOAD_FOLDER = "knowledge/uploads/original_files"
+def _lock_file_path():
+    base = os.getcwd()
+    return os.path.join(base, "data", "telegram_bot.lock")
 
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+_lock_file_handle = None
 
-MAX_FILE_SIZE = 20 * 1024 * 1024
+def _release_lock():
+    global _lock_file_handle
+    path = _lock_file_path()
+    if _lock_file_handle is not None:
+        try:
+            _lock_file_handle.close()
+        except Exception:
+            pass
+        _lock_file_handle = None
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            logging.info("Lock file dilepas.")
+    except Exception as e:
+        logging.warning("Gagal menghapus lock file: %s", e)
 
-ALLOWED_TYPES = [
-    ".pdf",
-    ".txt",
-    ".xlsx",
-    ".docx",
-    ".pptx",
-    ".csv"
-]
+def acquire_single_instance_lock():
+    """
+    Hanya satu instance bot yang boleh jalan.
+    Menggunakan PID file. Return True jika berhasil, False jika instance lain aktif.
+    """
+    path = _lock_file_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                old_pid = int(f.read().strip())
+        except (ValueError, OSError):
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+        else:
+            # Cek apakah proses dengan PID tersebut masih jalan
+            try:
+                os.kill(old_pid, 0)
+                logging.warning(
+                    "Bot sudah berjalan (PID %s). Hanya satu instance yang diizinkan.",
+                    old_pid
+                )
+                return False
+            except (ProcessLookupError, OSError, ValueError):
+                # Proses sudah tidak ada (stale lock) atau OS tidak dukung signal 0
+                pass
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
+    try:
+        global _lock_file_handle
+        _lock_file_handle = open(path, "w")
+        _lock_file_handle.write(str(os.getpid()))
+        _lock_file_handle.flush()
+        atexit.register(_release_lock)
+        logging.info("Lock diperoleh (PID %s). Satu instance bot aktif.", os.getpid())
+        return True
+    except OSError as e:
+        logging.error("Tidak dapat membuat lock file: %s", e)
+        return False
 
 # =========================
-# TELEGRAM MESSAGE LIMIT
+# BACKGROUND JOBS
 # =========================
 
-def split_message(text, limit=4000):
+async def trade_guardian_job(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        alerts = analyze_trades()
 
-    parts = []
+        if not alerts:
+            return
 
-    while len(text) > limit:
-        parts.append(text[:limit])
-        text = text[limit:]
+        chat_id = context.bot_data.get("chat_id")
 
-    parts.append(text)
+        if not chat_id:
+            return
 
-    return parts
+        for alert in alerts:
+            await context.bot.send_message(chat_id=chat_id, text=alert)
+
+    except Exception as e:
+        logging.error(f"TRADE GUARDIAN ERROR: {e}")
+
+
+async def crash_detector_job(context: ContextTypes.DEFAULT_TYPE):
+
+    try:
+        alerts = detect_market_crash()
+
+        if not alerts:
+            return
+
+        chat_id = context.bot_data.get("chat_id")
+
+        if not chat_id:
+            return
+
+        for alert in alerts:
+            await context.bot.send_message(chat_id=chat_id, text=alert)
+
+    except Exception as e:
+        logging.error(f"CRASH DETECTOR ERROR: {e}")
+
+
+async def whale_tracker_job(context: ContextTypes.DEFAULT_TYPE):
+
+    try:
+        alerts = detect_whale_activity()
+
+        if not alerts:
+            return
+
+        chat_id = context.bot_data.get("chat_id")
+
+        if not chat_id:
+            return
+
+        for alert in alerts:
+            await context.bot.send_message(chat_id=chat_id, text=alert)
+
+    except Exception as e:
+        logging.error(f"WHALE TRACKER ERROR: {e}")
+
+
+async def altseason_detector_job(context: ContextTypes.DEFAULT_TYPE):
+
+    try:
+        alerts = detect_altseason()
+
+        if not alerts:
+            return
+
+        chat_id = context.bot_data.get("chat_id")
+
+        if not chat_id:
+            return
+
+        for alert in alerts:
+            await context.bot.send_message(chat_id=chat_id, text=alert)
+
+    except Exception as e:
+        logging.error(f"ALTSEASON DETECTOR ERROR: {e}")
+
+
+async def signal_engine_job(context: ContextTypes.DEFAULT_TYPE):
+
+    try:
+
+        signal = scan_for_signals()
+
+        if not signal:
+            return
+
+        if not can_send_signal(signal):
+            return
+
+        chat_id = context.bot_data.get("chat_id")
+
+        if not chat_id:
+            return
+
+        message = format_signal_message(signal)
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=message
+        )
+
+        record_signal_sent(signal)
+
+    except Exception as e:
+        logging.error(f"SIGNAL ENGINE ERROR: {e}")
+
+
+async def whale_signal_job(context: ContextTypes.DEFAULT_TYPE):
+
+    try:
+
+        alerts = scan_whale_signals()
+
+        if not alerts:
+            return
+
+        chat_id = context.bot_data.get("chat_id")
+
+        if not chat_id:
+            return
+
+        for alert in alerts:
+
+            message = format_whale_alert(alert)
+
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=message
+            )
+
+    except Exception as e:
+        logging.error(f"WHALE SIGNAL JOB ERROR: {e}")
+
+
+async def market_intelligence_job(context: ContextTypes.DEFAULT_TYPE):
+
+    try:
+
+        alerts = scan_market_intelligence()
+
+        if not alerts:
+            return
+
+        chat_id = context.bot_data.get("chat_id")
+
+        if not chat_id:
+            return
+
+        for alert in alerts:
+
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=alert
+            )
+
+    except Exception as e:
+        logging.error(f"MARKET INTELLIGENCE JOB ERROR: {e}")
 
 
 # =========================
-# COMMAND /start
+# COMMANDS
 # =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    await update.message.reply_text(
-        "Halo, saya AlizaAI 🤖\n\n"
+    context.bot_data["chat_id"] = update.effective_chat.id
+
+    message = (
+        "🤖 ALIZA AI TRADING ASSISTANT\n\n"
         "Auto market monitoring aktif.\n\n"
-        "Perintah yang tersedia:\n"
-        "/market - Laporan market BTC\n"
-        "/trade - Setup trading\n"
-        "/status - Status sistem\n"
-        "/testalert - Test notifikasi\n"
-        "/marketdebug - Debug data market"
+
+        "━━━━━━━━━━━━━━━━━━\n"
+        "📊 MARKET\n"
+        "/market BTC\n"
+        "/radar\n\n"
+
+        "━━━━━━━━━━━━━━━━━━\n"
+        "🎯 TRADING\n"
+        "/setfutures\n"
+        "/entry BTC\n"
+        "/close BTC\n"
+        "/portfolio\n\n"
+
+        "━━━━━━━━━━━━━━━━━━\n"
+        "⚙️ SYSTEM\n"
+        "/status\n"
+        "/testalert\n"
+        "/marketdebug"
     )
 
+    await update.message.reply_text(message)
 
-# =========================
-# COMMAND /trade
-# =========================
-
-async def trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    try:
-
-        data = btc_signal()
-        setup = data.get("trade_setup")
-
-        if not setup:
-            await update.message.reply_text("Trading setup belum tersedia.")
-            return
-
-        message = (
-            "🧠 ALIZA TRADING BRAIN\n\n"
-            f"Market: BTC\n"
-            f"Trend: {data.get('trend')}\n\n"
-            f"Setup: {setup.get('setup')}\n\n"
-            f"Entry: {setup.get('entry')}\n"
-            f"Stop Loss: {setup.get('sl')}\n"
-            f"Take Profit 1: {setup.get('tp1')}\n"
-            f"Take Profit 2: {setup.get('tp2')}\n\n"
-            f"Risk Reward: {setup.get('risk_reward')}"
-        )
-
-        await update.message.reply_text(message)
-
-    except Exception as e:
-
-        logging.error(f"ERROR TRADE COMMAND: {e}")
-        await update.message.reply_text("Terjadi kesalahan saat membaca market.")
-
-
-# =========================
-# COMMAND /market
-# =========================
 
 async def market(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
 
-        data = btc_signal()
+        coin = "BTC"
+
+        if context.args:
+            coin = context.args[0].upper()
+
+        if coin not in MAJOR_COINS:
+            await update.message.reply_text("Coin tidak tersedia.")
+            return
+
+        data = get_market_data(coin)
+
+        if not data or "error" in data:
+            data = market_signal(coin)
+
+        if not data or "error" in data:
+            await update.message.reply_text("Market data tidak tersedia.")
+            return
+
         message = format_market_report(data)
 
         await update.message.reply_text(message)
 
     except Exception as e:
 
-        logging.error(f"ERROR MARKET COMMAND: {e}")
-        await update.message.reply_text("Terjadi kesalahan saat membaca market.")
+        logging.error(f"MARKET ERROR: {e}")
+        await update.message.reply_text("Terjadi kesalahan membaca market.")
 
 
-# =========================
-# COMMAND /testalert
-# =========================
-
-async def testalert(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    await update.message.reply_text(
-        "✅ TEST ALERT ALIZA\n\n"
-        "Sistem notifikasi Telegram aktif dan berjalan normal."
-    )
-
-
-# =========================
-# COMMAND /status
-# =========================
-
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    await update.message.reply_text(
-        "🧠 STATUS SISTEM ALIZA\n\n"
-        "API Server: AKTIF\n"
-        "AI Engine: AKTIF\n"
-        "Market Analyzer: AKTIF\n"
-        "Trading Brain: AKTIF\n"
-        "Telegram Bot: ONLINE\n\n"
-        "Semua sistem berjalan normal."
-    )
-
-
-# =========================
-# COMMAND /marketdebug
-# =========================
-
-async def marketdebug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def radar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
 
-        data = btc_signal()
+        data = multi_market_scan()
 
-        message = (
-            "🔎 MARKET DEBUG\n\n"
-            f"Harga BTC: {data.get('price')}\n"
-            f"RSI: {data.get('rsi')}\n"
-            f"Trend: {data.get('trend')}\n\n"
-            f"Fear & Greed: {data.get('fear_greed')}\n"
-            f"Dominance: {data.get('dominance')}\n\n"
-            f"Whale Activity: {data.get('whale_activity')}\n"
-            f"Crash Risk: {data.get('crash_alert')}\n"
-            f"Signal AI: {data.get('signal')}"
-        )
+        if not data:
+            await update.message.reply_text("Radar market tidak tersedia.")
+            return
+
+        message = "📡 ALIZA MARKET RADAR\n\n"
+
+        for coin, trend in data.items():
+            message += f"{coin} → {trend}\n"
 
         await update.message.reply_text(message)
 
     except Exception as e:
 
-        logging.error(f"MARKET DEBUG ERROR: {e}")
+        logging.error(f"RADAR ERROR: {e}")
+        await update.message.reply_text("Terjadi kesalahan scan market.")
 
 
-# =========================
-# AUTO MARKET SIGNAL
-# =========================
-
-async def auto_market_signal(context: ContextTypes.DEFAULT_TYPE):
-
-    global LAST_SIGNAL
+async def radarpro(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
 
-        data = btc_signal()
+        data = calculate_market_probabilities()
+        message = format_radar_report(data)
+        await update.message.reply_text(message)
 
-        signal = data.get("signal")
-        crash = data.get("crash_alert")
-        bottom = data.get("bottom_probability")
+    except Exception as e:
+        logging.error(f"RADARPRO ERROR: {e}")
+        await update.message.reply_text("Terjadi kesalahan memuat radar pro.")
 
-        message = None
 
-        if crash == "HIGH":
+async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-            message = (
-                "🚨 PERINGATAN MARKET\n\n"
-                f"Probabilitas Crash: {data.get('crash_probability')}%\n\n"
-                "Rekomendasi:\n"
-                "TUNGGU / KURANGI POSISI"
-            )
+    try:
 
-        elif (bottom or 0) > 80:
+        data = calculate_market_predictions()
+        message = format_prediction_report(data)
+        await update.message.reply_text(message)
 
-            message = (
-                "🟢 ZONA AKUMULASI BTC\n\n"
-                "Market kemungkinan berada di area bottom.\n\n"
-                "Rekomendasi:\n"
-                "MULAI AKUMULASI BTC"
-            )
+    except Exception as e:
+        logging.error(f"PREDICT ERROR: {e}")
+        await update.message.reply_text("Terjadi kesalahan memuat prediksi market.")
 
-        elif signal in ["BUY", "SELL"]:
 
-            signal_text = "BELI" if signal == "BUY" else "JUAL"
+async def quant(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-            message = (
-                "📡 SINYAL TRADING ALIZA\n\n"
-                f"Sinyal: {signal_text}\n"
-                f"Trend Market: {data.get('trend')}\n\n"
-                f"Harga BTC: ${data.get('price')}"
-            )
+    try:
 
-        if message and message != LAST_SIGNAL:
+        data = calculate_market_score()
+        message = format_quant_report(data)
+        await update.message.reply_text(message)
 
-            LAST_SIGNAL = message
+    except Exception as e:
+        logging.error(f"QUANT ERROR: {e}")
+        await update.message.reply_text("Terjadi kesalahan memuat quant model.")
 
-            await context.bot.send_message(
-                chat_id=CHAT_ID,
-                text=message
-            )
+
+async def setfutures(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    try:
+
+        message = opportunity_report()
+
+        if not message:
+            message = "Tidak ada setup trading."
+
+        await update.message.reply_text(message)
 
     except Exception as e:
 
-        logging.error(f"AUTO SIGNAL ERROR: {e}")
-
+        logging.error(f"FUTURES ERROR: {e}")
+        await update.message.reply_text("Terjadi kesalahan futures scanner.")
 
 # =========================
-# HANDLE TEXT MESSAGE
+# TRADE COMMANDS
 # =========================
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
 
-        if not update.message or not update.message.text:
+        if not context.args:
+            await update.message.reply_text("Gunakan format:\n/entry BNB")
             return
 
-        user_id = update.effective_user.id
-        user_message = update.message.text
+        coin = context.args[0].upper()
 
-        name = save_user_name(user_id, user_message)
-
-        if name:
-
-            response = f"Baik, saya ingat. Nama Anda {name.title()}."
-
-        elif "siapa nama saya" in user_message.lower():
-
-            stored_name = get_user_name(user_id)
-
-            if stored_name:
-                response = f"Nama Anda {stored_name.title()}"
-            else:
-                response = "Maaf, saya belum tahu nama Anda."
-
-        else:
-
-            response = ask_aliza(user_message)
-
-        for part in split_message(response):
-            await update.message.reply_text(part)
-
-    except Exception as e:
-
-        logging.error(f"ERROR TEXT MESSAGE: {e}")
-
-
-# =========================
-# HANDLE DOCUMENT
-# =========================
-
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    try:
-
-        document = update.message.document
-
-        file_name = document.file_name
-        file_size = document.file_size
-
-        ext = os.path.splitext(file_name)[1].lower()
-
-        if file_size > MAX_FILE_SIZE:
-            await update.message.reply_text("Ukuran file terlalu besar. Maksimal 20MB.")
+        if coin not in MAJOR_COINS:
+            await update.message.reply_text("Coin tidak tersedia.")
             return
 
-        if ext not in ALLOWED_TYPES:
-            await update.message.reply_text("Format file tidak didukung.")
+        data = get_market_data(coin)
+
+        if not data or "error" in data:
+            await update.message.reply_text("Data market tidak tersedia.")
             return
 
-        file = await context.bot.get_file(document.file_id)
+        trade_setup = data.get("trade_setup")
 
-        unique_name = str(uuid.uuid4()) + "_" + file_name
-        save_path = os.path.join(UPLOAD_FOLDER, unique_name)
+        if not trade_setup:
+            await update.message.reply_text("Tidak ada setup trading saat ini.")
+            return
 
-        await file.download_to_drive(save_path)
+        setup = trade_setup.get("setup")
+        if not setup or setup in ("NO SETUP", "NO DATA"):
+            await update.message.reply_text("Tidak ada setup trading saat ini.")
+            return
 
-        set_active_document(save_path)
+        entry_price = trade_setup.get("entry")
+        sl = trade_setup.get("sl")
+        tp1 = trade_setup.get("tp1")
+        tp2 = trade_setup.get("tp2")
 
-        await update.message.reply_text(
-            f"Dokumen '{file_name}' berhasil diupload.\nSedang menganalisis..."
+        if entry_price is None:
+            await update.message.reply_text("Tidak ada setup trading saat ini.")
+            return
+
+        create_trade(coin, setup, entry_price, sl, tp1, tp2)
+
+        message = (
+            "📥 POSISI DIBUKA\n\n"
+            f"Coin : {coin}\n"
+            f"Setup : {setup}\n\n"
+            f"Entry : {entry_price}\n"
+            f"SL : {sl}\n"
+            f"TP1 : {tp1}\n"
+            f"TP2 : {tp2}\n\n"
+            "Aliza akan memantau posisi ini."
         )
-
-        add_document_to_vector_store(save_path)
-
-        summary = analyze_document()
-
-        message = "Dokumen berhasil diproses.\n\nRingkasan:\n" + summary
-
-        for part in split_message(message):
-            await update.message.reply_text(part)
+        await update.message.reply_text(message)
 
     except Exception as e:
+        logging.error(f"ENTRY ERROR: {e}")
+        await update.message.reply_text("Terjadi kesalahan saat membuka posisi.")
 
-        logging.error(f"ERROR DOCUMENT: {e}")
 
+async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    try:
+
+        if not context.args:
+            await update.message.reply_text("Gunakan format:\n/close BNB")
+            return
+
+        coin = context.args[0].upper()
+
+        closed = close_trade(coin)
+
+        if closed:
+            await update.message.reply_text(
+                f"📤 POSISI DITUTUP\n\n{coin} telah ditutup."
+            )
+        else:
+            await update.message.reply_text(
+                f"Tidak ada posisi terbuka untuk {coin}."
+            )
+
+    except Exception as e:
+        logging.error(f"CLOSE ERROR: {e}")
+        await update.message.reply_text("Terjadi kesalahan saat menutup posisi.")
+
+
+async def portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    try:
+
+        trades = get_active_trades()
+
+        if not trades:
+            await update.message.reply_text("Belum ada posisi aktif.")
+            return
+
+        message = "💼 PORTFOLIO AKTIF\n\n"
+
+        for trade in trades:
+
+            coin = trade[0]
+            entry = trade[2]
+            sl = trade[3]
+            tp1 = trade[4]
+            tp2 = trade[5]
+
+            message += f"{coin}\n"
+            message += f"Entry : {entry}\n"
+            message += f"SL : {sl}\n"
+            message += f"TP1 : {tp1}\n"
+            if tp2 is not None:
+                message += f"TP2 : {tp2}\n"
+            message += "\n"
+
+        await update.message.reply_text(message.strip())
+
+    except Exception as e:
+        logging.error(f"PORTFOLIO ERROR: {e}")
+        await update.message.reply_text("Terjadi kesalahan memuat portfolio.")
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    try:
+
+        trades = get_active_trades()
+        active_count = len(trades)
+        coins_count = len(MAJOR_COINS)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        message = (
+            "⚙️ ALIZA SYSTEM STATUS\n\n"
+            "Engine            : AKTIF\n"
+            "Market Cache      : AKTIF\n"
+            "Trade Monitor     : AKTIF\n"
+            "Telegram Bot      : AKTIF\n\n"
+            f"Active Trades     : {active_count}\n"
+            f"Coins Dipantau    : {coins_count}\n\n"
+            f"Server Time       : {now}"
+        )
+        await update.message.reply_text(message)
+
+    except Exception as e:
+        logging.error("STATUS ERROR: %s", e)
+        await update.message.reply_text("Gagal memuat status sistem.")
+
+
+async def testalert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    try:
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        message = (
+            "🚨 TEST ALERT ALIZA\n\n"
+            "Ini adalah simulasi alert sistem.\n\n"
+            "Jika Anda melihat pesan ini,\n"
+            "berarti sistem notifikasi Telegram bekerja dengan baik.\n\n"
+            f"Server Time: {now}"
+        )
+        await update.message.reply_text(message)
+
+    except Exception as e:
+        logging.error("TESTALERT ERROR: %s", e)
+        await update.message.reply_text("Gagal mengirim test alert.")
+
+
+async def marketdebug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    try:
+
+        data = market_signal("BTC")
+
+        if not data or "error" in data:
+            await update.message.reply_text("Market debug gagal.")
+            return
+
+        price = data.get("price")
+        trend = data.get("trend")
+        rsi = data.get("rsi")
+        support = data.get("support")
+        resistance = data.get("resistance")
+        fear_greed = data.get("fear_greed")
+        dominance = data.get("dominance")
+
+        trade_setup = data.get("trade_setup") or {}
+        setup = trade_setup.get("setup")
+        entry = trade_setup.get("entry")
+        sl = trade_setup.get("sl")
+        tp1 = trade_setup.get("tp1")
+        tp2 = trade_setup.get("tp2")
+        rr = trade_setup.get("risk_reward")
+
+        def _fmt(v):
+            if v is None:
+                return "—"
+            if isinstance(v, float):
+                return round(v, 2) if v == v else "—"
+            return str(v)
+
+        message = (
+            "🔎 MARKET DEBUG\n\n"
+            f"Symbol      : {data.get('symbol', 'BTC')}\n"
+            f"Price       : {_fmt(price)}\n"
+            f"Trend       : {_fmt(trend)}\n"
+            f"RSI         : {_fmt(rsi)}\n\n"
+            f"Support     : {_fmt(support)}\n"
+            f"Resistance  : {_fmt(resistance)}\n\n"
+            f"Fear Greed  : {_fmt(fear_greed)}\n"
+            f"Dominance   : {_fmt(dominance)}\n\n"
+            f"Setup       : {_fmt(setup)}\n"
+            f"Entry       : {_fmt(entry)}\n"
+            f"SL          : {_fmt(sl)}\n"
+            f"TP1         : {_fmt(tp1)}\n"
+            f"TP2         : {_fmt(tp2)}\n"
+            f"RR          : {_fmt(rr)}"
+        )
+        await update.message.reply_text(message)
+
+    except Exception as e:
+        logging.error("MARKETDEBUG ERROR: %s", e)
+        await update.message.reply_text("Market debug gagal.")
 
 # =========================
-# TELEGRAM APP
+# MAIN
 # =========================
 
 def main():
 
+    if not acquire_single_instance_lock():
+        logging.error("Keluar. Hentikan instance bot yang sudah berjalan sebelum menjalankan lagi.")
+        sys.exit(1)
+
+    init_trade_db()
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("trade", trade))
+
     app.add_handler(CommandHandler("market", market))
+    app.add_handler(CommandHandler("radar", radar))
+    app.add_handler(CommandHandler("radarpro", radarpro))
+    app.add_handler(CommandHandler("predict", predict))
+    app.add_handler(CommandHandler("quant", quant))
 
-    app.add_handler(CommandHandler("testalert", testalert))
+    app.add_handler(CommandHandler("setfutures", setfutures))
+
+    app.add_handler(CommandHandler("entry", entry))
+    app.add_handler(CommandHandler("close", close))
+    app.add_handler(CommandHandler("portfolio", portfolio))
+
     app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("testalert", testalert))
     app.add_handler(CommandHandler("marketdebug", marketdebug))
-
-    app.add_handler(
-        MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
-    )
-
-    app.add_handler(
-        MessageHandler(filters.Document.ALL, handle_document)
-    )
 
     job_queue = app.job_queue
 
-    job_queue.run_repeating(
-        auto_market_signal,
-        interval=300,
-        first=20
-    )
+    job_queue.run_repeating(trade_guardian_job, interval=60, first=30)
+    job_queue.run_repeating(crash_detector_job, interval=180, first=60)
+    job_queue.run_repeating(whale_tracker_job, interval=180, first=90)
+    job_queue.run_repeating(altseason_detector_job, interval=300, first=120)
+    job_queue.run_repeating(signal_engine_job, interval=300, first=120)
+    job_queue.run_repeating(whale_signal_job, interval=600, first=180)
+    job_queue.run_repeating(market_intelligence_job, interval=900, first=300)
 
     logging.info("AlizaAI Telegram Bot aktif...")
 
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()

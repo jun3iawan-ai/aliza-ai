@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from engine.market_analyzer import btc_signal
+from engine.market.market_analyzer import btc_signal
 
 router = APIRouter()
 

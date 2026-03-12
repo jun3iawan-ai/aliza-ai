@@ -1,25 +1,25 @@
 import requests
 from datetime import datetime
 
-from engine.crypto_intelligence import (
+from engine.intelligence.crypto_intelligence import (
     get_funding_rate,
     analyze_funding,
     altseason_index,
     altseason_status
 )
 
-from engine.smart_money_tracker import (
+from engine.detectors.smart_money_tracker import (
     stablecoin_inflow,
     smart_money_score
 )
 
-from engine.liquidation_monitor import (
+from engine.detectors.liquidation_monitor import (
     get_open_interest,
     analyze_open_interest,
     liquidation_risk
 )
 
-from engine.market_ai_predictor import (
+from engine.intelligence.market_ai_predictor import (
     market_phase,
     bull_probability,
     market_risk_score
@@ -72,7 +72,6 @@ def get_large_transactions():
 
         return []
 
-
 # =========================
 # WHALE INTENSITY
 # =========================
@@ -92,14 +91,22 @@ def whale_intensity(whales):
 
     return "LOW"
 
-
 # =========================
 # BTC CYCLE DETECTOR
 # =========================
 
 def detect_btc_cycle(fear, dominance):
 
-    if fear is None:
+    # VALIDASI DATA
+    if fear is None or dominance is None:
+        return "UNKNOWN"
+
+    try:
+
+        fear = float(fear)
+        dominance = float(dominance)
+
+    except:
         return "UNKNOWN"
 
     if fear < 20 and dominance > 55:
@@ -113,7 +120,6 @@ def detect_btc_cycle(fear, dominance):
 
     return "BEAR"
 
-
 # =========================
 # CRASH RISK MODEL
 # =========================
@@ -122,10 +128,10 @@ def crash_risk_model(fear, dominance):
 
     risk = 0
 
-    if fear and fear < 20:
+    if fear is not None and fear < 20:
         risk += 2
 
-    if dominance and dominance > 55:
+    if dominance is not None and dominance > 55:
         risk += 1
 
     if risk >= 3:
@@ -135,7 +141,6 @@ def crash_risk_model(fear, dominance):
         return "MEDIUM", 60
 
     return "LOW", 30
-
 
 # =========================
 # MAIN RADAR

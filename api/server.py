@@ -1,12 +1,18 @@
+import os
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
 
-from engine.aliza_engine import ask_aliza
-from engine.market_analyzer import btc_signal
+from engine.brain.aliza_engine import ask_aliza
+from engine.market.market_analyzer import btc_signal
+from engine.utils.market_cache import get_market_data
 
 from core.database import conn, cursor
 from api.auth import router as auth_router
+from api.dashboard_api import router as dashboard_router
 
 from fastapi import APIRouter
 
@@ -16,7 +22,7 @@ from fastapi import APIRouter
 # =========================
 
 app = FastAPI(
-    title="AlizaAI API",
+    title="Aliza Dashboard API",
     version="1.0"
 )
 
@@ -26,6 +32,7 @@ app = FastAPI(
 # =========================
 
 app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
+app.include_router(dashboard_router)
 
 
 # =========================
@@ -54,12 +61,41 @@ class ChatRequest(BaseModel):
 
 
 # =========================
-# HOME
+# DASHBOARD (ALIZA TRADING DASHBOARD)
 # =========================
 
+_DASHBOARD_HTML = Path(__file__).resolve().parent.parent / "dashboard" / "index.html"
+
 @app.get("/")
-def home():
-    return {"message": "AlizaAI API running"}
+def dashboard():
+    """Serve Trading Dashboard. Port dikonfigurasi via ALIZA_DASHBOARD_PORT (default 8001)."""
+    if _DASHBOARD_HTML.exists():
+        return FileResponse(_DASHBOARD_HTML)
+    return {"message": "AlizaAI API running", "dashboard": "dashboard/index.html not found"}
+
+
+# =========================
+# HEALTH CHECK
+# =========================
+
+@app.get("/health")
+def health():
+    """Health check untuk monitoring dan load balancer."""
+    return {
+        "status": "ok",
+        "service": "AlizaAI Dashboard",
+        "engine": "running"
+    }
+
+
+# =========================
+# MARKET TEST ROUTE
+# =========================
+
+@app.get("/market")
+def market():
+    """Data market BTC (test/simple endpoint)."""
+    return get_market_data("BTC") or {}
 
 
 # =========================

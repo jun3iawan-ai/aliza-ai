@@ -1,4 +1,4 @@
-from engine.aliza_engine import ask_aliza
+from engine.brain.aliza_engine import ask_aliza
 from core.rag_engine import load_file
 from memory.active_document import get_active_document
 

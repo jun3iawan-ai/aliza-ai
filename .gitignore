@@ -1,28 +1,9 @@
-# Python
+venv/
 __pycache__/
 *.pyc
-*.pyo
-
-# Virtual Environment
-venv/
 .env
-
-# Database
-*.db
-
-# Logs
-logs/
-
-# Vector Store
+nohup.out
+data/
 knowledge/vector_store/
-
-# Upload files
 knowledge/uploads/
-
-# OS
-.DS_Store
-Thumbs.db
-
-uploads/
-hapus/
-original_files/
+logs/

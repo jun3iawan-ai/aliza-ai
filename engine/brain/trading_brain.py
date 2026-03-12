@@ -18,9 +18,14 @@ class TradingBrain:
 
         # =========================
         # SETUP DETECTION
+        # RSI ekstrem (oversold) diperiksa dulu agar OVERSOLD BOUNCE
+        # terdeteksi meskipun trend BEARISH.
         # =========================
 
-        if trend == "BULLISH" and rsi < 45:
+        if rsi < 30:
+            setup = "OVERSOLD BOUNCE"
+
+        elif trend == "BULLISH" and rsi < 45:
             setup = "PULLBACK LONG"
 
         elif trend == "BEARISH" and rsi > 55:
@@ -28,9 +33,6 @@ class TradingBrain:
 
         elif trend == "BEARISH":
             setup = "SHORT CONTINUATION"
-
-        elif rsi < 30:
-            setup = "OVERSOLD BOUNCE"
 
         entry = price
 

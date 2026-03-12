@@ -1,7 +1,7 @@
 import time
 import requests
 
-from engine.market_analyzer import btc_signal
+from engine.market.market_analyzer import btc_signal
 
 
 TELEGRAM_BOT_TOKEN = "ISI_TOKEN_BOT_KAMU"
