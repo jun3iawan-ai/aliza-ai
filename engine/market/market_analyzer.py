@@ -1,337 +1,410 @@
-import requests
-import numpy as np
-import time
-from datetime import datetime
+"""
+ALIZA MARKET ANALYZER
 
-from engine.brain.trading_brain import TradingBrain
-from engine.market.market_radar import market_radar
+Fetch harga dan indikator per symbol; panggil market_radar dan (jika ada) trading_brain.
+Semua resolusi symbol → CoinGecko ID memakai resolve_coin_id (prioritas: dynamic_universe, lalu COINGECKO_IDS).
+"""
+
+import logging
+import time
+import requests
+
+from engine.market.coin_id_resolver import resolve_coin_id
 from engine.market.market_universe import MAJOR_COINS
+from engine.market.market_radar import market_radar
+from engine.market.global_market_cache import get_global_market_data
+from engine.market.multi_timeframe_analyzer import analyze_multi_timeframe
+from engine.market.klines_cache import get_cached_klines, set_cached_klines
+from engine.indicators.constants import MIN_REQUIRED_DATA
 
 HEADERS = {"User-Agent": "AlizaAI"}
+logger = logging.getLogger(__name__)
+COINGECKO_CHART_URL = "https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+BINANCE_TICKER_URL = "https://api.binance.com/api/v3/ticker/price"
+BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
+TIMEOUT = 12
+KLINES_LIMIT = 100
 
-FEAR_URL = "https://api.alternative.me/fng/"
-GLOBAL_URL = "https://api.coingecko.com/api/v3/global"
+# Last known price per symbol when CoinGecko fails (cache fallback)
+_last_known_price = {}
 
-# =========================
-# COINGECKO COIN IDS
-# =========================
 
-COINGECKO_IDS = {
-    "BTC": "bitcoin",
-    "ETH": "ethereum",
-    "BNB": "binancecoin",
-    "SOL": "solana",
-    "XRP": "ripple",
-    "ADA": "cardano",
-    "DOGE": "dogecoin",
-    "AVAX": "avalanche-2",
-    "TRX": "tron",
-    "TON": "toncoin",
-    "LINK": "chainlink",
-    "DOT": "polkadot",
-    "LTC": "litecoin",
-    "APT": "aptos",
-    "ATOM": "cosmos"
-}
-
-# =========================
-# CACHE
-# =========================
-
-last_fear = None
-last_fear_update = 0
-
-last_dominance = None
-last_dom_update = 0
-
-# =========================
-# MARKET CHART
-# =========================
-
-def get_coin_market_chart(symbol, days=200):
-
-    coin_id = COINGECKO_IDS.get(symbol)
-
-    if not coin_id:
-        return []
-
-    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
-
+def _safe_float(val, default=None):
+    if val is None:
+        return default
     try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
 
-        params = {
-            "vs_currency": "usd",
-            "days": days
-        }
 
-        res = requests.get(url, params=params, headers=HEADERS, timeout=10)
+def _get_price_from_binance(symbol):
+    """Fetch current price from Binance ticker. Returns float or None."""
+    if not symbol:
+        return None
+    try:
+        sym = (symbol or "").upper().strip()
+        r = requests.get(
+            BINANCE_TICKER_URL,
+            params={"symbol": f"{sym}USDT"},
+            headers=HEADERS,
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if isinstance(data, dict) and "price" in data:
+            return _safe_float(data["price"])
+    except Exception:
+        pass
+    return None
 
-        if res.status_code != 200:
+
+def _get_binance_klines(symbol_usdt, interval, limit=100):
+    """
+    Fetch OHLCV klines from Binance. symbol_usdt must be e.g. BTCUSDT, ETHUSDT.
+    Returns list of close prices (oldest to newest), or [] on failure.
+    Uses klines cache to reduce API requests; TTL 4h=300s, 1d=600s.
+    """
+    if not symbol_usdt or not isinstance(symbol_usdt, str):
+        return []
+    sym = (symbol_usdt or "").upper().strip()
+    if not sym.endswith("USDT"):
+        sym = f"{sym}USDT"
+
+    cached = get_cached_klines(sym, interval)
+    if cached:
+        logging.debug("Using cached klines %s %s", sym, interval)
+        return cached
+
+    def _do_request():
+        r = requests.get(
+            BINANCE_KLINES_URL,
+            params={"symbol": sym, "interval": interval, "limit": min(limit, 1000)},
+            headers=HEADERS,
+            timeout=TIMEOUT,
+        )
+        return r
+
+    logging.debug("Fetching klines from Binance %s %s", sym, interval)
+    try:
+        r = _do_request()
+        if r.status_code == 429:
+            logging.warning("Binance rate limit hit, retrying %s %s", sym, interval)
+            time.sleep(5)
+            r = _do_request()
+        if r.status_code != 200:
             return []
-
-        data = res.json()
-
-        prices = [p[1] for p in data.get("prices", [])]
-
-        return prices
-
+        data = r.json()
+        if not isinstance(data, list):
+            return []
+        closes = []
+        for candle in data:
+            if isinstance(candle, (list, tuple)) and len(candle) >= 5:
+                c = _safe_float(candle[4])
+                if c is not None and c > 0:
+                    closes.append(c)
+        if len(closes) >= 1:
+            set_cached_klines(sym, interval, closes)
+            return closes
+        return []
     except Exception as e:
-
-        print(f"{symbol} chart error:", e)
-
+        logging.warning("market_analyzer klines failed %s %s: %s", sym, interval, e)
         return []
 
-# =========================
-# FEAR & GREED
-# =========================
 
-def get_fear_greed():
-
-    global last_fear, last_fear_update
-
-    if last_fear and time.time() - last_fear_update < 300:
-        return last_fear
-
+def get_coin_market_chart(symbol, vs_currency="usd", days=90):
+    """
+    Ambil data market chart dari CoinGecko untuk symbol.
+    coin_id diperoleh via resolve_coin_id(symbol) agar dynamic universe dan statis sama-sama didukung.
+    Return dict dengan prices, market_caps, total_volumes; atau {} jika gagal.
+    """
+    coin_id = resolve_coin_id(symbol)
+    if not coin_id:
+        logging.warning("market_analyzer: no coin_id for symbol %s", symbol)
+        return {}
+    url = COINGECKO_CHART_URL.format(coin_id=coin_id)
     try:
+        r = requests.get(
+            url,
+            params={"vs_currency": vs_currency, "days": days},
+            headers=HEADERS,
+            timeout=TIMEOUT,
+        )
+        if r.status_code != 200:
+            return {}
+        data = r.json()
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logging.warning("market_analyzer get_coin_market_chart %s: %s", symbol, e)
+        return {}
 
-        res = requests.get(FEAR_URL, timeout=10)
 
-        if res.status_code != 200:
-            return last_fear
+def _get_prices_from_chart(chart_data):
+    """List harga (oldest to newest) dari chart data."""
+    raw = (chart_data or {}).get("prices") or []
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for p in raw:
+        try:
+            out.append((int(p[0]), float(p[1])))
+        except (IndexError, TypeError, ValueError):
+            continue
+    out.sort(key=lambda x: x[0])
+    return [pr for _, pr in out]
 
-        data = res.json()
 
-        fear = int(data["data"][0]["value"])
-
-        last_fear = fear
-        last_fear_update = time.time()
-
-        return fear
-
-    except Exception:
-
-        return last_fear
-
-# =========================
-# BTC DOMINANCE
-# =========================
-
-def get_btc_dominance():
-
-    global last_dominance, last_dom_update
-
-    if last_dominance and time.time() - last_dom_update < 300:
-        return last_dominance
-
-    try:
-
-        res = requests.get(GLOBAL_URL, headers=HEADERS, timeout=10)
-
-        if res.status_code != 200:
-            return last_dominance
-
-        data = res.json()
-
-        dominance = data["data"]["market_cap_percentage"]["btc"]
-
-        last_dominance = round(dominance, 2)
-        last_dom_update = time.time()
-
-        return last_dominance
-
-    except Exception:
-
-        return last_dominance
-
-# =========================
-# MOVING AVERAGE
-# =========================
-
-def moving_average(data, period):
-
-    if len(data) < period:
+def _moving_average(prices, period):
+    if not prices or len(prices) < period:
         return None
+    return sum(prices[-period:]) / period
 
-    return float(np.mean(data[-period:]))
 
-# =========================
-# RSI
-# =========================
-
-def calculate_rsi(prices, period=14):
-
-    if len(prices) < period + 1:
+def _calculate_rsi(prices, period=14):
+    if not prices or len(prices) < period + 1:
         return None
+    # Wilder's Smoothed RSI
+    # Step 1: hitung initial avg gain/loss dari period pertama
+    gains = []
+    losses = []
+    for i in range(1, len(prices)):
+        ch = prices[i] - prices[i - 1]
+        gains.append(max(ch, 0.0))
+        losses.append(max(-ch, 0.0))
+    if len(gains) < period:
+        return None
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    # Step 2: smoothing untuk candle berikutnya
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return round(100 - (100 / (1 + rs)), 2)
 
-    deltas = np.diff(prices)
 
-    gains = deltas[deltas > 0].sum() / period
-    losses = -deltas[deltas < 0].sum() / period
-
-    if losses == 0:
-        return 100
-
-    rs = gains / losses
-
-    return float(100 - (100 / (1 + rs)))
-
-# =========================
-# SUPPORT / RESISTANCE
-# =========================
-
-def calculate_support_resistance(prices):
-
-    if len(prices) < 30:
+def _support_resistance(prices):
+    if not prices or len(prices) < 20:
         return None, None
+    recent = prices[-20:]
+    return min(recent), max(recent)
 
-    recent = prices[-30:]
 
-    support = min(recent)
-    resistance = max(recent)
-
-    return round(support, 2), round(resistance, 2)
-
-# =========================
-# SINGLE MARKET ANALYSIS
-# =========================
-
-def market_signal(symbol="BTC"):
-
-    symbol = symbol.upper()
-
-    prices = get_coin_market_chart(symbol)
-
-    if not prices:
-        return {"error": "unable to fetch market data"}
-
-    price = prices[-1]
-
-    ma50 = moving_average(prices, 50)
-    ma200 = moving_average(prices, 200)
-
-    rsi = calculate_rsi(prices)
-
-    support, resistance = calculate_support_resistance(prices)
-
-    fear = get_fear_greed()
-    dominance = get_btc_dominance()
-
-    radar = market_radar(fear, dominance) if fear and dominance else {}
-
-    trend = "SIDEWAYS"
-
-    if ma50 and ma200:
-        trend = "BULLISH" if ma50 > ma200 else "BEARISH"
-
-    market_data = {
-
-        "symbol": symbol,
-        "price": round(price, 2),
-
-        "trend": trend,
-        "rsi": round(rsi, 2) if rsi else None,
-
-        "support": support,
-        "resistance": resistance,
-
-        "fear_greed": fear,
-        "dominance": dominance,
-
-        "cycle_phase": radar.get("cycle_phase"),
-        "funding_status": radar.get("funding_status"),
-        "whale_activity": radar.get("whale_activity"),
-        "stablecoin_flow": radar.get("stablecoin_flow"),
-        "open_interest_level": radar.get("open_interest_level"),
-        "liquidation_risk": radar.get("liquidation_risk"),
-        "market_phase_prediction": radar.get("market_phase_prediction"),
-        "bull_probability": radar.get("bull_probability"),
-        "market_risk_score": radar.get("market_risk_score"),
-
-        "timestamp": datetime.utcnow().isoformat()
-
-    }
-
-    brain = TradingBrain()
-    trade_setup = brain.analyze(market_data)
-
-    market_data["trade_setup"] = trade_setup
-
-    return market_data
-
-# =========================
-# TREND ANALYZER
-# =========================
-
-def analyze_trend(change):
-
-    if change is None:
-        return "UNKNOWN"
-
-    if change > 3:
+def _trend_from_ma(price, ma50, ma200):
+    if ma50 is None or ma200 is None:
+        return "SIDEWAYS"
+    if price > ma50 > ma200:
         return "BULLISH"
-
-    if change < -3:
+    if price < ma50 < ma200:
         return "BEARISH"
-
     return "SIDEWAYS"
 
-# =========================
-# MULTI MARKET SCAN
-# =========================
 
-def multi_market_scan():
+def market_signal(symbol, radar_data=None):
+    """
+    Analisis market untuk satu symbol. Binance primary untuk price; CoinGecko chart untuk historical.
+    radar_data: optional result of market_radar(fear, dominance); jika ada, dipakai agar radar tidak dipanggil per coin.
+    Return dict: symbol, price, trend, rsi, support, resistance, + radar fields, trade_setup (jika ada).
+    """
+    symbol = (symbol or "").strip().upper() or "BTC"
 
-    results = {}
+    # 1. Binance as primary price source
+    price = _get_price_from_binance(symbol)
+    if price is not None and isinstance(price, (int, float)) and price > 0:
+        price = float(price)
+        _last_known_price[symbol] = price
 
+    # 2. Candle data: Binance klines (4h and 1d) for indicators; fallback to CoinGecko
+    symbol_usdt = f"{symbol}USDT"
+    closes_4h = _get_binance_klines(symbol_usdt, "4h", KLINES_LIMIT)
+    closes_1d = _get_binance_klines(symbol_usdt, "1d", KLINES_LIMIT)
+
+    # Primary price series: 4h if enough candles, else 1d, else CoinGecko chart
+    if closes_4h and len(closes_4h) >= 20:
+        prices = list(closes_4h)
+    elif closes_1d and len(closes_1d) >= 20:
+        prices = list(closes_1d)
+    else:
+        chart = get_coin_market_chart(symbol, vs_currency="usd", days=90)
+        prices = _get_prices_from_chart(chart)
+
+    # 3. Append Binance price as latest candle so indicators stay consistent
+    if prices and price is not None and price > 0:
+        prices.append(price)
+
+    # 4. Resolve final price: Binance -> last known cache -> chart fallback
+    def _is_valid_price(p):
+        return p is not None and isinstance(p, (int, float)) and p > 0
+
+    if not _is_valid_price(price):
+        price = _last_known_price.get(symbol)
+    if not _is_valid_price(price) and prices:
+        price = prices[-1]
+    if _is_valid_price(price):
+        price = float(price)
+        _last_known_price[symbol] = price
+    else:
+        logging.error("Price unavailable for %s", symbol)
+        logger.warning("Invalid data — skipping signal")
+        return None
+
+    if not prices or len(prices) < MIN_REQUIRED_DATA:
+        logger.warning("Invalid data — skipping signal")
+        return None
+
+    mtf = analyze_multi_timeframe(closes_4h, closes_1d)
+    trend_4h = mtf.get("trend_4h")
+    trend_1d = mtf.get("trend_1d")
+    alignment = mtf.get("alignment")
+
+    ma20 = _moving_average(prices, 20)
+    ma50 = _moving_average(prices, 50)
+    ma200 = _moving_average(prices, 200)
+
+    # Trend: prefer ma50/ma200; fallback to ma20/ma50 if ma200 not available
+    if ma50 and ma200:
+        trend = _trend_from_ma(price, ma50, ma200)
+    elif ma20 and ma50:
+        trend = _trend_from_ma(price, ma20, ma50)
+    else:
+        trend = "SIDEWAYS"
+
+    # RSI from close prices: prefer 4h lalu 1d lalu series utama; tanpa RSI valid → NO SIGNAL
+    rsi_prices = closes_4h if (closes_4h and len(closes_4h) >= 15) else (closes_1d if (closes_1d and len(closes_1d) >= 15) else prices)
+    rsi = _calculate_rsi(rsi_prices)
+    if rsi is None:
+        logger.warning("Invalid data — skipping signal")
+        return None
     try:
+        rsi = float(rsi)
+    except (TypeError, ValueError):
+        logger.warning("Invalid data — skipping signal")
+        return None
+    if rsi < 0 or rsi > 100:
+        logger.warning("Invalid data — skipping signal")
+        return None
+    support, resistance = _support_resistance(prices)
 
-        ids = ",".join(COINGECKO_IDS.values())
+    global_data = get_global_market_data()
+    fear = global_data["fear_greed"]
+    dominance = global_data["btc_dominance"]
+    if radar_data is not None and isinstance(radar_data, dict):
+        radar = radar_data
+    else:
+        radar = {}
+        try:
+            radar = market_radar(fear, dominance) or {}
+        except Exception as e:
+            logging.warning("market_analyzer market_radar: %s", e)
 
-        url = "https://api.coingecko.com/api/v3/simple/price"
-
-        params = {
-            "ids": ids,
-            "vs_currencies": "usd",
-            "include_24hr_change": "true"
+    trade_setup = None
+    try:
+        from engine.brain.trading_brain import TradingBrain
+        brain = TradingBrain()
+        market_data = {
+            "symbol": symbol,
+            "price": price,
+            "trend": trend,
+            "rsi": rsi,
+            "support": support,
+            "resistance": resistance,
+            "trend_alignment": alignment,
         }
+        trade_setup = brain.analyze(market_data)
+    except Exception:
+        pass
 
-        res = requests.get(url, params=params, headers=HEADERS, timeout=10)
+    # Safety fallback: ensure market_data is always valid
+    if trend is None or str(trend).strip() not in ("BULLISH", "BEARISH", "SIDEWAYS"):
+        logging.warning("Trend fallback SIDEWAYS for %s", symbol)
+        trend = "SIDEWAYS"
+    if support is None:
+        support = price * 0.98 if price is not None else 0
+    if resistance is None:
+        resistance = price * 1.02 if price is not None else 0
 
-        if res.status_code != 200:
-            return {coin: "ERROR" for coin in MAJOR_COINS}
+    # Normalize market_data fields before return
+    try:
+        price = float(price)
+    except (TypeError, ValueError):
+        price = 0.0
+    try:
+        rsi = float(rsi)
+    except (TypeError, ValueError):
+        logger.warning("Invalid data — skipping signal")
+        return None
+    trend = str(trend).strip().upper()
+    if trend not in ("BULLISH", "BEARISH", "SIDEWAYS"):
+        trend = "SIDEWAYS"
+    try:
+        support = float(support) if support is not None else price * 0.98
+    except (TypeError, ValueError):
+        support = price * 0.98
+    try:
+        resistance = float(resistance) if resistance is not None else price * 1.02
+    except (TypeError, ValueError):
+        resistance = price * 1.02
 
-        data = res.json()
+    result = {
+        "symbol": symbol,
+        "price": price,
+        "trend": trend,
+        "rsi": rsi,
+        "support": support,
+        "resistance": resistance,
+        "fear_greed": fear,
+        "dominance": dominance,
+        "trend_4h": trend_4h,
+        "trend_1d": trend_1d,
+        "trend_alignment": alignment,
+        "cycle_phase": radar.get("cycle_phase", "UNKNOWN"),
+        "funding_status": radar.get("funding_status", "UNKNOWN"),
+        "whale_activity": radar.get("whale_activity", "UNKNOWN"),
+        "stablecoin_flow": radar.get("stablecoin_flow", "UNKNOWN"),
+        "open_interest_level": radar.get("open_interest_level", "UNKNOWN"),
+        "liquidation_risk": radar.get("liquidation_risk", "UNKNOWN"),
+        "market_phase_prediction": radar.get("market_phase_prediction", "UNKNOWN"),
+        "bull_probability": radar.get("bull_probability"),
+        "market_risk_score": radar.get("market_risk_score", "UNKNOWN"),
+        "trade_setup": trade_setup,
+        "timestamp": time.time(),
+    }
+    if symbol == "BTC":
+        try:
+            from engine.alerts.btc_smart_alert import enrich_btc_market_row
+            result.update(enrich_btc_market_row(result))
+        except Exception:
+            pass
+    return result
 
-        for symbol in MAJOR_COINS:
 
-            coin_id = COINGECKO_IDS.get(symbol)
+def _fallback_market_data(symbol, error_msg="error"):
+    return {
+        "symbol": (symbol or "UNKNOWN").upper(),
+        "price": None,
+        "trend": "DATA ERROR",
+        "rsi": None,
+        "support": None,
+        "resistance": None,
+        "fear_greed": None,
+        "dominance": None,
+        "cycle_phase": "UNKNOWN",
+        "funding_status": "UNKNOWN",
+        "whale_activity": "UNKNOWN",
+        "stablecoin_flow": "UNKNOWN",
+        "open_interest_level": "UNKNOWN",
+        "liquidation_risk": "UNKNOWN",
+        "market_phase_prediction": "UNKNOWN",
+        "bull_probability": None,
+        "market_risk_score": "UNKNOWN",
+        "trade_setup": None,
+        "error": error_msg,
+        "timestamp": time.time(),
+    }
 
-            if not coin_id:
-                results[symbol] = "UNKNOWN"
-                continue
-
-            coin_data = data.get(coin_id)
-
-            if not coin_data:
-                results[symbol] = "UNKNOWN"
-                continue
-
-            change = coin_data.get("usd_24h_change")
-
-            results[symbol] = analyze_trend(change)
-
-    except Exception as e:
-
-        print("Market scan error:", e)
-
-        results = {coin: "ERROR" for coin in MAJOR_COINS}
-
-    return results
-
-
-# =========================
-# BTC SIGNAL WRAPPER
-# =========================
 
 def btc_signal():
     return market_signal("BTC")
