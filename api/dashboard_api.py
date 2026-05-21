@@ -2,16 +2,14 @@
 ALIZA DASHBOARD API
 
 Endpoint untuk dashboard web: market, quant, predict, signals, portfolio.
+Import dilakukan di dalam handler agar server tetap start jika modul opsional belum ada.
 """
 
 from fastapi import APIRouter
 
 from engine.utils.market_cache import get_market_data
-from engine.intelligence.quant_market_model import calculate_market_score
-from engine.intelligence.predictive_market_ai import calculate_market_predictions
 from engine.trading.opportunity_scanner import scan_opportunities
 from engine.trading.trade_manager import get_active_trades
-
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -25,13 +23,23 @@ def dashboard_market():
 @router.get("/quant")
 def dashboard_quant():
     """Skor dan bias market (Quant Model)."""
-    return calculate_market_score()
+    try:
+        from engine.intelligence.quant_market_model import calculate_market_score
+
+        return calculate_market_score()
+    except ImportError:
+        return {"detail": "quant_market_model tidak tersedia di deployment ini", "status": "unavailable"}
 
 
 @router.get("/predict")
 def dashboard_predict():
     """Probabilitas prediksi market."""
-    return calculate_market_predictions()
+    try:
+        from engine.intelligence.predictive_market_ai import calculate_market_predictions
+
+        return calculate_market_predictions()
+    except ImportError:
+        return {"detail": "predictive_market_ai tidak tersedia di deployment ini", "status": "unavailable"}
 
 
 @router.get("/signals")
@@ -42,16 +50,40 @@ def dashboard_signals():
 
 @router.get("/portfolio")
 def dashboard_portfolio():
-    """Posisi trading aktif. Setiap item: coin, setup, entry, stop_loss, tp1, tp2."""
+    """Posisi trading aktif (format mengikuti get_active_trades)."""
     rows = get_active_trades()
-    return [
-        {
-            "coin": r[0],
-            "setup": r[1],
-            "entry": r[2],
-            "stop_loss": r[3],
-            "tp1": r[4],
-            "tp2": r[5],
-        }
-        for r in rows
-    ]
+    out = []
+    for r in rows:
+        if len(r) >= 10:
+            out.append({
+                "coin": r[0],
+                "direction": r[1],
+                "setup": r[2],
+                "entry": r[3],
+                "stop_loss": r[4],
+                "tp1": r[5],
+                "tp2": r[6],
+                "quantity": r[7],
+                "position_value_usdt": r[8],
+                "risk_usdt": r[9],
+            })
+        elif len(r) >= 7:
+            out.append({
+                "coin": r[0],
+                "direction": r[1],
+                "setup": r[2],
+                "entry": r[3],
+                "stop_loss": r[4],
+                "tp1": r[5],
+                "tp2": r[6],
+            })
+        elif len(r) >= 6:
+            out.append({
+                "coin": r[0],
+                "setup": r[1],
+                "entry": r[2],
+                "stop_loss": r[3],
+                "tp1": r[4],
+                "tp2": r[5],
+            })
+    return out

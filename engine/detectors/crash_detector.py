@@ -1,71 +1,47 @@
-from engine.market.market_analyzer import market_signal
-from engine.market.market_universe import MAJOR_COINS
+"""
+ALIZA CRASH DETECTOR
 
-# memory agar tidak spam alert
-CRASH_MEMORY = {}
+Mendeteksi potensi crash market menggunakan data dari market snapshot.
+Rule kontekstual: crash_risk hanya True jika HIGH risk plus bearish/overbought/liquidation kuat.
+"""
 
-
-def calculate_crash_probability(data):
-
-    score = 0
-
-    if data.get("market_risk_score") == "HIGH":
-        score += 30
-
-    if data.get("stablecoin_flow") == "HIGH OUTFLOW":
-        score += 20
-
-    if data.get("funding_status") == "EXTREME":
-        score += 15
-
-    if data.get("liquidation_risk") == "HIGH":
-        score += 15
-
-    if data.get("whale_activity") == "HIGH":
-        score += 10
-
-    if data.get("market_phase_prediction") == "DISTRIBUTION":
-        score += 10
-
-    return score
+import logging
 
 
-def detect_market_crash():
+def detect_crash_risk(market_data):
+    """
+    Crash risk hanya True jika kontekstual:
 
-    alerts = []
+    1) Market risk HIGH dan trend BEARISH
+    2) Market risk HIGH dan RSI sangat overbought (>= 70)
+    3) Market risk HIGH dan liquidation_risk sangat kuat (jika tersedia)
 
-    for coin in MAJOR_COINS:
+    Return: {"crash_risk": bool}
+    """
+    try:
+        if not market_data or not isinstance(market_data, dict):
+            return {"crash_risk": False}
 
-        data = market_signal(coin)
+        trend = str(market_data.get("trend", "")).strip().upper()
+        rsi = market_data.get("rsi")
+        market_risk = str(market_data.get("market_risk_score", "")).strip().upper()
+        liquidation_risk = str(market_data.get("liquidation_risk", "")).strip().upper()
 
-        if not data or "error" in data:
-            continue
+        rsi_val = None
+        try:
+            if rsi is not None:
+                rsi_val = float(rsi)
+        except (TypeError, ValueError):
+            pass
 
-        probability = calculate_crash_probability(data)
+        high_risk = market_risk == "HIGH"
+        bearish_trend = trend == "BEARISH"
+        overbought = rsi_val is not None and rsi_val >= 70
+        liquidation_strong = liquidation_risk in ("HIGH", "EXTREME")
 
-        # trigger jika probability tinggi
-        if probability < 60:
-            continue
-
-        last_alert = CRASH_MEMORY.get(coin)
-
-        # smart memory
-        if last_alert == probability:
-            continue
-
-        CRASH_MEMORY[coin] = probability
-
-        message = (
-            "🚨 POTENSI CRASH MARKET\n\n"
-            f"Market : {coin}\n\n"
-            f"Probabilitas Crash : {probability}%\n\n"
-            f"Risk Score : {data.get('market_risk_score')}\n"
-            f"Whale Activity : {data.get('whale_activity')}\n"
-            f"Stablecoin Flow : {data.get('stablecoin_flow')}\n"
-            f"Funding Status : {data.get('funding_status')}\n"
-            f"Liquidation Risk : {data.get('liquidation_risk')}\n"
-        )
-
-        alerts.append(message)
-
-    return alerts
+        crash_risk = high_risk and (bearish_trend or overbought or liquidation_strong)
+        logging.debug("Crash detector risk=%s", crash_risk)
+        return {"crash_risk": crash_risk}
+    except Exception as e:
+        logging.debug("crash_detector error: %s", e)
+        return {"crash_risk": False}

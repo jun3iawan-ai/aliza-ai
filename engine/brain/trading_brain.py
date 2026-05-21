@@ -1,131 +1,268 @@
+"""
+ALIZA TRADING BRAIN
+
+Menghasilkan trade_setup (setup, entry, sl, tp1, tp2, risk_reward, confidence)
+dari market_data. TP dibatasi maksimal ±8% dari entry agar RR realistis.
+Confidence dapat disesuaikan oleh learning system (strategy stats dari trade history).
+"""
+
+import logging
+
+# Batas maksimum jarak TP dari entry (±8%)
+TP_MAX_PCT = 0.08
+MIN_STOP_DISTANCE_PCT = 0.005
+
+try:
+    from engine.learning.confidence_adjuster import adjust_confidence
+except ImportError:
+    adjust_confidence = None
+
+try:
+    from engine.learning.learning_engine import get_strategy_stats
+except ImportError:
+    get_strategy_stats = None
+
+try:
+    from engine.strategy.strategy_engine import filter_setup
+except ImportError:
+    filter_setup = None
+
+try:
+    from engine.market.market_snapshot_engine import get_market_snapshot
+except ImportError:
+    get_market_snapshot = None
+
+try:
+    from engine.risk_manager import validate_proposed_trade
+except ImportError:
+    validate_proposed_trade = None
+
+
+def _cap_tp_long(entry, tp1, tp2):
+    """Untuk LONG: TP tidak boleh melebihi entry * 1.08."""
+    if entry is None or entry <= 0:
+        return tp1, tp2
+    max_tp = entry * (1 + TP_MAX_PCT)
+    if tp1 is not None and tp1 > max_tp:
+        tp1 = max_tp
+    if tp2 is not None and tp2 > max_tp:
+        tp2 = max_tp
+    return tp1, tp2
+
+
+def _cap_tp_short(entry, tp1, tp2):
+    """Untuk SHORT: TP tidak boleh di bawah entry * 0.92."""
+    if entry is None or entry <= 0:
+        return tp1, tp2
+    min_tp = entry * (1 - TP_MAX_PCT)
+    if tp1 is not None and tp1 < min_tp:
+        tp1 = min_tp
+    if tp2 is not None and tp2 < min_tp:
+        tp2 = min_tp
+    return tp1, tp2
+
+
+def _risk_reward(entry, sl, tp1):
+    """Hitung risk/reward ratio (berdasarkan jarak ke TP1)."""
+    if entry is None or sl is None or tp1 is None or entry == 0:
+        return None
+    risk = abs(entry - sl)
+    if risk <= 0:
+        return None
+    reward = abs(tp1 - entry)
+    return round(reward / risk, 2)
+
+
+def _confidence_from_rr(rr, rsi):
+    """Confidence sederhana dari RR dan RSI."""
+    base = 50
+    if rr is not None:
+        if rr >= 3:
+            base += 25
+        elif rr >= 2:
+            base += 15
+        elif rr >= 1.5:
+            base += 5
+    if rsi is not None and 30 <= rsi <= 70:
+        base += 10
+    return min(85, base)
+
+
 class TradingBrain:
+    def analyze(self, market_data):
+        """
+        Dari market_data (price, trend, rsi, support, resistance) hasilkan trade_setup.
+        TP1/TP2 dibatasi maksimal ±8% dari entry.
+        """
+        if not market_data:
+            return None
+        price = market_data.get("price")
+        trend = market_data.get("trend")
+        rsi = market_data.get("rsi")
+        support = market_data.get("support")
+        resistance = market_data.get("resistance")
+        alignment = market_data.get("trend_alignment")
+        entry = price
+        if entry is None:
+            return None
 
-    def analyze(self, market):
+        # Smart Trend Filter: jangan buka trade jika alignment lemah
+        if alignment in ("MIXED", "UNKNOWN") or alignment is None:
+            return {
+                "setup": "NO SETUP",
+                "entry": entry if entry is not None else 0,
+                "sl": None,
+                "tp1": None,
+                "tp2": None,
+                "risk_reward": None,
+                "confidence": 0,
+                "risk_quality": "POOR",
+            }
 
-        price = market.get("price")
-        rsi = market.get("rsi")
-        trend = market.get("trend")
-        fear = market.get("fear_greed")
-        whale = market.get("whale_activity")
-
-        support = market.get("support")
-        resistance = market.get("resistance")
-
-        if price is None or rsi is None or trend is None:
-            return {"setup": "NO DATA"}
+        # Batasi arah trade berdasarkan alignment
+        allow_long = alignment in ("STRONG_BULLISH", "BULLISH", "PARTIAL")
+        allow_short = alignment in ("STRONG_BEARISH", "BEARISH", "PARTIAL")
 
         setup = "NO SETUP"
+        sl = None
+        tp1 = None
+        tp2 = None
 
-        # =========================
-        # SETUP DETECTION
-        # RSI ekstrem (oversold) diperiksa dulu agar OVERSOLD BOUNCE
-        # terdeteksi meskipun trend BEARISH.
-        # =========================
-
-        if rsi < 30:
+        # RSI ekstrem dulu
+        if rsi is not None and rsi < 30:
             setup = "OVERSOLD BOUNCE"
-
-        elif trend == "BULLISH" and rsi < 45:
-            setup = "PULLBACK LONG"
-
-        elif trend == "BEARISH" and rsi > 55:
-            setup = "PULLBACK SHORT"
-
-        elif trend == "BEARISH":
-            setup = "SHORT CONTINUATION"
-
-        entry = price
-
-        # =========================
-        # LONG TRADE LOGIC
-        # =========================
-
-        if "LONG" in setup or setup == "OVERSOLD BOUNCE":
-
             if support:
                 sl = support * 0.99
-            else:
-                sl = price * 0.98
-
             if resistance:
                 tp1 = resistance
                 tp2 = resistance * 1.02
-            else:
-                tp1 = price * 1.03
-                tp2 = price * 1.05
-
-        # =========================
-        # SHORT TRADE LOGIC
-        # =========================
-
-        else:
-
+        elif rsi is not None and rsi > 70:
+            setup = "OVERBOUGHT REJECTION"
             if resistance:
                 sl = resistance * 1.01
-            else:
-                sl = price * 1.02
-
             if support:
                 tp1 = support
                 tp2 = support * 0.98
-            else:
-                tp1 = price * 0.97
-                tp2 = price * 0.95
+        elif trend == "BULLISH":
+            setup = "PULLBACK LONG"
+            if support:
+                sl = support * 0.99
+            if resistance:
+                tp1 = resistance
+                tp2 = resistance * 1.02
+        elif trend == "BEARISH":
+            setup = "PULLBACK SHORT"
+            if resistance:
+                sl = resistance * 1.01
+            if support:
+                tp1 = support
+                tp2 = support * 0.98
 
-        # =========================
-        # RISK REWARD
-        # =========================
+        # Filter arah: tolak LONG jika alignment tidak izinkan long, tolak SHORT jika tidak izinkan short
+        is_long = "LONG" in setup or setup == "OVERSOLD BOUNCE"
+        is_short = "SHORT" in setup or setup == "OVERBOUGHT REJECTION"
+        if is_long and not allow_long:
+            setup = "NO SETUP"
+            sl = tp1 = tp2 = None
+        elif is_short and not allow_short:
+            setup = "NO SETUP"
+            sl = tp1 = tp2 = None
 
-        risk = abs(entry - sl)
-        reward = abs(entry - tp2)
+        # Validasi SL/TP: nilai <= 0 dianggap invalid
+        if sl is not None and sl <= 0:
+            setup = "NO SETUP"
+            sl = tp1 = tp2 = None
+        if tp1 is not None and tp1 <= 0:
+            setup = "NO SETUP"
+            sl = tp1 = tp2 = None
 
-        rr = reward / risk if risk != 0 else 0
+        # RSI filter: LONG tidak boleh jika rsi >= 70, SHORT tidak boleh jika rsi <= 30
+        if setup != "NO SETUP" and rsi is not None:
+            try:
+                rsi_val = float(rsi)
+                if is_long and rsi_val >= 70:
+                    logging.debug("RSI filter triggered")
+                    setup = "NO SETUP"
+                    sl = tp1 = tp2 = None
+                elif is_short and rsi_val <= 30:
+                    logging.debug("RSI filter triggered")
+                    setup = "NO SETUP"
+                    sl = tp1 = tp2 = None
+            except (TypeError, ValueError):
+                pass
 
-        # =========================
-        # CONFIDENCE SCORE
-        # =========================
+        # Resistance / support proximity filter: hanya untuk PULLBACK LONG (momentum/breakout boleh dekat resistance)
+        if setup != "NO SETUP" and entry is not None:
+            try:
+                price_val = float(entry)
+                if is_long and setup == "PULLBACK LONG" and resistance is not None:
+                    res_val = float(resistance)
+                    if res_val > 0 and price_val > res_val * 0.98:
+                        logging.debug("Resistance proximity filter applied for pullback setup")
+                        setup = "NO SETUP"
+                        sl = tp1 = tp2 = None
+                elif is_short and support is not None:
+                    sup_val = float(support)
+                    if sup_val > 0 and price_val < sup_val * 1.02:
+                        logging.debug("Support proximity filter triggered")
+                        setup = "NO SETUP"
+                        sl = tp1 = tp2 = None
+            except (TypeError, ValueError):
+                pass
 
-        confidence = 0
+        # Minimum stop distance: hindari RR palsu karena SL terlalu dekat
+        if setup != "NO SETUP" and entry is not None and sl is not None:
+            try:
+                entry_val = float(entry)
+                sl_val = float(sl)
+                if entry_val > 0:
+                    minimum_stop_distance = entry_val * MIN_STOP_DISTANCE_PCT
+                    if abs(entry_val - sl_val) < minimum_stop_distance:
+                        logging.debug("Minimum stop distance filter triggered")
+                        setup = "NO SETUP"
+                        sl = tp1 = tp2 = None
+            except (TypeError, ValueError):
+                pass
 
-        if trend == "BEARISH":
-            confidence += 25
+        # Strategy switch: filter setup by market_regime (snapshot market_intelligence)
+        if setup != "NO SETUP" and filter_setup is not None and get_market_snapshot is not None:
+            try:
+                snapshot = get_market_snapshot()
+                setup = filter_setup(setup, snapshot)
+                if setup == "NO SETUP":
+                    sl = tp1 = tp2 = None
+            except Exception:
+                pass
 
-        if rsi and rsi < 50:
-            confidence += 20
+        if setup == "NO SETUP" or sl is None or tp1 is None:
+            return {
+                "setup": setup,
+                "entry": entry,
+                "sl": sl,
+                "tp1": tp1,
+                "tp2": tp2,
+                "risk_reward": None,
+                "confidence": 0,
+                "risk_quality": "POOR",
+            }
 
-        if fear and fear < 25:
-            confidence += 20
-
-        if whale == "ACCUMULATING":
-            confidence += 20
-
-        if rr >= 2:
-            confidence += 15
-
-        confidence = min(confidence, 85)
-
-        # =========================
-        # RISK QUALITY
-        # =========================
-
-        if rr >= 3:
-            risk_quality = "EXCELLENT"
-        elif rr >= 2:
-            risk_quality = "GOOD"
-        elif rr >= 1:
-            risk_quality = "MEDIUM"
+        # Batas maksimum TP: ±8% dari entry
+        if "LONG" in setup or setup == "OVERSOLD BOUNCE":
+            tp1, tp2 = _cap_tp_long(entry, tp1, tp2)
         else:
-            risk_quality = "POOR"
+            tp1, tp2 = _cap_tp_short(entry, tp1, tp2)
 
-        # =========================
-        # ROUND VALUES
-        # =========================
-
-        entry = round(entry, 2)
-        sl = round(sl, 2)
-        tp1 = round(tp1, 2)
-        tp2 = round(tp2, 2)
-        rr = round(rr, 2)
+        rr = _risk_reward(entry, sl, tp1)
+        if validate_proposed_trade is not None and not validate_proposed_trade(entry, sl, tp1):
+            return None
+        confidence = _confidence_from_rr(rr, rsi)
+        if adjust_confidence is not None and get_strategy_stats is not None:
+            try:
+                strategy_stats = get_strategy_stats()
+                confidence = adjust_confidence(setup, confidence, strategy_stats)
+            except Exception:
+                pass
+        risk_quality = "EXCELLENT" if (rr and rr >= 3) else "GOOD" if (rr and rr >= 2) else "MEDIUM" if (rr and rr >= 1.5) else "POOR"
 
         return {
             "setup": setup,
@@ -135,5 +272,5 @@ class TradingBrain:
             "tp2": tp2,
             "risk_reward": rr,
             "confidence": confidence,
-            "risk_quality": risk_quality
+            "risk_quality": risk_quality,
         }

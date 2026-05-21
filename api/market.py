@@ -21,6 +21,9 @@ def btc_trading():
 
     market = btc_signal()
 
+    if market is None:
+        return {"error": "market data unavailable"}
+
     if "trade_setup" not in market:
         return {"error": "trading setup not available"}
 

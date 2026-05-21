@@ -1,4 +1,7 @@
 def detect_intent(user_input: str):
+    # Override langsung ke chat jika ada prefix khusus
+    if user_input.startswith("CHAT_OVERRIDE: "):
+        return "chat"
 
     text = user_input.lower().strip()
 

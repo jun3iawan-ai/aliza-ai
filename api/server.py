@@ -1,14 +1,11 @@
+import logging
 import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
-
-from engine.brain.aliza_engine import ask_aliza
-from engine.market.market_analyzer import btc_signal
-from engine.utils.market_cache import get_market_data
 
 from core.database import conn, cursor
 from api.auth import router as auth_router
@@ -16,6 +13,7 @@ from api.dashboard_api import router as dashboard_router
 
 from fastapi import APIRouter
 
+logger = logging.getLogger(__name__)
 
 # =========================
 # INIT FASTAPI
@@ -44,6 +42,8 @@ market_router = APIRouter()
 
 @market_router.get("/btc")
 def btc_market():
+    from engine.market.market_analyzer import btc_signal
+
     return btc_signal()
 
 
@@ -55,7 +55,12 @@ app.include_router(market_router, prefix="/api/market", tags=["market"])
 # =========================
 
 class ChatRequest(BaseModel):
-    message: str
+    """Fleksibel: isi salah satu dari message atau prompt."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    message: Optional[str] = Field(default=None, description="Pesan pengguna")
+    prompt: Optional[str] = Field(default=None, description="Alias untuk message")
     user_id: Optional[int] = None
     channel: str = "web"
 
@@ -95,6 +100,8 @@ def health():
 @app.get("/market")
 def market():
     """Data market BTC (test/simple endpoint)."""
+    from engine.utils.market_cache import get_market_data
+
     return get_market_data("BTC") or {}
 
 
@@ -102,47 +109,90 @@ def market():
 # CHAT ENDPOINT
 # =========================
 
+def _chat_text(req: ChatRequest) -> str:
+    parts = []
+    if req.message is not None and str(req.message).strip():
+        parts.append(str(req.message).strip())
+    if req.prompt is not None and str(req.prompt).strip():
+        parts.append(str(req.prompt).strip())
+    return parts[0] if parts else ""
+
+
+_FALLBACK_REPLY = (
+    "Maaf, Aliza tidak dapat memproses permintaan saat ini. Silakan coba lagi dalam beberapa saat."
+)
+
+
 @app.post("/api/chat")
 def chat(req: ChatRequest):
-
-    message = req.message.strip()
-
-    if not message:
-        raise HTTPException(status_code=400, detail="Message kosong")
-
-    user_id = req.user_id or 1
-    channel = req.channel
-
+    """
+    Chat dengan Aliza. Tidak mengembalikan 500: error AI/DB ditangani dan di-log.
+    """
     try:
-        answer = ask_aliza(message)
+        from engine.brain.aliza_engine import ask_aliza
+
+        channel = (req.channel or "web").strip() or "web"
+        message = _chat_text(req)
+
+        if not message:
+            raise HTTPException(
+                status_code=400,
+                detail="message atau prompt tidak boleh kosong",
+            )
+
+        user_id = req.user_id
+
+        try:
+            answer = ask_aliza(message)
+            if not answer or not str(answer).strip():
+                answer = _FALLBACK_REPLY
+            else:
+                answer = str(answer).strip()
+        except Exception as e:
+            logger.exception("ask_aliza failed: %s", e)
+            answer = _FALLBACK_REPLY
+
+        tokens = len(message.split()) + len(str(answer).split())
+
+        try:
+            cursor.execute(
+                """
+                INSERT INTO chats (user_id, channel, message, response)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (user_id, channel, message, answer),
+            )
+            cursor.execute(
+                """
+                INSERT INTO usage (user_id, tokens)
+                VALUES (%s, %s)
+                """,
+                (user_id, tokens),
+            )
+            conn.commit()
+        except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            logger.warning("chat persist skipped (db): %s", e)
+
+        return {
+            "reply": answer,
+            "answer": answer,
+            "tokens": tokens,
+            "channel": channel,
+        }
+    except HTTPException:
+        raise
     except Exception as e:
-        answer = f"AI error: {str(e)}"
-
-    cursor.execute(
-        """
-        INSERT INTO chats (user_id, message, response)
-        VALUES (%s, %s, %s)
-        """,
-        (user_id, message, answer)
-    )
-
-    tokens = len(message.split()) + len(answer.split())
-
-    cursor.execute(
-        """
-        INSERT INTO usage (user_id, tokens)
-        VALUES (%s, %s)
-        """,
-        (user_id, tokens)
-    )
-
-    conn.commit()
-
-    return {
-        "answer": answer,
-        "tokens": tokens,
-        "channel": channel
-    }
+        logger.exception("chat endpoint error: %s", e)
+        return {
+            "reply": _FALLBACK_REPLY,
+            "answer": _FALLBACK_REPLY,
+            "tokens": 0,
+            "channel": getattr(req, "channel", None) or "web",
+        }
 
 
 # =========================

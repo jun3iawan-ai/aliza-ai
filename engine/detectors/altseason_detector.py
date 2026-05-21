@@ -1,86 +1,60 @@
-from engine.market.market_analyzer import market_signal
-from engine.market.market_universe import MAJOR_COINS
+"""
+ALIZA ALTSEASON DETECTOR
 
-# =========================
-# MEMORY
-# =========================
+Mendeteksi kemungkinan capital berpindah dari BTC ke altcoins menggunakan
+data dari market snapshot (tanpa panggilan API langsung).
+"""
 
-ALTSEASON_MEMORY = None
+import logging
 
 
-def detect_altseason():
+def detect_altseason(coin, market_data, btc_data):
+    """
+    Analisis sinyal altseason: BTC sideways + altcoin bullish + momentum.
 
-    global ALTSEASON_MEMORY
+    Input:
+      - coin: nama coin (untuk logging)
+      - market_data: snapshot data untuk coin tersebut
+      - btc_data: snapshot data untuk BTC
 
-    alerts = []
+    Aturan:
+      1) BTC SIDEWAYS   : btc_data["trend"] == "SIDEWAYS"
+      2) ALTCOIN BULLISH: market_data["trend"] == "BULLISH"
+      3) ALT MOMENTUM   : market_data["rsi"] >= 60
 
-    btc_data = market_signal("BTC")
+    Jika semua terpenuhi: return {"altseason_signal": True, "confidence": "MEDIUM"}
+    Jika tidak: return {"altseason_signal": False}
+    """
+    try:
+        if not market_data or not isinstance(market_data, dict):
+            logging.debug("Altseason detector %s signal=%s", coin, False)
+            return {"altseason_signal": False}
 
-    if not btc_data or "error" in btc_data:
-        return alerts
+        trend = (market_data.get("trend") or "").strip().upper()
+        rsi_raw = market_data.get("rsi")
 
-    dominance = btc_data.get("dominance")
-    cycle = btc_data.get("cycle_phase")
-    prediction = btc_data.get("market_phase_prediction")
-    stable = btc_data.get("stablecoin_flow")
+        try:
+            rsi_val = float(rsi_raw) if rsi_raw is not None else None
+        except (TypeError, ValueError):
+            rsi_val = None
 
-    score = 0
+        btc_trend = None
+        if btc_data and isinstance(btc_data, dict):
+            btc_trend = (btc_data.get("trend") or "").strip().upper()
 
-    # =========================
-    # BTC DOMINANCE
-    # =========================
+        btc_sideways = btc_trend == "SIDEWAYS"
+        alt_bullish = trend == "BULLISH"
+        alt_momentum = rsi_val is not None and rsi_val >= 60
 
-    if dominance < 52:
-        score += 40
+        altseason_signal = bool(btc_sideways and alt_bullish and alt_momentum)
+        logging.debug("Altseason detector %s signal=%s", coin, altseason_signal)
 
-    elif dominance < 55:
-        score += 25
-
-    # =========================
-    # MARKET PHASE
-    # =========================
-
-    if prediction == "BULLISH":
-        score += 25
-
-    if cycle == "EXPANSION":
-        score += 20
-
-    # =========================
-    # LIQUIDITY
-    # =========================
-
-    if stable == "HIGH INFLOW":
-        score += 15
-
-    # =========================
-    # ALTSEASON PROBABILITY
-    # =========================
-
-    probability = min(score, 100)
-
-    if probability < 60:
-        return alerts
-
-    # =========================
-    # MEMORY CHECK
-    # =========================
-
-    if ALTSEASON_MEMORY == probability:
-        return alerts
-
-    ALTSEASON_MEMORY = probability
-
-    message = (
-        "🔥 ALTSEASON SIGNAL\n\n"
-        f"Probabilitas Altseason : {probability}%\n\n"
-        f"BTC Dominance : {dominance}%\n"
-        f"Market Phase : {prediction}\n"
-        f"Cycle Phase : {cycle}\n"
-        f"Stablecoin Flow : {stable}\n\n"
-        "Potensi : Altcoin mulai outperform BTC"
-    )
-
-    alerts.append(message)
-
-    return alerts
+        if altseason_signal:
+            return {
+                "altseason_signal": True,
+                "confidence": "MEDIUM",
+            }
+        return {"altseason_signal": False}
+    except Exception as e:
+        logging.debug("altseason_detector error %s: %s", coin, e)
+        return {"altseason_signal": False}
