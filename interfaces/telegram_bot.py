@@ -192,6 +192,9 @@ ALERT_COIN_BLACKLIST: set[str] = {
     "PIXEL",
 }
 _snapshot_alert_last_pct: dict[tuple[str, str], float] = {}  # track nilai pct terakhir per coin
+_volume_spike_last_sent: dict[str, datetime] = {}
+_VOLUME_SPIKE_COOLDOWN_SEC = 8 * 3600
+_VOLUME_SPIKE_MIN_MULTIPLIER = 4.0
 
 # Production logging: file + console, avoid duplicate handlers on reload
 LOG_DIR = "logs"
@@ -5253,7 +5256,7 @@ async def check_breakout_command(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def volume_spike_job(context: ContextTypes.DEFAULT_TYPE):
-    """Cek volume spike top 5 coin setiap 5 menit; safe_dispatch hormati circuit breaker."""
+    """Cek volume spike top 5 coin setiap 5 menit; threshold ≥4.0x; cooldown 8 jam per coin."""
     try:
         spikes = await run_volume_spike_check()
         chat_id = None
@@ -5264,7 +5267,15 @@ async def volume_spike_job(context: ContextTypes.DEFAULT_TYPE):
         if not chat_id:
             logging.warning("volume_spike_job: no chat_id")
             return
+        now_utc = datetime.now(timezone.utc)
         for s in spikes:
+            if s.get("multiplier", 0.0) < _VOLUME_SPIKE_MIN_MULTIPLIER:
+                continue
+            coin = s.get("symbol", "")
+            last = _volume_spike_last_sent.get(coin)
+            if last is not None and (now_utc - last).total_seconds() < _VOLUME_SPIKE_COOLDOWN_SEC:
+                continue
+            _volume_spike_last_sent[coin] = now_utc
             msg = format_volume_spike_alert_message(s)
             await safe_dispatch(msg, chat_id=chat_id, force=False)
     except Exception as e:
@@ -5918,9 +5929,9 @@ async def big_move_checker(context: ContextTypes.DEFAULT_TYPE):
                         continue
                 except Exception:
                     pass
+            if not _snapshot_alert_allowed(coin, "big_move", now_utc, pct):
+                continue
             if pct > 0:
-                if not _snapshot_alert_allowed(coin, "up", now_utc, pct):
-                    continue
                 msg = (
                     "🚀 BIG MOVE ALERT\n\n"
                     f"{coin} naik {pct:+.2f}% dalam 1 jam!\n"
@@ -5929,10 +5940,7 @@ async def big_move_checker(context: ContextTypes.DEFAULT_TYPE):
                     "——\n"
                     f"Aliza Engine • {_wib_now_label()}"
                 )
-                await safe_dispatch(msg, chat_id=chat_id, force=False)
             else:
-                if not _snapshot_alert_allowed(coin, "down", now_utc, pct):
-                    continue
                 msg = (
                     "💥 BIG MOVE ALERT\n\n"
                     f"{coin} turun {abs(pct):.2f}% dalam 1 jam!\n"
@@ -5941,7 +5949,7 @@ async def big_move_checker(context: ContextTypes.DEFAULT_TYPE):
                     "——\n"
                     f"Aliza Engine • {_wib_now_label()}"
                 )
-                await safe_dispatch(msg, chat_id=chat_id, force=False)
+            await safe_dispatch(msg, chat_id=chat_id, force=False)
     except Exception as e:
         logging.error("big_move_checker: %s", e, exc_info=True)
 
@@ -6575,10 +6583,7 @@ def main():
         )
         WIB_TIMES_UTC = [
             (23, 0),  # 06:00 WIB
-            (2, 0),  # 09:00 WIB
             (5, 0),  # 12:00 WIB
-            (8, 0),  # 15:00 WIB
-            (11, 0),  # 18:00 WIB
             (14, 5),  # 21:00 WIB (14:05 UTC — hindari bentrok evening_calendar 14:00 UTC)
         ]
         for i, (hour, minute) in enumerate(WIB_TIMES_UTC):
@@ -6587,7 +6592,7 @@ def main():
                 time=time(hour=hour, minute=minute, second=0, tzinfo=timezone.utc),
                 name=f"spot_signal_{i}",
             )
-        logging.info("Spot signal jobs scheduled (6x daily: 06/09/12/15/18/21 WIB).")
+        logging.info("Spot signal jobs scheduled (3x daily: 06/12/21 WIB).")
         app.job_queue.run_repeating(
             breakout_check_job,
             interval=300,
@@ -6636,13 +6641,15 @@ def main():
             name="evening_calendar",
         )
         logging.info("Evening calendar job scheduled (daily 14:00 UTC = 21:00 WIB).")
-        app.job_queue.run_repeating(
-            calendar_reminder_job,
-            interval=1800,
-            first=90,
-            name="calendar_reminder",
-        )
-        logging.info("Calendar reminder job scheduled (every 1800s, first in 90s).")
+        # DISABLED: calendar_reminder_job — redundant with evening_calendar_job
+        # Uncomment block below to re-enable "dalam 1 jam!" reminders.
+        # app.job_queue.run_repeating(
+        #     calendar_reminder_job,
+        #     interval=1800,
+        #     first=90,
+        #     name="calendar_reminder",
+        # )
+        # logging.info("Calendar reminder job scheduled (every 1800s, first in 90s).")
         app.job_queue.run_repeating(
             near_support_checker,
             interval=300,
