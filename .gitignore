@@ -6,4 +6,5 @@ nohup.out
 data/
 knowledge/vector_store/
 knowledge/uploads/
-logs/
+logs/interfaces/*.bak*
+engine/**/*.bak*
