@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from engine.market.market_analyzer import btc_signal
-from engine.market.market_snapshot_engine import get_market_snapshot, is_snapshot_valid, update_market_snapshot
+from engine.market.market_snapshot_engine import get_market_snapshot, is_snapshot_valid
 import engine.market.market_snapshot_engine as snapshot_state
 from engine.signal_engine import SIGNAL_TYPE_INFORMATIONAL, process_signal
 
@@ -104,26 +104,11 @@ async def market_loop():
         await asyncio.sleep(300)
 
 
-
-async def snapshot_updater_loop():
-    """Background task: update snapshot tiap 60 detik agar market_bot punya data fresh."""
-    logging.info("Snapshot updater loop started")
-    while True:
-        try:
-            await asyncio.get_event_loop().run_in_executor(None, update_market_snapshot)
-            logging.info("market_bot: snapshot updated")
-        except Exception as e:
-            logging.error(f"market_bot snapshot updater error: {e}")
-        await asyncio.sleep(60)
-
 async def main():
 
     logging.info("Aliza Market Bot started")
 
-    await asyncio.gather(
-        snapshot_updater_loop(),
-        market_loop(),
-    )
+    await market_loop()
 
 
 if __name__ == "__main__":
