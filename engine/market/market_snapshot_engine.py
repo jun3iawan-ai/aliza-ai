@@ -23,6 +23,14 @@ from engine.market.market_universe import MAJOR_COINS
 
 ENRICH_HEADERS = {"User-Agent": "AlizaAI"}
 
+
+def _get_cg_headers() -> dict:
+    h = {"User-Agent": "AlizaAI"}
+    key = os.getenv("COINGECKO_API_KEY", "")
+    if key:
+        h["x-cg-demo-api-key"] = key
+    return h
+
 try:
     from engine.intelligence.market_intelligence_engine import generate_market_intelligence
 except ImportError:
@@ -208,6 +216,32 @@ def update_market_snapshot():
             logging.info("Market radar fetched once per snapshot")
     except Exception as e:
         logging.warning("market_snapshot_engine radar fetch: %s", e)
+
+    # Pre-fetch harga coin non-Binance via CoinGecko batch
+    try:
+        from engine.market.coin_id_resolver import resolve_coin_id
+        from engine.market.market_analyzer import set_cg_price_cache
+        NON_BINANCE = ["BONE", "FARTCOIN", "HYPE", "ZEREBRO"]
+        cg_ids = [resolve_coin_id(s) for s in NON_BINANCE]
+        cg_ids = [cid for cid in cg_ids if cid]
+        if cg_ids:
+            _r = requests.get(
+                "https://api.coingecko.com/api/v3/simple/price"
+                f"?ids={','.join(cg_ids)}&vs_currencies=usd",
+                headers=_get_cg_headers(),
+                timeout=10,
+            )
+            if _r.status_code == 200:
+                _cg_data = _r.json()
+                _price_map = {}
+                for sym in NON_BINANCE:
+                    cid = resolve_coin_id(sym)
+                    if cid and cid in _cg_data:
+                        _price_map[sym] = float(_cg_data[cid]["usd"])
+                set_cg_price_cache(_price_map)
+                logging.info("snapshot: pre-fetched CoinGecko prices: %s", _price_map)
+    except Exception as _e:
+        logging.warning("snapshot: CoinGecko pre-fetch failed: %s", _e)
 
     collected = {}
     failed = []

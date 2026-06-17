@@ -5,6 +5,7 @@ Dynamic: scan top 200, filter liquidity (vol > 20M), rank volatility, rank trend
 Cache diperbarui setiap 24 jam.
 """
 
+import os
 import time
 import logging
 import requests
@@ -28,6 +29,14 @@ BACKOFF = [1, 2, 4]
 
 HEADERS = {"User-Agent": "AlizaAI"}
 TIMEOUT = 15
+
+
+def _get_cg_headers() -> dict:
+    h = {"User-Agent": "AlizaAI"}
+    key = os.getenv("COINGECKO_API_KEY", "")
+    if key:
+        h["x-cg-demo-api-key"] = key
+    return h
 BINANCE_TICKER_URL = "https://api.binance.com/api/v3/ticker/price"
 MIN_OHLC_POINTS = 50  # minimal data OHLC untuk ranking
 
@@ -45,7 +54,7 @@ CACHE_TTL = 1800  # 30 minutes
 
 def _safe_get_json(url, params=None, timeout=TIMEOUT):
     try:
-        r = requests.get(url, params=params or {}, headers=HEADERS, timeout=timeout)
+        r = requests.get(url, params=params or {}, headers=_get_cg_headers(), timeout=timeout)
         if r.status_code == 200:
             return r.json()
     except Exception as e:
@@ -159,7 +168,7 @@ def _refresh_universe():
             resp = requests.get(
                 MARKETS_URL,
                 params=params,
-                headers=HEADERS,
+                headers=_get_cg_headers(),
                 timeout=10,
             )
             if resp.status_code == 200:
@@ -265,11 +274,8 @@ def get_dynamic_coins():
 
 
 def get_tradable_coins():
-    """Hybrid universe: CORE_COINS + dynamic_coins (no duplicate). Opportunity scanner hanya scan ini."""
-    dynamic = get_dynamic_coins()
-    core_set = set(CORE_COINS)
-    dynamic_only = [c for c in dynamic if c not in core_set]
-    return list(CORE_COINS) + dynamic_only
+    """Return fixed custom watchlist. Auto-scan disabled."""
+    return list(CORE_COINS)
 
 
 def get_coin_id(symbol):

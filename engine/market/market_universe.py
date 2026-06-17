@@ -1,48 +1,20 @@
 """
 ALIZA MARKET UNIVERSE
 Daftar crypto yang dianalisa oleh Aliza.
-Hybrid: CORE_COINS (tetap) + dynamic opportunity coins.
+Fixed watchlist 20 coin.
 """
 
-# Core coins selalu dimonitor (market leader)
+# Fixed watchlist — tidak berubah secara dynamic
 CORE_COINS = [
-    "BTC",
-    "ETH",
-    "BNB",
-    "SOL",
-    "XRP",
+    "BTC", "ETH", "BNB", "SOL", "XRP",
+    "ADA", "SUI", "ARB", "PEPE", "JTO",
+    "ETHFI", "WLD", "OM", "ASTER", "XPL",
+    "TAO", "BONE", "FARTCOIN", "HYPE", "ZEREBRO",
 ]
 
-# Fallback ketika dynamic universe belum tersedia
-DEFAULT_DYNAMIC_COINS = [
-    "ADA",
-    "DOGE",
-    "AVAX",
-    "TRX",
-    "TON",
-    "LINK",
-    "DOT",
-    "LTC",
-    "APT",
-    "ATOM",
-]
+# Tidak dipakai lagi — dynamic universe dinonaktifkan
+DEFAULT_DYNAMIC_COINS = []
 
-TRADABLE_COINS = CORE_COINS + DEFAULT_DYNAMIC_COINS
+TRADABLE_COINS = list(CORE_COINS)
 
-MAJOR_COINS = [
-"BTC",
-"ETH",
-"BNB",
-"SOL",
-"XRP",
-"ADA",
-"DOGE",
-"AVAX",
-"TRX",
-"TON",
-"LINK",
-"DOT",
-"LTC",
-"APT",
-"ATOM"
-]
+MAJOR_COINS = list(CORE_COINS)

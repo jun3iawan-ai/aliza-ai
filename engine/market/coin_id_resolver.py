@@ -9,7 +9,7 @@ try:
 except Exception:
     _dynamic_get_coin_id = None
 
-# Mapping statis untuk coin utama (fallback bila dynamic_universe belum punya)
+# Mapping statis untuk semua 20 coin watchlist
 COINGECKO_IDS = {
     "BTC": "bitcoin",
     "ETH": "ethereum",
@@ -17,15 +17,20 @@ COINGECKO_IDS = {
     "SOL": "solana",
     "XRP": "ripple",
     "ADA": "cardano",
-    "DOGE": "dogecoin",
-    "AVAX": "avalanche-2",
-    "TRX": "tron",
-    "TON": "the-open-network",
-    "LINK": "chainlink",
-    "DOT": "polkadot",
-    "LTC": "litecoin",
-    "APT": "aptos",
-    "ATOM": "cosmos",
+    "SUI": "sui",
+    "ARB": "arbitrum",
+    "PEPE": "pepe",
+    "JTO": "jito-governance-token",
+    "ETHFI": "ether-fi",
+    "WLD": "worldcoin-wld",
+    "OM": "mantra-dao",
+    "ASTER": "aster-2",
+    "XPL": "xenon-pay",
+    "TAO": "bittensor",
+    "BONE": "bone-shibaswap",
+    "FARTCOIN": "fartcoin",
+    "HYPE": "hyperliquid",
+    "ZEREBRO": "zerebro",
 }
 
 

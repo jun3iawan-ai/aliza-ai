@@ -6,6 +6,7 @@ Semua resolusi symbol → CoinGecko ID memakai resolve_coin_id (prioritas: dynam
 """
 
 import logging
+import os as _os_cg
 import time
 import requests
 
@@ -19,6 +20,14 @@ from engine.indicators.constants import MIN_REQUIRED_DATA
 
 HEADERS = {"User-Agent": "AlizaAI"}
 logger = logging.getLogger(__name__)
+
+
+def _get_cg_headers() -> dict:
+    h = {"User-Agent": "AlizaAI"}
+    key = _os_cg.getenv("COINGECKO_API_KEY", "")
+    if key:
+        h["x-cg-demo-api-key"] = key
+    return h
 COINGECKO_CHART_URL = "https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
 BINANCE_TICKER_URL = "https://api.binance.com/api/v3/ticker/price"
 BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
@@ -27,6 +36,15 @@ KLINES_LIMIT = 100
 
 # Last known price per symbol when CoinGecko fails (cache fallback)
 _last_known_price = {}
+
+# Cache harga CoinGecko yang di-pre-fetch per snapshot cycle
+_CG_PRICE_CACHE: dict[str, float] = {}
+
+
+def set_cg_price_cache(prices: dict[str, float]) -> None:
+    """Dipanggil oleh snapshot engine sebelum loop; isi cache harga CoinGecko."""
+    global _CG_PRICE_CACHE
+    _CG_PRICE_CACHE = dict(prices)
 
 
 def _safe_float(val, default=None):
@@ -128,7 +146,7 @@ def get_coin_market_chart(symbol, vs_currency="usd", days=90):
         r = requests.get(
             url,
             params={"vs_currency": vs_currency, "days": days},
-            headers=HEADERS,
+            headers=_get_cg_headers(),
             timeout=TIMEOUT,
         )
         if r.status_code != 200:
@@ -211,8 +229,32 @@ def market_signal(symbol, radar_data=None):
     """
     symbol = (symbol or "").strip().upper() or "BTC"
 
-    # 1. Binance as primary price source
+    # 1. Binance as primary price source; CoinGecko fallback for non-Binance coins
     price = _get_price_from_binance(symbol)
+    if price is None or price <= 0:
+        # Cek cache pre-fetch dulu
+        cached_cg = _CG_PRICE_CACHE.get(symbol)
+        if cached_cg and cached_cg > 0:
+            price = cached_cg
+            logging.info("market_analyzer: CoinGecko cache hit %s = %s", symbol, price)
+        else:
+            # fallback individual (tetap ada sebagai safety net)
+            try:
+                _cg_id = resolve_coin_id(symbol)
+                if _cg_id:
+                    _r = requests.get(
+                        f"https://api.coingecko.com/api/v3/simple/price"
+                        f"?ids={_cg_id}&vs_currencies=usd",
+                        headers=_get_cg_headers(),
+                        timeout=8,
+                    )
+                    if _r.status_code == 200:
+                        _cg_data = _r.json()
+                        if _cg_id in _cg_data:
+                            price = float(_cg_data[_cg_id]["usd"])
+                            logging.info("market_analyzer: CoinGecko fallback price %s = %s", symbol, price)
+            except Exception as _e:
+                logging.warning("market_analyzer: CoinGecko price fallback failed %s: %s", symbol, _e)
     if price is not None and isinstance(price, (int, float)) and price > 0:
         price = float(price)
         _last_known_price[symbol] = price
