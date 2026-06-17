@@ -3365,12 +3365,25 @@ Gold: {cx['gold_str']}
 Oil WTI: {cx['oil_str']}
 DXY: {cx['dxy_str']}"""
 
+    # Pre-compute action berdasarkan data
+    _score = score if score is not None else 50
+    _fg = float(fg) if fg is not None else 50
+    if _score < 40 or _fg < 25:
+        _action_constraint = "TAHAN — JANGAN rekomendasikan entry baru. Tulis: Tidak ada setup spot yang layak — tunggu pullback ke support."
+    elif _score < 50 or _fg < 35:
+        _action_constraint = "SELEKTIF — hanya rekomendasikan entry jika harga sudah di level support, bukan entry sekarang."
+    else:
+        _action_constraint = "NORMAL — rekomendasikan setup terbaik sesuai kondisi teknikal."
+
     prompt = f"""---
 Kamu adalah Aliza, AI trading assistant untuk swing trading (1-7 hari).
 Berikan HANYA saran spot trading dalam Bahasa Indonesia.
 
 DATA MARKET:
 {data_market_block}
+
+KEPUTUSAN HARI INI (WAJIB DIIKUTI):
+{_action_constraint}
 
 DETAIL PER COIN:
 {detail_block}
@@ -3530,12 +3543,25 @@ Gold: {cx['gold_str']}
 Oil WTI: {cx['oil_str']}
 DXY: {cx['dxy_str']}"""
 
+    # Pre-compute action berdasarkan data
+    _score = score if score is not None else 50
+    _fg = float(fg) if fg is not None else 50
+    if _score < 40 or _fg < 25:
+        _action_constraint = "TAHAN — JANGAN rekomendasikan futures. Tulis: Kondisi tidak mendukung futures saat ini."
+    elif _score < 50 or _fg < 35:
+        _action_constraint = "SELEKTIF — hanya SHORT jika trend jelas bearish, atau tidak ada rekomendasi."
+    else:
+        _action_constraint = "NORMAL — rekomendasikan setup futures terbaik sesuai kondisi teknikal."
+
     prompt = f"""---
 Kamu adalah Aliza, AI trading assistant untuk swing trading (1-7 hari).
 Berikan HANYA saran futures trading dalam Bahasa Indonesia.
 
 DATA MARKET:
 {data_market_block}
+
+KEPUTUSAN HARI INI (WAJIB DIIKUTI):
+{_action_constraint}
 
 DETAIL PER COIN:
 {detail_block}
