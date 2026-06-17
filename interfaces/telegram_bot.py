@@ -2233,19 +2233,29 @@ def _get_cross_asset_data() -> dict:
             return None, None
 
         try:
-            _r = _httpx.get(
-                "https://stooq.com/q/l/?s=%5Espx&f=sd2t2ohlcv&h&e=csv",
-                timeout=8,
-            )
-            if _r.status_code == 200:
-                _lines = _r.text.strip().splitlines()
-                if len(_lines) >= 2 and "N/D" not in _lines[1]:
-                    _fields = _lines[1].split(",")
-                    # CSV: Symbol,Date,Time,Open,High,Low,Close,Volume
-                    _close = float(_fields[6])
-                    _open = float(_fields[3])
-                    _pct = round((_close - _open) / _open * 100, 2) if _open else 0.0
-                    result["sp500"] = {"price": _close, "pct": _pct}
+            _fred_key = _os.getenv("FRED_API_KEY", "")
+            if _fred_key:
+                _r = _httpx.get(
+                    "https://api.stlouisfed.org/fred/series/observations",
+                    params={
+                        "series_id": "SP500",
+                        "api_key": _fred_key,
+                        "limit": 2,
+                        "sort_order": "desc",
+                        "file_type": "json",
+                    },
+                    timeout=8,
+                )
+                if _r.status_code == 200:
+                    _obs = _r.json().get("observations") or []
+                    if len(_obs) >= 2:
+                        _v1 = _obs[0].get("value")
+                        _v2 = _obs[1].get("value")
+                        if _v1 not in ("", ".") and _v2 not in ("", "."):
+                            _price = float(_v1)
+                            _prev = float(_v2)
+                            _pct = round((_price - _prev) / _prev * 100, 2) if _prev else 0.0
+                            result["sp500"] = {"price": _price, "pct": _pct}
         except Exception:
             pass
 
@@ -2272,18 +2282,17 @@ def _get_cross_asset_data() -> dict:
 
         try:
             _r = _httpx.get(
-                "https://stooq.com/q/l/?s=xauusd&f=sd2t2ohlcv&h&e=csv",
+                "https://api.binance.com/api/v3/ticker/24hr",
+                params={"symbol": "XAUTUSDT"},
+                headers={"User-Agent": "AlizaAI"},
                 timeout=8,
             )
             if _r.status_code == 200:
-                _lines = _r.text.strip().splitlines()
-                if len(_lines) >= 2 and "N/D" not in _lines[1]:
-                    _fields = _lines[1].split(",")
-                    _close = float(_fields[6])
-                    _open = float(_fields[3])
-                    _pct = round((_close - _open) / _open * 100, 2) if _open else 0.0
-                    if 1500 < _close < 8000:
-                        result["gold"] = {"price": _close, "pct": _pct}
+                _d = _r.json()
+                _price = float(_d.get("lastPrice", 0))
+                _pct = float(_d.get("priceChangePercent", 0))
+                if 1500 < _price < 10000:
+                    result["gold"] = {"price": _price, "pct": round(_pct, 2)}
         except Exception:
             pass
 
