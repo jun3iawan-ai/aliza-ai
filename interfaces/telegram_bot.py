@@ -4897,6 +4897,54 @@ async def pre_fetch_brief_data_job(_context: ContextTypes.DEFAULT_TYPE) -> None:
         logging.warning("pre_fetch_brief_data_job: %s", e)
 
 
+import re as _re_sig
+
+
+def _parse_and_record_signals(text: str, market_score: int = 0) -> None:
+    """Parse output saran spot/futures dan simpan ke signal_tracking."""
+    try:
+        coin_blocks = _re_sig.split(r'\n(?=•\s+\w)', text)
+        for block in coin_blocks:
+            coin_match = _re_sig.search(r'•\s+(\w+)', block)
+            if not coin_match:
+                continue
+            coin = coin_match.group(1).upper()
+
+            setup = "SPOT"
+            if _re_sig.search(r'LONG', block, _re_sig.IGNORECASE):
+                setup = "LONG"
+            elif _re_sig.search(r'SHORT', block, _re_sig.IGNORECASE):
+                setup = "SHORT"
+
+            entry_match = _re_sig.search(r'Entry(?:\s+ideal)?[:\s]+\$?([\d,\.]+)', block)
+            entry = float(entry_match.group(1).replace(',', '')) if entry_match else None
+
+            sl_match = _re_sig.search(r'SL[:\s]+\$?([\d,\.]+)', block)
+            sl = float(sl_match.group(1).replace(',', '')) if sl_match else None
+
+            tp_match = _re_sig.search(r'Target\s+1[:\s]+\$?([\d,\.]+)', block)
+            tp = float(tp_match.group(1).replace(',', '')) if tp_match else None
+
+            rr_match = _re_sig.search(r'RR[:\s]+([\d\.]+)', block)
+            rr = float(rr_match.group(1)) if rr_match else None
+
+            if not entry or not sl or not tp:
+                continue
+
+            record_signal({
+                "coin": coin,
+                "setup": setup,
+                "entry": entry,
+                "sl": sl,
+                "tp": tp,
+                "rr": rr,
+                "market_score": market_score,
+                "signal_time": _wib_now_label(),
+            })
+    except Exception as _e:
+        logging.warning("_parse_and_record_signals: %s", _e)
+
+
 async def morning_brief_job(context: ContextTypes.DEFAULT_TYPE):
     """Ringkasan market harian; kirim via safe_dispatch(force=True) agar lolos circuit breaker."""
     chat_id = None
@@ -5021,6 +5069,11 @@ async def morning_brief_job(context: ContextTypes.DEFAULT_TYPE):
         await safe_dispatch(str(analysis).strip(), chat_id=chat_id, force=True)
     except Exception as e:
         logging.error("morning_brief dispatch analysis: %s", e)
+    try:
+        _ms = result.get("total_score", 0) if result else 0
+        _parse_and_record_signals(str(analysis), market_score=_ms)
+    except Exception:
+        pass
 
 
 async def morning_brief_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5139,6 +5192,11 @@ async def evening_summary_job(context: ContextTypes.DEFAULT_TYPE):
         await safe_dispatch(str(analysis).strip(), chat_id=chat_id, force=True)
     except Exception as e:
         logging.error("evening_summary dispatch analysis: %s", e)
+    try:
+        _ms = result.get("total_score", 0) if result else 0
+        _parse_and_record_signals(str(analysis), market_score=_ms)
+    except Exception:
+        pass
 
 
 async def evening_summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6295,6 +6353,15 @@ async def signal_stats_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await target.reply_text("Terjadi kesalahan saat membaca statistik sinyal.")
 
 
+async def signal_outcome_checker(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        closed = check_open_signals()
+        if closed:
+            logging.info("signal_tracker: closed %d signals", len(closed))
+    except Exception as e:
+        logging.warning("signal_outcome_checker: %s", e)
+
+
 # ========== SNAPSHOT JOB (background, every 60s) ==========
 
 async def snapshot_job(context: ContextTypes.DEFAULT_TYPE):
@@ -6561,6 +6628,7 @@ def main():
     app.add_handler(CommandHandler("check_rsi_extreme", check_rsi_extreme_command))
     app.add_handler(CommandHandler("check_big_move", check_big_move_command))
     app.add_handler(CommandHandler("signal_stats", signal_stats_command))
+    app.add_handler(CommandHandler("stats", signal_stats_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_button_handler))
 
     app.add_error_handler(_error_handler)
@@ -6673,6 +6741,13 @@ def main():
             name="whale_alert_checker",
         )
         logging.info("Whale alert checker job scheduled (every 600s, first in 120s).")
+        app.job_queue.run_repeating(
+            signal_outcome_checker,
+            interval=600,
+            first=180,
+            name="signal_outcome_checker",
+        )
+        logging.info("Signal outcome checker job scheduled (every 600s, first in 180s).")
         app.job_queue.run_repeating(
             signal_check_job,
             interval=1800,
