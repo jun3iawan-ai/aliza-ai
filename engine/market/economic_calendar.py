@@ -189,9 +189,7 @@ def _generate_rule_events(days_ahead: int) -> list[dict[str, str]]:
     for raw in _FOMC_DATES_UTC_2026:
         dt = datetime.fromisoformat(raw)
         if now_utc <= dt <= end_utc:
-            events.append(_make_event("Fed Decision", dt, "HIGH"))
-            events.append(_make_event("Fed Rate", dt, "HIGH"))
-            events.append(_make_event("FOMC", dt, "HIGH"))
+            events.append(_make_event("FOMC / Fed Rate Decision", dt, "HIGH"))
 
     dedup: dict[tuple[str, str], dict[str, str]] = {}
     for e in events:
