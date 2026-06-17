@@ -2331,9 +2331,17 @@ def _get_cross_asset_data() -> dict:
                     obs = r.json().get("observations", [])
                     if len(obs) >= 2:
                         v1, v2 = float(obs[0]["value"]), float(obs[1]["value"])
-                        result["oil"] = {"price": round(v1, 2), "pct": round((v1-v2)/v2*100, 2) if v2 else 0}
+                        result["oil"] = {
+                            "price": round(v1, 2),
+                            "pct": round((v1-v2)/v2*100, 2) if v2 else 0,
+                            "date": obs[0].get("date", ""),
+                        }
                     elif len(obs) == 1:
-                        result["oil"] = {"price": round(float(obs[0]["value"]), 2), "pct": 0}
+                        result["oil"] = {
+                            "price": round(float(obs[0]["value"]), 2),
+                            "pct": 0,
+                            "date": obs[0].get("date", ""),
+                        }
             except Exception:
                 pass
     except Exception:
@@ -2705,11 +2713,13 @@ def _format_cross_asset_strings(cross_asset: dict[str, Any]) -> dict[str, str]:
         if cross_asset.get("gold")
         else "data tidak tersedia"
     )
-    oil_str = (
-        f"${cross_asset['oil']['price']:.1f} ({cross_asset['oil']['pct']:+.1f}%)"
-        if cross_asset.get("oil")
-        else "data tidak tersedia"
-    )
+    if cross_asset.get("oil"):
+        _oil = cross_asset["oil"]
+        _oil_date = _oil.get("date", "")
+        _oil_date_label = f" • per {_oil_date}" if _oil_date else ""
+        oil_str = f"${_oil['price']:.1f} ({_oil['pct']:+.1f}%){_oil_date_label}"
+    else:
+        oil_str = "data tidak tersedia"
     dxy_str = (
         f"{cross_asset['dxy']['price']:.1f} ({cross_asset['dxy']['pct']:+.1f}%)"
         if cross_asset.get("dxy")
