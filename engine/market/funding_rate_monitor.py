@@ -27,14 +27,91 @@ GLOBAL_LS_RATIO_URL = "https://fapi.binance.com/futures/data/globalLongShortAcco
 TIMEOUT = 15
 OI_LS_HTTP_TIMEOUT = 8.0
 
-WATCHLIST = ["BTC", "ETH", "BNB", "SOL", "XRP"]
+WATCHLIST = [
+    "BTC", "ETH", "BNB", "SOL", "XRP",
+    "ADA", "SUI", "ARB", "JTO", "ETHFI",
+    "WLD", "OM", "ASTER", "XPL", "TAO",
+    "FARTCOIN", "HYPE", "ZEREBRO", "XAUT",
+]
 SYMBOL_MAP = {
-    "BTC": "BTCUSDT",
-    "ETH": "ETHUSDT",
-    "BNB": "BNBUSDT",
-    "SOL": "SOLUSDT",
-    "XRP": "XRPUSDT",
+    "BTC": "BTCUSDT", "ETH": "ETHUSDT", "BNB": "BNBUSDT",
+    "SOL": "SOLUSDT", "XRP": "XRPUSDT", "ADA": "ADAUSDT",
+    "SUI": "SUIUSDT", "ARB": "ARBUSDT", "JTO": "JTOUSDT",
+    "ETHFI": "ETHFIUSDT", "WLD": "WLDUSDT", "OM": "OMUSDT",
+    "ASTER": "ASTERUSDT", "XPL": "XPLUSDT", "TAO": "TAOUSDT",
+    "FARTCOIN": "FARTCOINUSDT", "HYPE": "HYPEUSDT",
+    "ZEREBRO": "ZEREBROUSDT", "XAUT": "XAUTUSDT",
 }
+
+
+def classify_fr_zone(fr: float | None) -> dict:
+    """
+    Klasifikasi zona FR dan rekomendasi kontrarian.
+    fr: nilai funding rate sebagai desimal (misal 0.001 = 0.1%)
+    """
+    if fr is None:
+        return {"zone": "UNKNOWN", "label": "—", "action": "—", "emoji": "❓"}
+    pct = fr * 100.0
+    if pct > 0.1:
+        return {
+            "zone": "LONG_SQUEEZE_RISK",
+            "label": f"⚠️ LONG SQUEEZE RISK ({pct:+.4f}%)",
+            "action": "Long terlalu padat — pertimbangkan take profit atau perketat SL",
+            "emoji": "🔴",
+        }
+    elif pct < -0.1:
+        return {
+            "zone": "SHORT_SQUEEZE_RISK",
+            "label": f"⚠️ SHORT SQUEEZE RISK ({pct:+.4f}%)",
+            "action": "Short terlalu padat — waspadai short squeeze, hindari short baru",
+            "emoji": "🟢",
+        }
+    else:
+        return {
+            "zone": "NEUTRAL",
+            "label": f"✅ NEUTRAL ({pct:+.4f}%)",
+            "action": "Fokus pada analisis teknikal",
+            "emoji": "⚪",
+        }
+
+
+def get_cfra_analysis() -> list[dict]:
+    """
+    CFRA: analisis per coin — zona FR, next funding time, rekomendasi.
+    Return list of dict per coin yang berhasil di-fetch.
+    """
+    results = []
+    for coin in WATCHLIST:
+        fd = get_funding_rate_data(coin)
+        if not fd:
+            continue
+        fr = _safe_float(fd.get("funding_rate"))
+        next_ft = fd.get("next_funding_time_str") or "—"
+        next_ft_ms = _safe_float(fd.get("next_funding_time_ms"))
+        zone = classify_fr_zone(fr)
+
+        minutes_to_funding = None
+        if next_ft_ms is not None:
+            try:
+                now_ms = time.time() * 1000
+                minutes_to_funding = int((next_ft_ms - now_ms) / 60000)
+            except Exception:
+                pass
+
+        results.append({
+            "coin": coin,
+            "fr": fr,
+            "fr_pct": (fr * 100.0) if fr is not None else None,
+            "zone": zone["zone"],
+            "label": zone["label"],
+            "action": zone["action"],
+            "emoji": zone["emoji"],
+            "next_funding": next_ft,
+            "minutes_to_funding": minutes_to_funding,
+        })
+    return results
+
+
 FUNDING_ALERT_THRESHOLD = 0.001  # |FR| > ini → ekstrem (setara ±0.1% jika FR sebagai desimal fee)
 COOLDOWN_HOURS = 4
 
@@ -120,11 +197,14 @@ def get_funding_rate_data(symbol: str) -> dict[str, Any] | None:
         if fr is None or mp is None or mp <= 0:
             return None
         nft = d.get("nextFundingTime")
+        nft_str = _next_funding_time_str(nft)
         out = {
             "funding_rate": fr,
             "mark_price": mp,
-            "next_funding_time": _next_funding_time_str(nft),
+            "next_funding_time": nft_str,
+            "next_funding_time_str": nft_str,
             "next_funding_time_raw": nft,
+            "next_funding_time_ms": nft,
         }
         _funding_cache[coin] = {"data": out, "ts": now}
         return out

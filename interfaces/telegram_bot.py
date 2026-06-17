@@ -378,7 +378,8 @@ def _macro_submenu_keyboard():
     return ReplyKeyboardMarkup(
         [
             ["🌐 Data Makro", "🔄 Funding Rate & OI"],
-            ["📅 Kalender Ekonomi", "🐋 Monitor Whale"],
+            ["📊 CFRA", "📅 Kalender Ekonomi"],
+            ["🐋 Monitor Whale"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -603,6 +604,9 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     if text == "🔄 Funding Rate & OI":
         await check_funding_command(update, context)
+        return
+    if text == "📊 CFRA":
+        await cfra_command(update, context)
         return
     if text == "📅 Kalender Ekonomi":
         await check_calendar_command(update, context)
@@ -5506,6 +5510,86 @@ async def check_funding_command(update: Update, context: ContextTypes.DEFAULT_TY
         await target.reply_text("Terjadi kesalahan saat cek funding.")
 
 
+async def cfra_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """On-demand CFRA: tampilkan zona FR semua coin."""
+    logging.info("COMMAND RECEIVED: /cfra")
+    target = _reply_target(update)
+    if not target:
+        return
+    try:
+        from engine.market.funding_rate_monitor import get_cfra_analysis
+        results = get_cfra_analysis()
+        if not results:
+            await target.reply_text("Data CFRA tidak tersedia saat ini.")
+            return
+
+        lines = ["📊 CONTRARIAN FUNDING RATE ANALYTICS (CFRA)\n"]
+        squeeze_risk = []
+        neutral = []
+        for r in results:
+            coin = r["coin"]
+            label = r["label"]
+            action = r["action"]
+            next_f = r.get("next_funding") or "—"
+            mins = r.get("minutes_to_funding")
+            mins_str = f"{mins} mnt" if mins is not None else "—"
+            zone = r.get("zone", "UNKNOWN")
+            if zone in ("LONG_SQUEEZE_RISK", "SHORT_SQUEEZE_RISK"):
+                squeeze_risk.append(
+                    f"{r['emoji']} {coin}: {label}\n"
+                    f"   → {action}\n"
+                    f"   Next funding: {next_f} ({mins_str})"
+                )
+            else:
+                neutral.append(f"⚪ {coin}: FR {r['fr_pct']:+.4f}%" if r['fr_pct'] is not None else f"⚪ {coin}: —")
+
+        if squeeze_risk:
+            lines.append("🚨 ZONA EKSTREM:")
+            lines.extend(squeeze_risk)
+            lines.append("")
+        if neutral:
+            lines.append("✅ ZONA NETRAL:")
+            lines.append("\n".join(neutral))
+
+        lines.append(f"\n⏰ {_wib_now_label()}")
+        await target.reply_text("\n".join(lines))
+    except Exception as e:
+        logging.error("CFRA ERROR: %s", e)
+        await target.reply_text("Terjadi kesalahan memuat data CFRA.")
+
+
+async def cfra_alert_job(context: ContextTypes.DEFAULT_TYPE):
+    """Alert CFRA: kirim notifikasi saat FR ekstrem + <90 menit ke funding window."""
+    chat_id = context.bot_data.get("chat_id")
+    if not chat_id:
+        return
+    try:
+        from engine.market.funding_rate_monitor import get_cfra_analysis
+        results = get_cfra_analysis()
+        for r in results:
+            zone = r.get("zone", "NEUTRAL")
+            if zone not in ("LONG_SQUEEZE_RISK", "SHORT_SQUEEZE_RISK"):
+                continue
+            mins = r.get("minutes_to_funding")
+            if mins is None or mins > 90 or mins < 0:
+                continue
+            coin = r["coin"]
+            emoji = r["emoji"]
+            label = r["label"]
+            action = r["action"]
+            next_f = r.get("next_funding") or "—"
+            msg = (
+                f"{emoji} CFRA ALERT — {coin}\n"
+                f"{label}\n\n"
+                f"⏳ Funding dalam {mins} menit ({next_f})\n"
+                f"💡 {action}\n\n"
+                f"——\nAliza CFRA • {_wib_now_label()}"
+            )
+            await safe_dispatch(msg, chat_id=chat_id, force=True)
+    except Exception as e:
+        logging.warning("cfra_alert_job: %s", e)
+
+
 async def macro_check_job(context: ContextTypes.DEFAULT_TYPE):
     """Cek rilis data makro FRED per jam; alert via safe_dispatch (hormati circuit breaker)."""
     try:
@@ -6671,6 +6755,7 @@ def main():
     app.add_handler(CommandHandler("check_breakout", check_breakout_command))
     app.add_handler(CommandHandler("check_volume_spike", check_volume_spike_command))
     app.add_handler(CommandHandler("check_funding", check_funding_command))
+    app.add_handler(CommandHandler("cfra", cfra_command))
     app.add_handler(CommandHandler("check_macro", check_macro_command))
     app.add_handler(CommandHandler("check_calendar", check_calendar_command))
     app.add_handler(CommandHandler("check_whale", check_whale_command))
@@ -6778,6 +6863,13 @@ def main():
             name="funding_alert_checker",
         )
         logging.info("Funding alert checker job scheduled (every 300s, first in 60s).")
+        app.job_queue.run_repeating(
+            cfra_alert_job,
+            interval=1800,
+            first=300,
+            name="cfra_alert",
+        )
+        logging.info("CFRA alert job scheduled (every 1800s).")
         app.job_queue.run_repeating(
             macro_check_job,
             interval=3600,
