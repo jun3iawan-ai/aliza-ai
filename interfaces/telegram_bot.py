@@ -897,12 +897,51 @@ async def spot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 typ = spot.get("type") or "—"
                 conf = spot.get("confidence", 0)
                 reason = spot.get("reason", "—")
+
+                price = md.get("price")
+                rsi = md.get("rsi")
+                trend = md.get("trend") or "—"
+                support = md.get("support")
+                resistance = md.get("resistance")
+
+                def _fmt(v, prefix="$", decimals=2):
+                    if v is None:
+                        return "—"
+                    try:
+                        return f"{prefix}{float(v):,.{decimals}f}"
+                    except (TypeError, ValueError):
+                        return "—"
+
+                entry_str = _fmt(support) if support else "—"
+                sl_val = round(support * 0.96, 8) if support else None
+                sl_str = _fmt(sl_val)
+                sl_pct = "4.0%" if support else "—"
+                target_str = _fmt(resistance) if resistance else "—"
+
+                if support and sl_val and resistance:
+                    try:
+                        rr = (resistance - support) / (support - sl_val)
+                        rr_str = f"{rr:.1f}x"
+                    except ZeroDivisionError:
+                        rr_str = "—"
+                else:
+                    rr_str = "—"
+
+                rsi_str = f"{float(rsi):.1f}" if rsi is not None else "—"
+                price_str = _fmt(price)
+
                 msg = (
-                    f"🟢 SPOT ANALYSIS\n\n{symbol}\n\n"
-                    f"Signal     : {sig}\n"
-                    f"Type       : {typ}\n"
-                    f"Confidence : {conf}\n\n"
-                    f"Reason:\n{reason}"
+                    f"🟢 SPOT ANALYSIS — {symbol}\n"
+                    f"Signal     : {sig} ({typ})\n"
+                    f"Confidence : {conf}/100\n\n"
+                    f"Harga      : {price_str}\n"
+                    f"RSI        : {rsi_str} | Trend: {trend}\n"
+                    f"Support    : {_fmt(support)} | Resistance: {_fmt(resistance)}\n\n"
+                    f"Entry ideal: {entry_str} (di support)\n"
+                    f"SL         : {sl_str} ({sl_pct} dari entry)\n"
+                    f"Target     : {target_str} (resistance)\n"
+                    f"RR         : {rr_str}\n\n"
+                    f"Reason: {reason}"
                 )
             msg += f"\n\n🕒 Market Snapshot : {get_snapshot_timestamp_str()}"
             await target.reply_text(msg)
