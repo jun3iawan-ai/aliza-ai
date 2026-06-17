@@ -297,7 +297,11 @@ def market_signal(symbol, radar_data=None):
         logger.warning("Invalid data — skipping signal")
         return None
 
-    mtf = analyze_multi_timeframe(closes_4h, closes_1d)
+    # Fallback untuk non-Binance coins: gunakan CoinGecko daily prices
+    # sebagai proxy timeframe jika Binance klines kosong
+    _closes_4h_mtf = closes_4h if len(closes_4h) >= 30 else prices
+    _closes_1d_mtf = closes_1d if len(closes_1d) >= 50 else prices
+    mtf = analyze_multi_timeframe(_closes_4h_mtf, _closes_1d_mtf)
     trend_4h = mtf.get("trend_4h")
     trend_1d = mtf.get("trend_1d")
     alignment = mtf.get("alignment")
