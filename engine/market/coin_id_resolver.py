@@ -31,6 +31,7 @@ COINGECKO_IDS = {
     "FARTCOIN": "fartcoin",
     "HYPE": "hyperliquid",
     "ZEREBRO": "zerebro",
+    "XAUT": "tether-gold",
 }
 
 

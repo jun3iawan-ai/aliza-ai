@@ -1,7 +1,7 @@
 """
 ALIZA MARKET UNIVERSE
 Daftar crypto yang dianalisa oleh Aliza.
-Fixed watchlist 20 coin.
+Fixed watchlist 21 coin.
 """
 
 # Fixed watchlist — tidak berubah secara dynamic
@@ -10,6 +10,7 @@ CORE_COINS = [
     "ADA", "SUI", "ARB", "PEPE", "JTO",
     "ETHFI", "WLD", "OM", "ASTER", "XPL",
     "TAO", "BONE", "FARTCOIN", "HYPE", "ZEREBRO",
+    "XAUT",
 ]
 
 # Tidak dipakai lagi — dynamic universe dinonaktifkan
