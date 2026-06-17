@@ -295,9 +295,8 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> 
 def _main_menu_keyboard():
     return ReplyKeyboardMarkup(
         [
-            ["📊 Market", "🟢 Spot Trading", "📊 Futures Trading"],
-            ["📈 Analisis & Skor", "🌍 Makro & Sentimen"],
-            ["🔔 Alert & Monitor", "⚙️ Sistem"],
+            ["📊 Market", "💹 Trading", "📈 Analisis"],
+            ["🌍 Makro & Sentimen", "⚙️ Sistem"],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
@@ -317,8 +316,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🤖 ALIZA AI TRADING TERMINAL\n"
             "Asisten AI untuk analisis dan trading crypto market.\n"
             "━━━━━━━━━━━━━━\n"
-            "📊 Market • 🟢 Spot Trading • 📊 Futures Trading • 📈 Analisis & Skor\n"
-            "🌍 Makro & Sentimen • 🔔 Alert & Monitor • ⚙️ Sistem\n"
+            "📊 Market • 💹 Trading • 📈 Analisis\n"
+            "🌍 Makro & Sentimen • ⚙️ Sistem\n"
             "Gunakan tombol menu untuk navigasi."
         )
         await update.message.reply_text(msg, reply_markup=_main_menu_keyboard())
@@ -341,23 +340,20 @@ def _market_submenu_keyboard():
 
 
 def _spot_trading_submenu_keyboard():
-    return ReplyKeyboardMarkup(
-        [
-            ["📈 Saran Spot", "🟢 Peluang Spot"],
-            ["🔍 Analisis Coin"],
-            ["📂 Portofolio"],
-            ["⬅ Kembali"],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=False,
-    )
+    return _trading_submenu_keyboard()
 
 
 def _futures_trading_submenu_keyboard():
+    return _trading_submenu_keyboard()
+
+
+def _trading_submenu_keyboard():
     return ReplyKeyboardMarkup(
         [
-            ["🔎 Scan Peluang"],
-            ["📈 Buka Posisi", "📉 Tutup Posisi"],
+            ["📈 Saran Spot", "🟢 Peluang Spot"],
+            ["🔎 Scan Futures", "🔍 Analisis Coin"],
+            ["📂 Posisi Aktif", "📈 Buka Posisi"],
+            ["📉 Tutup Posisi"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -370,8 +366,7 @@ def _analysis_submenu_keyboard():
         [
             ["🎯 Konteks Market", "🔮 Prediksi Market"],
             ["📊 Skor Quant", "🔎 Penjelasan AI"],
-            ["📊 Performa Sinyal", "📊 Performa Trading"],
-            ["📈 Saran Spot"],
+            ["📊 Performa Sinyal"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -480,31 +475,40 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await marketstate_command(update, context)
         return
 
-    # 🟢 Spot Trading / 📊 Futures Trading
-    if text == "🟢 Spot Trading":
+    # 💹 Trading (baru — gabungan Spot + Futures)
+    if text == "💹 Trading":
         await update.message.reply_text(
-            "🟢 SPOT TRADING\n\n"
-            "📈 Saran Spot — saran entry swing 1-7 hari\n"
+            "💹 TRADING\n\n"
+            "📈 Saran Spot — saran swing entry 21 coin (3x/hari)\n"
             "🟢 Peluang Spot — daftar coin BUY\n"
+            "🔎 Scan Futures — scan peluang futures\n"
             "🔍 Analisis Coin — analisa per coin\n"
-            "📂 Portofolio — posisi aktif",
-            reply_markup=_spot_trading_submenu_keyboard(),
+            "📂 Posisi Aktif — posisi terbuka",
+            reply_markup=_trading_submenu_keyboard(),
         )
         return
-    if text == "📊 Futures Trading":
+    # Fallback cache lama — redirect ke Trading baru
+    if text in ("🟢 Spot Trading", "📊 Futures Trading"):
         await update.message.reply_text(
-            "📊 FUTURES TRADING\n\n"
-            "🔎 Scan Peluang — scan peluang futures\n"
-            "📈 Buka Posisi / 📉 Tutup Posisi — manajemen posisi\n"
-            "⚠️ Futures berisiko tinggi. Gunakan leverage rendah.",
-            reply_markup=_futures_trading_submenu_keyboard(),
+            "Menu sudah digabung ke 💹 Trading.",
+            reply_markup=_trading_submenu_keyboard(),
         )
         return
     # Keyboard cache lama
     if text == "🎯 Sinyal & Trading":
         await update.message.reply_text(
-            "Menu dipisah: pilih 🟢 Spot Trading atau 📊 Futures Trading di menu utama.",
+            "Menu dipisah: pilih 💹 Trading di menu utama.",
             reply_markup=_main_menu_keyboard(),
+        )
+        return
+    if text == "📂 Posisi Aktif":
+        await portfolio(update, context)
+        return
+    if text == "🔎 Scan Futures":
+        kb = _build_coin_selector("scan", MAJOR_COINS)
+        await update.message.reply_text(
+            "🔎 SCAN FUTURES\n\nPilih coin untuk melihat peluang futures.",
+            reply_markup=kb,
         )
         return
     if text == "🔎 Scan Peluang":
@@ -541,16 +545,24 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await portfolio(update, context)
         return
 
-    # 📈 Analisis & Skor
-    if text == "📈 Analisis & Skor":
+    # 📈 Analisis (baru) + fallback cache lama
+    if text == "📈 Analisis":
         await update.message.reply_text(
-            "📈 ANALISIS & SKOR\n\n"
-            "🎯 Konteks Market — Skor kondisi market\n"
-            "🔮 Prediksi Market • 📊 Skor Quant • 🔎 Penjelasan AI\n"
-            "📊 Performa Sinyal • 📊 Performa Trading\n"
-            "📈 Saran Spot — saran entry spot 5 coin (jadwal 6x/hari)",
+            "📈 ANALISIS\n\n"
+            "🎯 Konteks Market — skor kondisi market\n"
+            "🔮 Prediksi Market — probabilitas bullish/bearish\n"
+            "📊 Skor Quant — market strength score\n"
+            "🔎 Penjelasan AI — analisa AI per coin\n"
+            "📊 Performa Sinyal — win rate signal tracking",
             reply_markup=_analysis_submenu_keyboard(),
         )
+        return
+    if text == "📈 Analisis & Skor":
+        if update.message:
+            await update.message.reply_text(
+                "📈 ANALISIS",
+                reply_markup=_analysis_submenu_keyboard(),
+            )
         return
     if text == "🎯 Konteks Market":
         await market_context_command(update, context)
