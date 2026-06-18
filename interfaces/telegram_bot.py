@@ -5993,7 +5993,25 @@ def _snapshot_big_move_pct(coin_data: dict) -> float | None:
 
 
 def _fmt_snapshot_usd(v: float) -> str:
-    return f"${v:,.2f}"
+    if v is None:
+        return "$—"
+    try:
+        f = float(v)
+        if f == 0:
+            return "$0"
+        abs_f = abs(f)
+        if abs_f >= 1000:
+            return f"${f:,.2f}"
+        elif abs_f >= 1:
+            return f"${f:,.4f}"
+        elif abs_f >= 0.01:
+            return f"${f:.4f}"
+        elif abs_f >= 0.000001:
+            return f"${f:.8f}"
+        else:
+            return f"${f:.10f}"
+    except (TypeError, ValueError):
+        return "$—"
 
 
 async def near_support_checker(context: ContextTypes.DEFAULT_TYPE):
