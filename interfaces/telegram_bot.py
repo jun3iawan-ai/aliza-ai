@@ -908,11 +908,24 @@ async def spot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 support = md.get("support")
                 resistance = md.get("resistance")
 
-                def _fmt(v, prefix="$", decimals=2):
+                def _fmt(v, prefix="$"):
                     if v is None:
                         return "—"
                     try:
-                        return f"{prefix}{float(v):,.{decimals}f}"
+                        f = float(v)
+                        if f == 0:
+                            return f"{prefix}0"
+                        abs_f = abs(f)
+                        if abs_f >= 1000:
+                            return f"{prefix}{f:,.2f}"
+                        elif abs_f >= 1:
+                            return f"{prefix}{f:,.4f}"
+                        elif abs_f >= 0.01:
+                            return f"{prefix}{f:.4f}"
+                        elif abs_f >= 0.000001:
+                            return f"{prefix}{f:.8f}"
+                        else:
+                            return f"{prefix}{f:.10f}"
                     except (TypeError, ValueError):
                         return "—"
 
@@ -4031,6 +4044,26 @@ Total probabilitas Bull+Base+Bear harus = 100%.
             if _cut is not None:
                 main_out = "\n".join(_lines[:_cut]).strip()
                 break
+    # Fallback kedua: jika dedup membuat main_out kosong, gunakan fallback
+    if not main_out.strip():
+        logging.warning("_generate_brief_analysis: main_out kosong setelah dedup — pakai fallback")
+        main_out = (
+            "⚡ KEPUTUSAN HARI INI\n"
+            "Regime: —\n"
+            "Bias: —\n"
+            f"Conviction: {conviction_preset}/10 — Analisis tidak tersedia (LLM tidak mengikuti format).\n"
+            "Action: ⏸️ TAHAN\n"
+            "Catalyst: Pantau event makro dan price action.\n\n"
+            "📊 KONTEKS MARKET\n"
+            "Format analisis tidak sesuai — gunakan data di brief sebagai acuan.\n"
+            "Cross-asset: tinjau manual dari data yang tersedia di brief.\n\n"
+            "🎯 STRATEGI HARI INI\n"
+            "Tahan posisi, set alert di level support/resistance, dan pantau kalender ekonomi.\n\n"
+            "⚠️ YANG HARUS DIHINDARI\n"
+            "Entry tanpa konfirmasi struktur dan volume.\n\n"
+            "🚨 LEVEL & CATALYST PENTING\n"
+            "Pantau level SL/TP aktif dan event besok."
+        )
     # Dedup spot_section jika mengandung lebih dari satu header SARAN SPOT
     if spot_section.count("SARAN SPOT") > 1:
         _sp_lines = spot_section.split("\n")
