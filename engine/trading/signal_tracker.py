@@ -197,12 +197,21 @@ def check_open_signals() -> list[dict[str, Any]]:
                 if price is None or entry is None or entry == 0:
                     continue
                 close_price = price
-                if tp is not None and price >= tp:
-                    status = "WIN"
-                    pnl_pct = ((price - entry) / entry) * 100.0
-                elif sl is not None and price <= sl:
-                    status = "LOSS"
-                    pnl_pct = ((price - entry) / entry) * 100.0
+                is_short = (setup or "").strip().upper() == "SHORT"
+                if is_short:
+                    if tp is not None and price <= tp:
+                        status = "WIN"
+                        pnl_pct = ((entry - price) / entry) * 100.0
+                    elif sl is not None and price >= sl:
+                        status = "LOSS"
+                        pnl_pct = ((entry - price) / entry) * 100.0
+                else:
+                    if tp is not None and price >= tp:
+                        status = "WIN"
+                        pnl_pct = ((price - entry) / entry) * 100.0
+                    elif sl is not None and price <= sl:
+                        status = "LOSS"
+                        pnl_pct = ((price - entry) / entry) * 100.0
 
             if status is None:
                 continue
