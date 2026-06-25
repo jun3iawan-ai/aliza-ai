@@ -2498,6 +2498,9 @@ def _reorder_section_by_rr(section_text: str, is_spot: bool = False) -> str:
             return None
         return parse_price(text, "Entry")
 
+    def is_short_entry(entry_text):
+        return bool(_re.search(r"SHORT", entry_text, _re.IGNORECASE)) and not is_spot
+
     MIN_RR = 2.0
     MIN_SL_PCT = 0.05  # 5% minimum SL
     MAX_SL_PCT = 0.08  # 8% maximum SL (cap agar tidak terlalu lebar)
@@ -2513,7 +2516,10 @@ def _reorder_section_by_rr(section_text: str, is_spot: bool = False) -> str:
         if MIN_SL_PCT <= sl_pct <= MAX_SL_PCT:
             return entry_text  # sudah dalam range
         # Adjust SL ke 6% (tengah range)
-        new_sl = round(entry * (1 - 0.06), 2)
+        if is_short_entry(entry_text):
+            new_sl = round(entry * (1 + 0.06), 2)
+        else:
+            new_sl = round(entry * (1 - 0.06), 2)
         if entry > 1000:
             sl_str = f"{new_sl:,.2f}"
         elif entry > 10:
@@ -2532,7 +2538,10 @@ def _reorder_section_by_rr(section_text: str, is_spot: bool = False) -> str:
         sl = parse_price(entry_text, "SL")
         target = parse_target_t1(entry_text)
         if entry and sl and target and abs(entry - sl) > 0:
-            return round((target - entry) / (entry - sl), 1)
+            sl_distance = abs(entry - sl)
+            if is_short_entry(entry_text):
+                return round((entry - target) / sl_distance, 1)
+            return round((target - entry) / sl_distance, 1)
         return None
 
     def enforce_min_rr(entry_text, min_rr=MIN_RR):
@@ -2545,12 +2554,20 @@ def _reorder_section_by_rr(section_text: str, is_spot: bool = False) -> str:
         sl_distance = abs(entry - sl)
         if sl_distance == 0:
             return entry_text
-        current_rr = (target - entry) / sl_distance
+        is_short = is_short_entry(entry_text)
+        if is_short:
+            current_rr = (entry - target) / sl_distance
+        else:
+            current_rr = (target - entry) / sl_distance
         if current_rr >= min_rr:
             return entry_text
         # Hitung target baru
-        new_target = round(entry + (sl_distance * min_rr), 2)
-        new_rr = round((new_target - entry) / sl_distance, 1)
+        if is_short:
+            new_target = round(entry - (sl_distance * min_rr), 2)
+            new_rr = round((entry - new_target) / sl_distance, 1)
+        else:
+            new_target = round(entry + (sl_distance * min_rr), 2)
+            new_rr = round((new_target - entry) / sl_distance, 1)
         # Format target sesuai skala harga
         if entry > 1000:
             target_str = f"{new_target:,.2f}"
@@ -2586,7 +2603,10 @@ def _reorder_section_by_rr(section_text: str, is_spot: bool = False) -> str:
         if m1:
             try:
                 t1 = float(m1.group(1).replace(",", ""))
-                correct_pct = round((t1 - entry) / entry * 100, 1)
+                if is_short_entry(result):
+                    correct_pct = round((entry - t1) / entry * 100, 1)
+                else:
+                    correct_pct = round((t1 - entry) / entry * 100, 1)
                 result = result.replace(m1.group(0),
                     f"Target 1: ${m1.group(1)} ({correct_pct:+.1f}%)")
             except Exception:
@@ -2597,7 +2617,10 @@ def _reorder_section_by_rr(section_text: str, is_spot: bool = False) -> str:
         if m2:
             try:
                 t2 = float(m2.group(1).replace(",", ""))
-                correct_pct = round((t2 - entry) / entry * 100, 1)
+                if is_short_entry(result):
+                    correct_pct = round((entry - t2) / entry * 100, 1)
+                else:
+                    correct_pct = round((t2 - entry) / entry * 100, 1)
                 result = result.replace(m2.group(0),
                     f"Target 2: ${m2.group(1)} ({correct_pct:+.1f}%)")
             except Exception:
@@ -2611,17 +2634,21 @@ def _reorder_section_by_rr(section_text: str, is_spot: bool = False) -> str:
         sl = parse_price(entry_text, "SL")
         if not sl or sl <= 0:
             return entry_text
-        # Invalidasi = SL - 0.5%
-        invalidation = round(sl * 0.995, 2)
+        is_short = is_short_entry(entry_text)
+        if is_short:
+            invalidation = round(sl * 1.005, 2)
+        else:
+            invalidation = round(sl * 0.995, 2)
         if sl > 1000:
             inv_str = f"{invalidation:,.2f}"
         elif sl > 10:
             inv_str = f"{invalidation:.2f}"
         else:
             inv_str = f"{invalidation:.4f}"
+        side = "atas" if is_short else "bawah"
         result = _re4.sub(
             r"Invalidasi:.*",
-            f"Invalidasi: Jika harga tutup di bawah ${inv_str}",
+            f"Invalidasi: Jika harga tutup di {side} ${inv_str}",
             entry_text
         )
         return result
