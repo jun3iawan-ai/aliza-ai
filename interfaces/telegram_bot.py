@@ -5019,6 +5019,12 @@ def _parse_and_record_signals(text: str, market_score: int = 0) -> None:
             if not entry or not sl or not tp:
                 continue
 
+            try:
+                _snap = get_market_snapshot()
+                _regime = ((_snap.get("market_intelligence") or {}).get("market_regime")) or "UNKNOWN"
+            except Exception:
+                _regime = "UNKNOWN"
+
             record_signal({
                 "coin": coin,
                 "setup": setup,
@@ -5027,6 +5033,7 @@ def _parse_and_record_signals(text: str, market_score: int = 0) -> None:
                 "tp": tp,
                 "rr": rr,
                 "market_score": market_score,
+                "regime": _regime,
                 "signal_time": _wib_now_label(),
             })
     except Exception as _e:
@@ -6645,6 +6652,12 @@ async def snapshot_job(context: ContextTypes.DEFAULT_TYPE):
                     sig_to_record.setdefault("tp", sig.get("tp") or sig.get("tp1") or sig.get("take_profit"))
                     mctx = calculate_market_score()
                     sig_to_record["market_score"] = mctx.get("total_score")
+                    try:
+                        _snap = get_market_snapshot()
+                        _regime = ((_snap.get("market_intelligence") or {}).get("market_regime")) or "UNKNOWN"
+                    except Exception:
+                        _regime = "UNKNOWN"
+                    sig_to_record["regime"] = _regime
                     record_signal(sig_to_record)
                 except Exception as track_err:
                     logging.warning("signal_tracker record failed: %s", track_err)

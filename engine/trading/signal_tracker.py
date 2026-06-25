@@ -61,10 +61,15 @@ def init_signal_tracking_db() -> bool:
                 close_time TEXT,
                 pnl_pct REAL,
                 market_score INTEGER,
+                regime TEXT,
                 created_at TEXT DEFAULT (datetime('now'))
             )
             """
         )
+        cur = conn.execute("PRAGMA table_info(signal_tracking)")
+        _cols = [r[1] for r in cur.fetchall()]
+        if "regime" not in _cols:
+            conn.execute("ALTER TABLE signal_tracking ADD COLUMN regime TEXT")
         conn.commit()
         conn.close()
         return True
@@ -87,6 +92,7 @@ def record_signal(signal: dict[str, Any]) -> int | None:
     confidence = _safe_float(signal.get("confidence"))
     rr = _safe_float(signal.get("rr"))
     signal_time = str(signal.get("signal_time") or _now_wib_iso())
+    regime = str(signal.get("regime") or "UNKNOWN")
 
     market_score = signal.get("market_score")
     try:
@@ -131,10 +137,10 @@ def record_signal(signal: dict[str, Any]) -> int | None:
         cur = conn.execute(
             """
             INSERT INTO signal_tracking
-            (coin, setup, entry_price, sl_price, tp_price, confidence, rr, signal_time, status, market_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+            (coin, setup, entry_price, sl_price, tp_price, confidence, rr, signal_time, status, market_score, regime)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
             """,
-            (coin, setup, entry, sl, tp, confidence, rr, signal_time, market_score_i),
+            (coin, setup, entry, sl, tp, confidence, rr, signal_time, market_score_i, regime),
         )
         conn.commit()
         new_id = int(cur.lastrowid)
