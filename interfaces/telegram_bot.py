@@ -3953,6 +3953,16 @@ RULE 1: Jika market_score < 40 ATAU fear_greed < 25 ATAU label Bearish/Weak:
   → Conviction maksimal 4/10
   → Entry spot HANYA di level support, bukan harga sekarang
 
+RULE 1A: Jika fear_greed < 25 (Extreme Fear):
+  → WAJIB sebutkan implikasi kontrarian secara eksplisit sebelum menyimpulkan bias:
+    fear ekstrem historis sering berada dekat area jenuh jual, namun tunggu konfirmasi reversal sebelum menaikkan keyakinan.
+  → Rule ACTION defensif, Conviction maksimal 4/10, dan entry hanya di level support dari RULE 1 tetap berlaku.
+
+RULE 1B: Jika fear_greed > 75 (Extreme Greed):
+  → WAJIB sebutkan risiko euforia/blow-off top secara eksplisit sebelum menyimpulkan bias.
+  → ACTION condong defensif untuk ENTRY BARU, bukan untuk profit-taking posisi existing.
+  → Conviction untuk entry baru maksimal 4/10.
+
 RULE 2: Jika ada rekomendasi BELI/LONG tapi sinyal aktif = tidak ada:
   → Wajib tulis "Entry HANYA jika harga pullback ke [support]"
   → JANGAN entry di harga sekarang jika jauh dari support >3%
@@ -7005,33 +7015,12 @@ def main():
         # )
         # logging.info("Calendar reminder job scheduled (every 1800s, first in 90s).")
         app.job_queue.run_repeating(
-            near_support_checker,
-            interval=300,
-            first=60,
-            name="near_support_checker",
-        )
-        logging.info("Near support checker scheduled (every 300s).")
-        app.job_queue.run_repeating(
-            near_resistance_checker,
-            interval=300,
-            first=70,
-            name="near_resistance_checker",
-        )
-        logging.info("Near resistance checker scheduled (every 300s).")
-        app.job_queue.run_repeating(
             rsi_extreme_checker,
             interval=600,
             first=80,
             name="rsi_extreme_checker",
         )
         logging.info("RSI extreme checker scheduled (every 600s).")
-        app.job_queue.run_repeating(
-            big_move_checker,
-            interval=300,
-            first=90,
-            name="big_move_checker",
-        )
-        logging.info("Big move checker scheduled (every 300s).")
 
     try:
         initialize_macro_seen_dates()
