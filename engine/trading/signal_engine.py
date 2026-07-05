@@ -176,18 +176,42 @@ def scan_for_signals():
             logger.warning("macro context fetch failed (degraded): %s", e)
 
     candidates = []
+    no_data = 0
+    no_setup = 0
+    reject_rr = 0
+    reject_conf = 0
+    passed = 0
     for coin, data in markets.items():
         if not data or data.get("error"):
+            no_data += 1
             continue
         trade = data.get("trade_setup")
         if not trade:
+            no_setup += 1
             continue
         rr = trade.get("risk_reward")
         conf = trade.get("confidence")
         if rr is None or (MIN_RR is not None and rr < MIN_RR):
+            reject_rr += 1
+            logger.debug(
+                "scan_for_signals: %s rejected setup=%s rr=%s conf=%s",
+                coin,
+                trade.get("setup"),
+                rr,
+                conf,
+            )
             continue
         if conf is not None and MIN_CONFIDENCE is not None and conf < MIN_CONFIDENCE:
+            reject_conf += 1
+            logger.debug(
+                "scan_for_signals: %s rejected setup=%s rr=%s conf=%s",
+                coin,
+                trade.get("setup"),
+                rr,
+                conf,
+            )
             continue
+        passed += 1
         candidates.append({
             "coin": coin,
             "setup": trade.get("setup"),
@@ -199,6 +223,16 @@ def scan_for_signals():
             "confidence": conf,
             "trend": data.get("trend"),
         })
+
+    logger.info(
+        "scan_for_signals: total=%d no_data=%d no_setup=%d reject_rr=%d reject_conf=%d passed=%d",
+        len(markets),
+        no_data,
+        no_setup,
+        reject_rr,
+        reject_conf,
+        passed,
+    )
 
     if not candidates:
         return None
