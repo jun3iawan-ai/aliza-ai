@@ -181,6 +181,7 @@ def scan_for_signals():
     reject_rr = 0
     reject_conf = 0
     passed = 0
+    rejected_rr_values = []
     for coin, data in markets.items():
         if not data or data.get("error"):
             no_data += 1
@@ -193,6 +194,8 @@ def scan_for_signals():
         conf = trade.get("confidence")
         if rr is None or (MIN_RR is not None and rr < MIN_RR):
             reject_rr += 1
+            if rr is not None:
+                rejected_rr_values.append(rr)
             logger.debug(
                 "scan_for_signals: %s rejected setup=%s rr=%s conf=%s",
                 coin,
@@ -225,13 +228,16 @@ def scan_for_signals():
         })
 
     logger.info(
-        "scan_for_signals: total=%d no_data=%d no_setup=%d reject_rr=%d reject_conf=%d passed=%d",
+        "scan_for_signals: total=%d no_data=%d no_setup=%d reject_rr=%d reject_conf=%d passed=%d rr_min=%s rr_max=%s rr_avg=%s",
         len(markets),
         no_data,
         no_setup,
         reject_rr,
         reject_conf,
         passed,
+        round(min(rejected_rr_values), 2) if rejected_rr_values else None,
+        round(max(rejected_rr_values), 2) if rejected_rr_values else None,
+        round(sum(rejected_rr_values) / len(rejected_rr_values), 2) if rejected_rr_values else None,
     )
 
     if not candidates:
