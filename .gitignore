@@ -8,3 +8,8 @@ knowledge/vector_store/
 knowledge/uploads/
 logs/interfaces/*.bak*
 engine/**/*.bak*
+
+# Backup files (auto-generated, jangan di-track)
+*.bak
+*.bak.*
+logs/
