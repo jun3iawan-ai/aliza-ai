@@ -96,6 +96,8 @@ class TradingBrain:
         """
         if not market_data:
             return None
+        coin = market_data.get("symbol") or market_data.get("coin") or "?"
+        reject_reason = None
         price = market_data.get("price")
         trend = market_data.get("trend")
         rsi = market_data.get("rsi")
@@ -108,6 +110,8 @@ class TradingBrain:
 
         # Smart Trend Filter: jangan buka trade jika alignment lemah
         if alignment in ("MIXED", "UNKNOWN") or alignment is None:
+            reject_reason = "alignment_weak"
+            logging.info("TradingBrain %s NO SETUP reason=%s", coin, reject_reason or "no_condition_met")
             return {
                 "setup": "NO SETUP",
                 "entry": entry if entry is not None else 0,
@@ -162,17 +166,21 @@ class TradingBrain:
         is_long = "LONG" in setup or setup == "OVERSOLD BOUNCE"
         is_short = "SHORT" in setup or setup == "OVERBOUGHT REJECTION"
         if is_long and not allow_long:
+            reject_reason = "direction_blocked"
             setup = "NO SETUP"
             sl = tp1 = tp2 = None
         elif is_short and not allow_short:
+            reject_reason = "direction_blocked"
             setup = "NO SETUP"
             sl = tp1 = tp2 = None
 
         # Validasi SL/TP: nilai <= 0 dianggap invalid
         if sl is not None and sl <= 0:
+            reject_reason = "invalid_sl_tp"
             setup = "NO SETUP"
             sl = tp1 = tp2 = None
         if tp1 is not None and tp1 <= 0:
+            reject_reason = "invalid_sl_tp"
             setup = "NO SETUP"
             sl = tp1 = tp2 = None
 
@@ -182,10 +190,12 @@ class TradingBrain:
                 rsi_val = float(rsi)
                 if is_long and rsi_val >= 70:
                     logging.debug("RSI filter triggered")
+                    reject_reason = "rsi_filter"
                     setup = "NO SETUP"
                     sl = tp1 = tp2 = None
                 elif is_short and rsi_val <= 30:
                     logging.debug("RSI filter triggered")
+                    reject_reason = "rsi_filter"
                     setup = "NO SETUP"
                     sl = tp1 = tp2 = None
             except (TypeError, ValueError):
@@ -199,12 +209,14 @@ class TradingBrain:
                     res_val = float(resistance)
                     if res_val > 0 and price_val > res_val * 0.98:
                         logging.debug("Resistance proximity filter applied for pullback setup")
+                        reject_reason = "proximity_filter"
                         setup = "NO SETUP"
                         sl = tp1 = tp2 = None
                 elif is_short and support is not None:
                     sup_val = float(support)
                     if sup_val > 0 and price_val < sup_val * 1.02:
                         logging.debug("Support proximity filter triggered")
+                        reject_reason = "proximity_filter"
                         setup = "NO SETUP"
                         sl = tp1 = tp2 = None
             except (TypeError, ValueError):
@@ -219,6 +231,7 @@ class TradingBrain:
                     minimum_stop_distance = entry_val * MIN_STOP_DISTANCE_PCT
                     if abs(entry_val - sl_val) < minimum_stop_distance:
                         logging.debug("Minimum stop distance filter triggered")
+                        reject_reason = "min_stop_distance"
                         setup = "NO SETUP"
                         sl = tp1 = tp2 = None
             except (TypeError, ValueError):
@@ -230,11 +243,13 @@ class TradingBrain:
                 snapshot = get_market_snapshot()
                 setup = filter_setup(setup, snapshot)
                 if setup == "NO SETUP":
+                    reject_reason = "regime_filter"
                     sl = tp1 = tp2 = None
             except Exception:
                 pass
 
         if setup == "NO SETUP" or sl is None or tp1 is None:
+            logging.info("TradingBrain %s NO SETUP reason=%s", coin, reject_reason or "no_condition_met")
             return {
                 "setup": setup,
                 "entry": entry,
