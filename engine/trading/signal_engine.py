@@ -178,6 +178,7 @@ def scan_for_signals():
     candidates = []
     no_data = 0
     no_setup = 0
+    no_valid_setup = 0
     reject_rr = 0
     reject_conf = 0
     passed = 0
@@ -189,6 +190,9 @@ def scan_for_signals():
         trade = data.get("trade_setup")
         if not trade:
             no_setup += 1
+            continue
+        if trade.get("setup") == "NO SETUP":
+            no_valid_setup += 1
             continue
         rr = trade.get("risk_reward")
         conf = trade.get("confidence")
@@ -228,10 +232,11 @@ def scan_for_signals():
         })
 
     logger.info(
-        "scan_for_signals: total=%d no_data=%d no_setup=%d reject_rr=%d reject_conf=%d passed=%d rr_min=%s rr_max=%s rr_avg=%s",
+        "scan_for_signals: total=%d no_data=%d no_setup=%d no_valid_setup=%d reject_rr=%d reject_conf=%d passed=%d rr_min=%s rr_max=%s rr_avg=%s",
         len(markets),
         no_data,
         no_setup,
+        no_valid_setup,
         reject_rr,
         reject_conf,
         passed,
