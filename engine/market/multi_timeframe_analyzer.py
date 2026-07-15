@@ -62,6 +62,12 @@ def analyze_multi_timeframe(prices_4h=None, prices_1d=None):
         alignment = "STRONG_BULLISH"
     elif trend_4h == "BEARISH" and trend_1d == "BEARISH":
         alignment = "STRONG_BEARISH"
+    elif (
+        trend_4h in ("BULLISH", "BEARISH") and trend_1d == "SIDEWAYS"
+    ) or (
+        trend_4h == "SIDEWAYS" and trend_1d in ("BULLISH", "BEARISH")
+    ):
+        alignment = "PARTIAL"
     else:
         alignment = "MIXED"
 
