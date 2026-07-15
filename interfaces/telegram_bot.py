@@ -24,7 +24,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv()
 
 from telegram import Bot, BotCommand, Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, CallbackQueryHandler, filters
+from telegram.ext import (
+    ApplicationBuilder,
+    ApplicationHandlerStop,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    TypeHandler,
+    filters,
+)
 
 # Snapshot & market
 from engine.market.market_snapshot_engine import (
@@ -1347,6 +1356,29 @@ def _authorized_chat(update: Update) -> bool:
         return False
     chat_id = update.effective_chat.id if update.effective_chat else None
     return str(chat_id) == str(allowed)
+
+
+async def _authorization_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Stop unauthorized incoming Telegram updates before business handlers run."""
+    try:
+        authorized = update.effective_chat is not None and _authorized_chat(update)
+    except Exception:
+        logging.exception("Telegram authorization check failed; denying request.")
+        authorized = False
+
+    if authorized:
+        return
+
+    try:
+        if update.callback_query is not None:
+            await update.callback_query.answer(
+                "⛔ Unauthorized.",
+                show_alert=True,
+            )
+        elif update.effective_message is not None:
+            await update.effective_message.reply_text("⛔ Unauthorized.")
+    finally:
+        raise ApplicationHandlerStop
 
 
 async def cmd_set_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6849,6 +6881,7 @@ def main():
         .build()
     )
 
+    app.add_handler(TypeHandler(Update, _authorization_gate), group=-1)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("why", why_command))
