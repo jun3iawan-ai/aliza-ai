@@ -1,21 +1,10 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from core.database import conn, cursor
+from api.security import create_access_token
 import hashlib
-import jwt
-import datetime
-import os
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
-
-# =========================
-# SECURITY CONFIG
-# =========================
-
-SECRET_KEY = os.getenv("JWT_SECRET", "ALIZA_SECRET_KEY")
-ALGORITHM = "HS256"
-TOKEN_EXPIRE_HOURS = 24
-
 
 # =========================
 # USER MODEL
@@ -32,22 +21,6 @@ class User(BaseModel):
 
 def hash_password(password: str):
     return hashlib.sha256(password.encode()).hexdigest()
-
-
-# =========================
-# CREATE JWT TOKEN
-# =========================
-
-def create_token(user_id: int):
-
-    payload = {
-        "user_id": user_id,
-        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=TOKEN_EXPIRE_HOURS)
-    }
-
-    token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-
-    return token
 
 
 # =========================
@@ -96,7 +69,7 @@ def login(user: User):
     password_hash = hash_password(user.password)
 
     cursor.execute(
-        "SELECT id FROM users WHERE username=%s AND password=%s",
+        "SELECT id, username, role FROM users WHERE username=%s AND password=%s",
         (user.username, password_hash)
     )
 
@@ -110,7 +83,11 @@ def login(user: User):
 
     user_id = result["id"]
 
-    token = create_token(user_id)
+    token = create_access_token(
+        user_id=user_id,
+        username=result["username"],
+        role=result["role"],
+    )
 
     return {
         "status": "success",

@@ -1,5 +1,6 @@
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -10,10 +11,17 @@ from typing import Optional
 from core.database import conn, cursor
 from api.auth import router as auth_router
 from api.dashboard_api import router as dashboard_router
+from api.security import validate_jwt_configuration
 
 from fastapi import APIRouter
 
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    validate_jwt_configuration()
+    yield
 
 # =========================
 # INIT FASTAPI
@@ -21,7 +29,8 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Aliza Dashboard API",
-    version="1.0"
+    version="1.0",
+    lifespan=lifespan,
 )
 
 
