@@ -1,7 +1,8 @@
 """
 Jalankan Aliza Dashboard (FastAPI + Uvicorn).
 
-Port dikonfigurasi via environment variable:
+Host dan port dikonfigurasi via environment variable:
+  ALIZA_DASHBOARD_HOST  (default: 127.0.0.1; loopback only)
   ALIZA_DASHBOARD_PORT  (default: 8001)
 
 Contoh:
@@ -19,15 +20,33 @@ sys.path.insert(0, ROOT_DIR)
 
 import uvicorn
 
-PORT = int(os.getenv("ALIZA_DASHBOARD_PORT", "8001"))
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8001
+ALLOWED_HOSTS = {DEFAULT_HOST, "localhost", "::1"}
 
-if __name__ == "__main__":
-    print(f"Aliza Dashboard running on port {PORT}")
-    print(f"Dashboard: http://0.0.0.0:{PORT}")
-    print(f"Health:    http://0.0.0.0:{PORT}/health")
+
+def get_dashboard_config():
+    host = (os.getenv("ALIZA_DASHBOARD_HOST") or "").strip() or DEFAULT_HOST
+    if host not in ALLOWED_HOSTS:
+        raise ValueError(
+            "ALIZA_DASHBOARD_HOST must be loopback-only "
+            "(127.0.0.1, localhost, or ::1)."
+        )
+
+    port = int(os.getenv("ALIZA_DASHBOARD_PORT", str(DEFAULT_PORT)))
+    return host, port
+
+
+def main():
+    host, port = get_dashboard_config()
+    print(f"Aliza Dashboard listening on loopback host {host}, port {port}")
     uvicorn.run(
         "api.server:app",
-        host="0.0.0.0",
-        port=PORT,
-        reload=False
+        host=host,
+        port=port,
+        reload=False,
     )
+
+
+if __name__ == "__main__":
+    main()
