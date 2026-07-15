@@ -13,3 +13,6 @@ engine/**/*.bak*
 *.bak
 *.bak.*
 logs/
+
+# Internal security audit reports
+docs/audit/
