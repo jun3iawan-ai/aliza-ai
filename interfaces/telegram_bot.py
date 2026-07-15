@@ -305,6 +305,12 @@ def _main_menu_keyboard():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info("COMMAND RECEIVED: /start")
+    msg = update.effective_message
+    if not msg:
+        return
+    if not _authorized_chat(update):
+        await msg.reply_text("⛔ Unauthorized.")
+        return
     try:
         if update.effective_chat:
             chat_id = update.effective_chat.id
@@ -312,7 +318,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.bot_data["chat_id"] = chat_id
             # (OPSIONAL — future multi-user) sederhana: simpan subscriber set
             context.bot_data.setdefault("subscribers", set()).add(chat_id)
-        msg = (
+        message = (
             "🤖 ALIZA AI TRADING TERMINAL\n"
             "Asisten AI untuk analisis dan trading crypto market.\n"
             "━━━━━━━━━━━━━━\n"
@@ -320,10 +326,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🌍 Makro & Sentimen • ⚙️ Sistem\n"
             "Gunakan tombol menu untuk navigasi."
         )
-        await update.message.reply_text(msg, reply_markup=_main_menu_keyboard())
+        await msg.reply_text(message, reply_markup=_main_menu_keyboard())
     except Exception as e:
         logging.error("START ERROR: %s", e)
-        await update.message.reply_text("Terjadi kesalahan.")
+        await msg.reply_text("Terjadi kesalahan.")
 
 
 def _market_submenu_keyboard():
@@ -762,6 +768,12 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def coin_selector_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle inline coin selector: market, entry, close, scan, why, spot."""
     if not update.callback_query or not update.callback_query.data:
+        return
+    if not _authorized_chat(update):
+        await update.callback_query.answer(
+            "⛔ Unauthorized.",
+            show_alert=True,
+        )
         return
     try:
         await update.callback_query.answer()
@@ -1206,23 +1218,29 @@ async def setfutures(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info("COMMAND RECEIVED: /entry")
+    msg = update.effective_message
+    if not msg:
+        return
+    if not _authorized_chat(update):
+        await msg.reply_text("⛔ Unauthorized.")
+        return
     try:
         if not context.args:
-            await update.message.reply_text("Gunakan: /entry BNB atau /entry 1")
+            await msg.reply_text("Gunakan: /entry BNB atau /entry 1")
             return
         arg = context.args[0].strip()
         last_opportunities = context.bot_data.get("last_opportunities") or []
         if arg.isdigit():
             n = int(arg)
             if n < 1 or n > len(last_opportunities):
-                await update.message.reply_text("Nomor tidak valid. Jalankan /setfutures dulu.")
+                await msg.reply_text("Nomor tidak valid. Jalankan /setfutures dulu.")
                 return
             opp = last_opportunities[n - 1]
             coin = (opp.get("coin") or "").upper()
         else:
             coin = arg.upper()
         if coin not in ALLOWED_COINS:
-            await update.message.reply_text("Coin tidak tersedia.")
+            await msg.reply_text("Coin tidak tersedia.")
             return
         setup = entry_price = sl = tp1 = tp2 = None
         for opp in last_opportunities:
@@ -1237,11 +1255,11 @@ async def entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
             snapshot = get_market_snapshot()
             data = (snapshot.get("data") or {}).get(coin)
             if not data or data.get("error"):
-                await update.message.reply_text("Data market tidak tersedia.")
+                await msg.reply_text("Data market tidak tersedia.")
                 return
             trade_setup = data.get("trade_setup")
             if not trade_setup or trade_setup.get("setup") in (None, "NO SETUP", "NO DATA"):
-                await update.message.reply_text("Tidak ada setup untuk coin ini. Jalankan /setfutures dulu.")
+                await msg.reply_text("Tidak ada setup untuk coin ini. Jalankan /setfutures dulu.")
                 return
             setup = trade_setup.get("setup")
             entry_price = trade_setup.get("entry")
@@ -1249,13 +1267,13 @@ async def entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tp1 = trade_setup.get("tp1")
             tp2 = trade_setup.get("tp2")
         if not setup or entry_price is None:
-            await update.message.reply_text("Tidak ada setup. Jalankan /setfutures dulu.")
+            await msg.reply_text("Tidak ada setup. Jalankan /setfutures dulu.")
             return
         if portfolio_evaluate_trade is not None:
             eval_setup = {"entry": entry_price, "sl": sl}
             eval_result = portfolio_evaluate_trade(eval_setup)
             if not eval_result.get("allowed", True):
-                await update.message.reply_text(
+                await msg.reply_text(
                     f"Trade ditolak: {eval_result.get('reason', 'Portfolio AI')}"
                 )
                 return
@@ -1301,31 +1319,32 @@ async def entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
             position_value_usdt=position_value_usdt,
             risk_usdt=risk_usdt_val,
         )
-        msg = (
+        message = (
             f"TRADE DITAMBAHKAN\n\n{coin} {setup}\n"
             f"Entry : {entry_price}\nSL : {sl}\nTP1 : {tp1}\nTP2 : {tp2}"
         )
         if quantity is not None and quantity > 0:
-            msg += (
+            message += (
                 f"\n\nUkuran posisi (estimasi): {quantity:.6f} "
                 f"(~{position_value_usdt:,.0f} USDT, risk ~{risk_usdt_val:,.0f} USDT)"
             )
         elif position_size is not None and position_size > 0:
-            msg += f"\n\nUkuran posisi (saran portfolio): {round(position_size, 6)}"
-        await update.message.reply_text(msg)
+            message += f"\n\nUkuran posisi (saran portfolio): {round(position_size, 6)}"
+        await msg.reply_text(message)
     except Exception as e:
         logging.error("ENTRY ERROR: %s", e)
-        await update.message.reply_text("Terjadi kesalahan saat membuka posisi.")
+        await msg.reply_text("Terjadi kesalahan saat membuka posisi.")
 
 
 def _authorized_chat(update: Update) -> bool:
     """
-    Jika TELEGRAM_CHAT_ID tidak di-set → izinkan (sama seperti /start, mode single-user/dev).
-    Jika di-set → hanya chat_id yang cocok.
+    Fail closed jika TELEGRAM_CHAT_ID tidak tersedia; bila tersedia, hanya izinkan
+    chat_id yang cocok.
     """
     allowed = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
     if not allowed:
-        return True
+        logging.error("TELEGRAM_CHAT_ID is not configured; denying request.")
+        return False
     chat_id = update.effective_chat.id if update.effective_chat else None
     return str(chat_id) == str(allowed)
 
@@ -1493,19 +1512,25 @@ async def cmd_get_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info("COMMAND RECEIVED: /close")
+    msg = update.effective_message
+    if not msg:
+        return
+    if not _authorized_chat(update):
+        await msg.reply_text("⛔ Unauthorized.")
+        return
     try:
         if not context.args:
-            await update.message.reply_text("Gunakan: /close BNB")
+            await msg.reply_text("Gunakan: /close BNB")
             return
         coin = context.args[0].upper()
         closed = close_trade(coin)
         if closed:
-            await update.message.reply_text(f"📤 POSISI DITUTUP\n\n{coin} telah ditutup.")
+            await msg.reply_text(f"📤 POSISI DITUTUP\n\n{coin} telah ditutup.")
         else:
-            await update.message.reply_text(f"Tidak ada posisi terbuka untuk {coin}.")
+            await msg.reply_text(f"Tidak ada posisi terbuka untuk {coin}.")
     except Exception as e:
         logging.error("CLOSE ERROR: %s", e)
-        await update.message.reply_text("Terjadi kesalahan saat menutup posisi.")
+        await msg.reply_text("Terjadi kesalahan saat menutup posisi.")
 
 
 # ========== PORTFOLIO ==========
