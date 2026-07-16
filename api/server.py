@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from core.database import conn, cursor
 from api.auth import router as auth_router
 from api.dashboard_api import router as dashboard_router
+from api.execution_limit import CHAT_LLM_EXECUTION_LIMITER, ExecutionTimeoutError
 from api.rate_limit import RateLimiter
 from api.security import (
     AuthenticatedUser,
@@ -185,6 +186,16 @@ _FALLBACK_REPLY = (
     "Maaf, Aliza tidak dapat memproses permintaan saat ini. Silakan coba lagi dalam beberapa saat."
 )
 
+
+def _chat_fallback_response(channel: str) -> dict:
+    return {
+        "reply": _FALLBACK_REPLY,
+        "answer": _FALLBACK_REPLY,
+        "tokens": 0,
+        "channel": channel,
+    }
+
+
 CHAT_RATE_LIMITER = RateLimiter(limit=10, window_seconds=60)
 
 
@@ -213,14 +224,19 @@ def chat(
         user_id = current_user.user_id
 
         try:
-            answer = ask_aliza(message)
-            if not answer or not str(answer).strip():
-                answer = _FALLBACK_REPLY
-            else:
-                answer = str(answer).strip()
-        except Exception as e:
-            logger.exception("ask_aliza failed: %s", e)
-            answer = _FALLBACK_REPLY
+            answer = CHAT_LLM_EXECUTION_LIMITER.run(ask_aliza, message)
+        except HTTPException:
+            raise
+        except ExecutionTimeoutError:
+            logger.warning("ask_aliza timed out")
+            return _chat_fallback_response(channel)
+        except Exception:
+            logger.warning("ask_aliza failed")
+            return _chat_fallback_response(channel)
+
+        if not answer or not str(answer).strip():
+            return _chat_fallback_response(channel)
+        answer = str(answer).strip()
 
         tokens = len(message.split()) + len(str(answer).split())
 
