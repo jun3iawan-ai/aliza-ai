@@ -2549,7 +2549,7 @@ def _reorder_section_by_rr(section_text: str, is_spot: bool = False) -> str:
 
     def parse_entry_any(text):
         if is_spot:
-            for lab in ("Entry sekarang", "Entry ideal", "Entry"):
+            for lab in ("Entry ideal", "Entry sekarang", "Entry"):
                 v = parse_price(text, lab)
                 if v is not None:
                     return v
