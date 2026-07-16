@@ -1,7 +1,9 @@
-from fastapi import APIRouter, HTTPException
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from core.database import conn, cursor
-from api.security import create_access_token
+from api.security import AuthenticatedUser, create_access_token, require_admin
 import hashlib
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -28,7 +30,10 @@ def hash_password(password: str):
 # =========================
 
 @router.post("/register")
-def register(user: User):
+def register(
+    user: User,
+    _current_user: Annotated[AuthenticatedUser, Depends(require_admin)],
+):
 
     # cek username sudah ada
     cursor.execute(

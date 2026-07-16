@@ -5,8 +5,11 @@ Endpoint untuk dashboard web: market, quant, predict, signals, portfolio.
 Import dilakukan di dalam handler agar server tetap start jika modul opsional belum ada.
 """
 
-from fastapi import APIRouter
+from typing import Annotated
 
+from fastapi import APIRouter, Depends
+
+from api.security import AuthenticatedUser, get_current_user
 from engine.utils.market_cache import get_market_data
 from engine.trading.opportunity_scanner import scan_opportunities
 from engine.trading.trade_manager import get_active_trades
@@ -15,13 +18,17 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
 
 @router.get("/market")
-def dashboard_market():
+def dashboard_market(
+    _current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+):
     """Data market BTC (Market Radar)."""
     return get_market_data("BTC") or {}
 
 
 @router.get("/quant")
-def dashboard_quant():
+def dashboard_quant(
+    _current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+):
     """Skor dan bias market (Quant Model)."""
     try:
         from engine.intelligence.quant_market_model import calculate_market_score
@@ -32,7 +39,9 @@ def dashboard_quant():
 
 
 @router.get("/predict")
-def dashboard_predict():
+def dashboard_predict(
+    _current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+):
     """Probabilitas prediksi market."""
     try:
         from engine.intelligence.predictive_market_ai import calculate_market_predictions
@@ -43,13 +52,17 @@ def dashboard_predict():
 
 
 @router.get("/signals")
-def dashboard_signals():
+def dashboard_signals(
+    _current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+):
     """Daftar opportunity signals."""
     return scan_opportunities()
 
 
 @router.get("/portfolio")
-def dashboard_portfolio():
+def dashboard_portfolio(
+    _current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+):
     """Posisi trading aktif (format mengikuti get_active_trades)."""
     rows = get_active_trades()
     out = []

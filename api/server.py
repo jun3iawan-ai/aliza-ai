@@ -2,18 +2,21 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Annotated, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Optional
 
 from core.database import conn, cursor
 from api.auth import router as auth_router
 from api.dashboard_api import router as dashboard_router
-from api.security import validate_jwt_configuration
-
-from fastapi import APIRouter
+from api.security import (
+    AuthenticatedUser,
+    get_current_user,
+    require_admin,
+    validate_jwt_configuration,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +53,9 @@ market_router = APIRouter()
 
 
 @market_router.get("/btc")
-def btc_market():
+def btc_market(
+    _current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+):
     from engine.market.market_analyzer import btc_signal
 
     return btc_signal()
@@ -95,11 +100,7 @@ def dashboard():
 @app.get("/health")
 def health():
     """Health check untuk monitoring dan load balancer."""
-    return {
-        "status": "ok",
-        "service": "AlizaAI Dashboard",
-        "engine": "running"
-    }
+    return {"status": "ok"}
 
 
 # =========================
@@ -107,7 +108,9 @@ def health():
 # =========================
 
 @app.get("/market")
-def market():
+def market(
+    _current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+):
     """Data market BTC (test/simple endpoint)."""
     from engine.utils.market_cache import get_market_data
 
@@ -133,7 +136,10 @@ _FALLBACK_REPLY = (
 
 
 @app.post("/api/chat")
-def chat(req: ChatRequest):
+def chat(
+    req: ChatRequest,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+):
     """
     Chat dengan Aliza. Tidak mengembalikan 500: error AI/DB ditangani dan di-log.
     """
@@ -149,7 +155,7 @@ def chat(req: ChatRequest):
                 detail="message atau prompt tidak boleh kosong",
             )
 
-        user_id = req.user_id
+        user_id = current_user.user_id
 
         try:
             answer = ask_aliza(message)
@@ -209,7 +215,9 @@ def chat(req: ChatRequest):
 # =========================
 
 @app.get("/admin/stats")
-def admin_stats():
+def admin_stats(
+    _current_user: Annotated[AuthenticatedUser, Depends(require_admin)],
+):
 
     cursor.execute("SELECT COUNT(*) FROM users")
     users = cursor.fetchone()[0]
@@ -236,7 +244,9 @@ def admin_stats():
 # =========================
 
 @app.get("/admin/users")
-def admin_users():
+def admin_users(
+    _current_user: Annotated[AuthenticatedUser, Depends(require_admin)],
+):
 
     cursor.execute("SELECT id, username, role FROM users")
 
