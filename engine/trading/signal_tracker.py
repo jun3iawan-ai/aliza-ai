@@ -115,7 +115,7 @@ def record_signal(signal: dict[str, Any]) -> int | None:
             conn.close()
             return None
 
-        # Secondary guard for repeated polling: same still-open signal params.
+        # Secondary guard for repeated polling: same coin/setup still open.
         dup_open = conn.execute(
             """
             SELECT id
@@ -123,12 +123,9 @@ def record_signal(signal: dict[str, Any]) -> int | None:
             WHERE status = 'OPEN'
               AND coin = ?
               AND IFNULL(setup, '') = IFNULL(?, '')
-              AND IFNULL(entry_price, 0) = IFNULL(?, 0)
-              AND IFNULL(sl_price, 0) = IFNULL(?, 0)
-              AND IFNULL(tp_price, 0) = IFNULL(?, 0)
             LIMIT 1
             """,
-            (coin, setup, entry, sl, tp),
+            (coin, setup),
         ).fetchone()
         if dup_open:
             conn.close()
@@ -155,7 +152,11 @@ def _parse_iso_time(v: Any) -> datetime | None:
     if not v:
         return None
     try:
-        return datetime.fromisoformat(str(v))
+        value = str(v).strip()
+        if value.lower().endswith(" wib"):
+            value = value[:-4].rstrip()
+        parsed = datetime.fromisoformat(value)
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=WIB)
     except Exception:  # noqa: BLE001
         return None
 
