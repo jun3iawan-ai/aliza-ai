@@ -293,23 +293,25 @@ def admin_stats(
     _current_user: Annotated[AuthenticatedUser, Depends(require_admin)],
 ):
 
-    cursor.execute("SELECT COUNT(*) FROM users")
-    users = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) AS total_users FROM users")
+    users = cursor.fetchone()["total_users"]
 
-    cursor.execute("SELECT COUNT(*) FROM chats")
-    chats = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) AS total_chats FROM chats")
+    chats = cursor.fetchone()["total_chats"]
 
-    cursor.execute("SELECT COALESCE(SUM(tokens),0) FROM usage")
-    tokens = cursor.fetchone()[0]
+    cursor.execute(
+        "SELECT COALESCE(SUM(tokens), 0) AS total_tokens FROM usage"
+    )
+    tokens = cursor.fetchone()["total_tokens"]
 
-    cursor.execute("SELECT COUNT(*) FROM documents")
-    documents = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) AS total_documents FROM documents")
+    documents = cursor.fetchone()["total_documents"]
 
     return {
         "total_users": users,
         "total_chats": chats,
         "total_tokens": tokens,
-        "documents": documents
+        "documents": documents,
     }
 
 
