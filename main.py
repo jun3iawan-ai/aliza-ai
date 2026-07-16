@@ -1,5 +1,6 @@
-from dotenv import load_dotenv
-load_dotenv()
+from core.environment import load_project_dotenv
+
+load_project_dotenv()
 
 from crewai import Task, Crew
 from core.agent import aliza_agent

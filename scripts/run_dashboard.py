@@ -14,11 +14,14 @@ Contoh:
 import os
 import sys
 
+os.environ.setdefault("ALIZA_DOTENV_ENABLED", "false")
+
 # Fix Python path agar api/, engine/, interfaces/ dapat diakses dari mana pun CWD
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 
 import uvicorn
+from core.environment import load_project_dotenv
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8001
@@ -38,6 +41,7 @@ def get_dashboard_config():
 
 
 def main():
+    load_project_dotenv()
     host, port = get_dashboard_config()
     print(f"Aliza Dashboard listening on loopback host {host}, port {port}")
     uvicorn.run(

@@ -1,7 +1,8 @@
 import psycopg2
 import os
-from dotenv import load_dotenv
-load_dotenv()
+from core.environment import load_project_dotenv
+
+load_project_dotenv()
 from psycopg2.extras import RealDictCursor
 
 # =========================

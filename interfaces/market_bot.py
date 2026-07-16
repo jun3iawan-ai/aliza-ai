@@ -2,16 +2,17 @@ import os
 import sys
 import asyncio
 import logging
-from dotenv import load_dotenv
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core.environment import load_project_dotenv
 
 from engine.market.market_analyzer import btc_signal
 from engine.market.market_snapshot_engine import get_market_snapshot, is_snapshot_valid, update_market_snapshot
 import engine.market.market_snapshot_engine as snapshot_state
 from engine.signal_engine import SIGNAL_TYPE_INFORMATIONAL, process_signal
 
-load_dotenv()
+load_project_dotenv()
 
 IS_PRIMARY_DISPATCHER = os.getenv("IS_PRIMARY_DISPATCHER", "true").strip().lower() == "true"
 SNAPSHOT_MAX_AGE_SEC = int(os.getenv("SNAPSHOT_MAX_AGE_SEC", "300"))

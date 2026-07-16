@@ -4,6 +4,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Optional
 
+from core.environment import ALIZA_DOTENV_ENABLED
+os.environ.setdefault(ALIZA_DOTENV_ENABLED, "false")
+
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator

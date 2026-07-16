@@ -17,11 +17,12 @@ try:
     from zoneinfo import ZoneInfo
 except ImportError:
     ZoneInfo = None  # type: ignore[misc, assignment]
-from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-load_dotenv()
+from core.environment import load_project_dotenv
+
+load_project_dotenv()
 
 from telegram import Bot, BotCommand, Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (

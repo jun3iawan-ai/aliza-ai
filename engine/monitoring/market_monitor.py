@@ -1,14 +1,18 @@
 import os
+import sys
 import logging
 import asyncio
-from dotenv import load_dotenv
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from core.environment import load_project_dotenv
 
 from engine.market.market_analyzer import btc_signal
 from engine.market.market_snapshot_engine import get_market_snapshot, is_snapshot_valid
 import engine.market.market_snapshot_engine as snapshot_state
 from engine.signal_engine import SIGNAL_TYPE_INFORMATIONAL, process_signal
 
-load_dotenv()
+load_project_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
