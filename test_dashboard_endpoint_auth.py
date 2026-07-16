@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import MagicMock, Mock, patch
 
 from fastapi.testclient import TestClient
+from api.passwords import hash_password
 
 from api.security import JWT_SECRET_ENV_VAR, create_access_token
 
@@ -269,6 +270,7 @@ class DashboardEndpointAuthTests(unittest.TestCase):
             "id": 7,
             "username": "alice",
             "role": "user",
+            "password": hash_password("password"),
         }
 
         response = self.client.post(
@@ -278,6 +280,14 @@ class DashboardEndpointAuthTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("token", response.json())
+        self.assertFalse(
+            any(
+                call.args[0].startswith("UPDATE users SET password")
+                for call in self.cursor.execute.call_args_list
+            )
+        )
+        self.conn.commit.assert_not_called()
+
 
     def _user_headers(self):
         return {"Authorization": f"Bearer {self.user_token}"}
