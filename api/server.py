@@ -20,6 +20,38 @@ from api.security import (
 
 logger = logging.getLogger(__name__)
 
+DASHBOARD_DOCS_ENABLED_ENV_VAR = "ALIZA_DASHBOARD_DOCS_ENABLED"
+
+
+def dashboard_docs_enabled() -> bool:
+    value = os.getenv(DASHBOARD_DOCS_ENABLED_ENV_VAR)
+    if value is None:
+        return False
+
+    normalized_value = value.strip().lower()
+    if normalized_value in ("", "false"):
+        return False
+    if normalized_value == "true":
+        return True
+
+    raise RuntimeError(
+        f"{DASHBOARD_DOCS_ENABLED_ENV_VAR} must be set to 'true' or 'false'."
+    )
+
+
+def get_fastapi_docs_config() -> dict[str, Optional[str]]:
+    if dashboard_docs_enabled():
+        return {
+            "docs_url": "/docs",
+            "redoc_url": "/redoc",
+            "openapi_url": "/openapi.json",
+        }
+    return {
+        "docs_url": None,
+        "redoc_url": None,
+        "openapi_url": None,
+    }
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -33,6 +65,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="Aliza Dashboard API",
     version="1.0",
+    **get_fastapi_docs_config(),
     lifespan=lifespan,
 )
 
