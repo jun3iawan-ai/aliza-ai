@@ -174,7 +174,7 @@ class DashboardEndpointAuthTests(unittest.TestCase):
 
         response = self.client.post(
             "/api/auth/auth/register",
-            json={"username": "new-user", "password": "password"},
+            json={"username": "new-user", "password": "valid-password"},
             headers=self._admin_headers(),
         )
 

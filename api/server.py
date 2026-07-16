@@ -6,11 +6,12 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from core.database import conn, cursor
 from api.auth import router as auth_router
 from api.dashboard_api import router as dashboard_router
+from api.rate_limit import RateLimiter
 from api.security import (
     AuthenticatedUser,
     get_current_user,
@@ -106,10 +107,27 @@ class ChatRequest(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-    message: Optional[str] = Field(default=None, description="Pesan pengguna")
-    prompt: Optional[str] = Field(default=None, description="Alias untuk message")
+    message: Optional[str] = Field(
+        default=None,
+        max_length=4000,
+        description="Pesan pengguna",
+    )
+    prompt: Optional[str] = Field(
+        default=None,
+        max_length=4000,
+        description="Alias untuk message",
+    )
     user_id: Optional[int] = None
-    channel: str = "web"
+    channel: str = Field(default="web", max_length=32)
+
+    @model_validator(mode="after")
+    def require_message_or_prompt(self):
+        if not any(
+            isinstance(value, str) and bool(value.strip())
+            for value in (self.message, self.prompt)
+        ):
+            raise ValueError("message atau prompt tidak boleh kosong")
+        return self
 
 
 # =========================
@@ -167,6 +185,8 @@ _FALLBACK_REPLY = (
     "Maaf, Aliza tidak dapat memproses permintaan saat ini. Silakan coba lagi dalam beberapa saat."
 )
 
+CHAT_RATE_LIMITER = RateLimiter(limit=10, window_seconds=60)
+
 
 @app.post("/api/chat")
 def chat(
@@ -176,6 +196,8 @@ def chat(
     """
     Chat dengan Aliza. Tidak mengembalikan 500: error AI/DB ditangani dan di-log.
     """
+    CHAT_RATE_LIMITER.check(("chat", current_user.user_id))
+
     try:
         from engine.brain.aliza_engine import ask_aliza
 
