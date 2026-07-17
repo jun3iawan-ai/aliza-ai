@@ -388,7 +388,14 @@ def format_signal_message(signal):
         if v is None:
             return "—"
         if isinstance(v, float):
-            return round(v, 2)
+            av = abs(v)
+            if av >= 1000:
+                return f"{v:,.2f}"
+            if av >= 10:
+                return f"{v:.2f}"
+            if av >= 0.01:
+                return f"{v:.4f}"
+            return f"{v:.8f}"
         return v
 
     bal = 0.0
