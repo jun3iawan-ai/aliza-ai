@@ -72,7 +72,8 @@ def cleanup_signals():
 
 
 def _signal_body_for_dedup(signal: dict) -> dict:
-    """Payload dedup tanpa meta (source, signal_type, …) agar isi trade sama tetap satu."""
+    """Payload dedup tanpa meta. TIDAK DIPAKAI lagi sejak dedup berbasis key+TTL (17 Juli) —
+    dipertahankan untuk referensi/kompatibilitas."""
     if not signal or not isinstance(signal, dict):
         return {}
     skip = frozenset({"source", "signal_mode", "signal_type"})
@@ -85,12 +86,7 @@ def can_send_signal(key: str, signal: dict) -> bool:
 
     if key in LAST_SIGNALS:
         last = LAST_SIGNALS[key]
-
-        # jika sama & masih dalam TTL → block (bandingkan tanpa source)
-        if (
-            _signal_body_for_dedup(last["signal"]) == _signal_body_for_dedup(signal)
-            and (now - last["time"] < SIGNAL_TTL_SECONDS)
-        ):
+        if now - last["time"] < SIGNAL_TTL_SECONDS:
             return False
 
     return True
