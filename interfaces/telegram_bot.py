@@ -6652,6 +6652,46 @@ async def signal_outcome_checker(context: ContextTypes.DEFAULT_TYPE):
 
 # ========== SNAPSHOT JOB (background, every 60s) ==========
 
+async def _dispatch_and_record_deterministic_signal(sig: dict, chat_id) -> bool:
+    """Dispatch lewat gateway; persist tracking hanya setelah pengiriman sukses."""
+    key = f"{sig.get('coin', '')}|{sig.get('setup', '')}"
+    uni = attach_strategy_source(sig)
+    sent = await process_signal(
+        key,
+        uni,
+        format_signal_message(uni),
+        chat_id=chat_id,
+    )
+    if not sent:
+        return False
+
+    try:
+        sig_to_record = dict(sig)
+        sig_to_record.setdefault(
+            "signal_time",
+            datetime.now(timezone(timedelta(hours=7))).isoformat(),
+        )
+        sig_to_record.setdefault(
+            "tp", sig.get("tp") or sig.get("tp1") or sig.get("take_profit")
+        )
+        sig_to_record["dispatch_status"] = "SENT"
+        mctx = calculate_market_score()
+        sig_to_record["market_score"] = mctx.get("total_score")
+        try:
+            snapshot = get_market_snapshot()
+            regime = (
+                (snapshot.get("market_intelligence") or {}).get("market_regime")
+                or "UNKNOWN"
+            )
+        except Exception:
+            regime = "UNKNOWN"
+        sig_to_record["regime"] = regime
+        record_signal(sig_to_record)
+    except Exception as track_err:
+        logging.warning("signal_tracker record failed after dispatch: %s", track_err)
+    return True
+
+
 async def snapshot_job(context: ContextTypes.DEFAULT_TYPE):
     """Refresh market snapshot; run in executor to avoid blocking the event loop."""
     try:
@@ -6740,31 +6780,8 @@ async def snapshot_job(context: ContextTypes.DEFAULT_TYPE):
         try:
             sig = scan_for_signals()
             if sig:
-                try:
-                    # Track signal accuracy history in SQLite (dedup handled in tracker).
-                    sig_to_record = dict(sig)
-                    sig_to_record.setdefault("signal_time", datetime.now(timezone(timedelta(hours=7))).isoformat())
-                    sig_to_record.setdefault("tp", sig.get("tp") or sig.get("tp1") or sig.get("take_profit"))
-                    mctx = calculate_market_score()
-                    sig_to_record["market_score"] = mctx.get("total_score")
-                    try:
-                        _snap = get_market_snapshot()
-                        _regime = ((_snap.get("market_intelligence") or {}).get("market_regime")) or "UNKNOWN"
-                    except Exception:
-                        _regime = "UNKNOWN"
-                    sig_to_record["regime"] = _regime
-                    record_signal(sig_to_record)
-                except Exception as track_err:
-                    logging.warning("signal_tracker record failed: %s", track_err)
-                key = f"{sig.get('coin', '')}|{sig.get('setup', '')}"
                 chat_id = context.bot_data.get("chat_id")
-                uni = attach_strategy_source(sig)
-                await process_signal(
-                    key,
-                    uni,
-                    format_signal_message(uni),
-                    chat_id=chat_id,
-                )
+                await _dispatch_and_record_deterministic_signal(sig, chat_id)
         except Exception as sig_err:
             logging.debug("Signal engine dispatch error: %s", sig_err)
 
