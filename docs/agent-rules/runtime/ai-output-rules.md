@@ -8,7 +8,7 @@
 
 **Verifikasi parameter:** 2026-07-21 pada commit `f38ab55`.
 
-**Referensi silang:** `docs/instructions/system-prompt.md`, `docs/instructions/persona.md`
+**Referensi silang:** `docs/agent-rules/runtime/runtime-llm-system-prompt.md`, `docs/agent-rules/runtime/persona.md`
 
 ---
 
@@ -280,12 +280,12 @@ result = crew.kickoff()
 
 ### 7.1 Urutan prioritas (konflik)
 
-1. **`docs/instructions/ai-rules.md`** (dokumen ini)
-2. **`docs/instructions/system-prompt.md`**
-3. **`docs/instructions/persona.md`**
+1. **`docs/agent-rules/runtime/ai-output-rules.md`** (dokumen ini)
+2. **`docs/agent-rules/runtime/runtime-llm-system-prompt.md`**
+3. **`docs/agent-rules/runtime/persona.md`**
 4. **Instruksi tingkat Task** (mis. string `task_description` per fitur)
 
-**Resolusi:** Jika Task-level bertentangan dengan keamanan atau larangan data trading di dokumen ini, **utamakan** `ai-rules.md` dan `system-prompt.md`.
+**Resolusi:** Jika Task-level bertentangan dengan keamanan atau larangan data trading di dokumen ini, **utamakan** `ai-output-rules.md` dan `runtime-llm-system-prompt.md`.
 
 ### 7.2 Trigger pembaruan konkret (wajib review dokumen ini)
 

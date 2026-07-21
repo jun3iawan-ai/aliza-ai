@@ -6,7 +6,7 @@
 
 **Terakhir diperbarui:** 2026-04-16
 
-**Referensi:** `docs/instructions/ai-rules.md` §2 (mapping intent → perilaku `ask_aliza`); dokumen ini memperdalam alur, urutan kondisi, dan operasional penambahan intent.
+**Referensi:** `docs/agent-rules/runtime/ai-output-rules.md` §2 (mapping intent → perilaku `ask_aliza`); dokumen ini memperdalam alur, urutan kondisi, dan operasional penambahan intent.
 
 ---
 
@@ -94,7 +94,7 @@ flowchart TD
 3. **Edit `engine/brain/aliza_engine.py`:** tambahkan `elif intent == "nama_intent":` dengan `task_description` yang spesifik; pastikan semua intent baru ter-cover atau jatuh ke `else`.
 4. **Sesuaikan `expected_output`** pada `Task` jika perlu (saat ini global: `"Jawaban yang jelas dan akurat."`).
 5. **Uji** dengan kalimat yang memicu intent baru, kalimat yang harus tetap `search`/`math`/`chat`, dan regresi untuk intent lama.
-6. **Perbarui dokumentasi:** `docs/instructions/ai-rules.md` §2 (jika perilaku `ask_aliza` berubah) dan dokumen ini.
+6. **Perbarui dokumentasi:** `docs/agent-rules/runtime/ai-output-rules.md` §2 (jika perilaku `ask_aliza` berubah) dan dokumen ini.
 
 ### 4.2 Checklist anti bentrok
 

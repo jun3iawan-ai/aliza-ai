@@ -1,238 +1,69 @@
-# ALIZA AI — TEST SYSTEM
+# Smoke Test Aliza AI
 
-Dokumen ini menjelaskan prosedur pengujian sistem AlizaAI sebelum dan sesudah perubahan kode.
+Smoke test adalah verifikasi manual cepat setelah deploy/restart. Ia tidak menggantikan automated test di [testing.md](../architecture/testing.md).
 
-Tujuan:
-- memastikan perubahan kode tidak merusak pipeline
-- memastikan modul utama tetap kompatibel
-- memverifikasi data contract antar engine
+## 1. Precheck
 
-AI yang memodifikasi kode harus menjalankan atau memverifikasi test berikut.
+```bash
+cd /opt/aliza-ai
+git status --short --branch
+git rev-parse --short HEAD
+systemctl status aliza-telegram --no-pager
+```
 
----
+Catat commit dan waktu mulai. Jangan lanjut bila service memakai worktree/path yang berbeda dari `/opt/aliza-ai`.
 
-# 1. MARKET PIPELINE TEST
+## 2. Telegram
 
-Pipeline utama:
+Dari akun yang diizinkan, kirim:
 
-market_cache
-↓
-market_analyzer
-↓
-market_radar
-↓
-TradingBrain
-↓
-trade_setup
+```text
+/start
+/market
+/radar
+/status
+/portfolio
+```
 
-Test:
+Semua command harus merespons tanpa traceback. Bila sebuah fitur memang tidak memiliki data, respons kosong/penjelasan terkontrol diterima; proses tidak boleh crash.
 
-1. Jalankan market_signal("BTC")
-2. Pastikan output mengandung field berikut:
+## 3. Snapshot, opportunity, dan signal
 
-symbol  
-price  
-trend  
-rsi  
-support  
-resistance  
-fear_greed  
-dominance  
-cycle_phase  
-whale_activity  
-market_risk_score  
-trade_setup  
+Verifikasi melalui command operasional/log:
 
-Jika field hilang, pipeline rusak.
+- snapshot memiliki timestamp baru dan `data` tidak kosong;
+- `scan_opportunities()` menghasilkan list atau list kosong tanpa exception;
+- `scan_for_signals()` menghasilkan signal atau `None` tanpa exception;
+- filter RR/confidence, market risk, coverage, dan anti-spam menjelaskan kandidat yang ditolak.
 
----
+Jangan membuat trade produksi hanya untuk smoke test. Pengujian `create_trade()` dilakukan pada DB test/fixture.
 
-# 2. TRADE SETUP TEST
+## 4. Dashboard/API
 
-Jalankan:
+Dashboard default bind ke loopback port 8001.
 
-TradingBrain.analyze(market_data)
+```bash
+curl --fail --silent --show-error http://127.0.0.1:8001/health
+curl --silent --output /dev/null --write-out '%{http_code}\n' \
+  http://127.0.0.1:8001/api/dashboard/market
+```
 
-Output harus mengandung:
+Hasil yang diharapkan: health HTTP 200 dengan `{"status":"ok"}`; endpoint dashboard tanpa token HTTP 401.
 
-setup  
-entry  
-sl  
-tp1  
-tp2  
-risk_reward  
-confidence  
-risk_quality  
+Untuk positive auth test, dapatkan token melalui alur login yang disetujui dan simpan sementara di environment shell—jangan tulis token ke command history/report:
 
-Test validasi:
+```bash
+curl --fail --silent --show-error \
+  -H "Authorization: Bearer ${ALIZA_DASHBOARD_TOKEN}" \
+  http://127.0.0.1:8001/api/dashboard/market
+```
 
-entry ≠ 0  
-sl ≠ 0  
-tp1 ≠ 0  
-tp2 ≠ 0  
+Ulangi bila diperlukan untuk `quant`, `predict`, `signals`, dan `portfolio`. Semua endpoint tersebut wajib Bearer auth.
 
-Risk reward harus > 0.
+## 5. Journal dan hasil akhir
 
----
+```bash
+journalctl -u aliza-telegram --since "10 minutes ago" --no-pager
+```
 
-# 3. OPPORTUNITY SCANNER TEST
-
-Jalankan:
-
-scan_opportunities()
-
-Pastikan output berupa list opportunity.
-
-Setiap item harus mengandung:
-
-coin  
-setup  
-entry  
-sl  
-tp1  
-tp2  
-rr  
-confidence  
-
-List harus bisa di-sort berdasarkan rr.
-
----
-
-# 4. SIGNAL ENGINE TEST
-
-Jalankan:
-
-scan_for_signals()
-
-Pastikan:
-
-signal memiliki struktur:
-
-coin  
-setup  
-entry  
-sl  
-tp1  
-tp2  
-rr  
-confidence  
-
-Jika tidak ada signal, fungsi harus tetap return None tanpa crash.
-
----
-
-# 5. DATABASE TEST
-
-Test SQLite database.
-
-File:
-
-data/aliza.db
-
-Langkah:
-
-1. Jalankan init_trade_db()
-2. Buat trade:
-
-create_trade("BTC", setup, entry, sl, tp1, tp2)
-
-3. Ambil trade:
-
-get_active_trades()
-
-Output harus berisi trade yang baru dibuat.
-
-4. Tutup trade:
-
-close_trade("BTC")
-
-Status harus berubah menjadi CLOSED.
-
----
-
-# 6. MARKET SNAPSHOT TEST
-
-Jalankan:
-
-update_market_snapshot()
-
-Lalu:
-
-get_market_snapshot()
-
-Snapshot harus memiliki struktur:
-
-{
- "data": {...},
- "timestamp": datetime
-}
-
-Snapshot["data"] tidak boleh kosong.
-
----
-
-# 7. TELEGRAM COMMAND TEST
-
-Pastikan handler berikut tersedia:
-
-/start  
-/market  
-/radar  
-/radarpro  
-/setfutures  
-/entry  
-/close  
-/portfolio  
-/predict  
-/quant  
-/status  
-
-Jika handler hilang, bot tidak akan merespon command.
-
----
-
-# 8. DASHBOARD API TEST
-
-Test endpoint berikut:
-
-/health  
-/api/dashboard/market  
-/api/dashboard/predict  
-/api/dashboard/quant  
-/api/dashboard/signals  
-/api/dashboard/portfolio  
-
-Endpoint harus return JSON valid.
-
----
-
-# 9. ERROR HANDLING TEST
-
-Semua modul harus menangani error.
-
-Test dengan:
-
-- API offline
-- coin data kosong
-- database error
-
-Sistem tidak boleh crash.
-
----
-
-# 10. SYSTEM INTEGRATION TEST
-
-Test end-to-end:
-
-1. update_market_snapshot()
-2. scan_opportunities()
-3. scan_for_signals()
-4. create_trade()
-5. analyze_positions()
-
-Jika seluruh pipeline berjalan tanpa exception,
-maka sistem dianggap stabil.
-
----
-
-END OF DOCUMENT
+Lulus bila service tetap aktif, command penting merespons, snapshot segar, DB tidak error, dan journal tidak menunjukkan crash loop. Untuk restart yang menyentuh shutdown, jalankan verifikasi dua siklus di [graceful-shutdown.md](graceful-shutdown.md).

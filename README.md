@@ -6,12 +6,23 @@ Aliza AI adalah sistem analisis pasar kripto dan paper-signal berbasis Python. S
 
 - Entrypoint produksi: `interfaces/telegram_bot.py`.
 - Unit systemd utama: `aliza-telegram.service`.
-- `aliza-market.service` berstatus disabled dan bukan scheduler produksi aktif.
-- Dashboard/API berada di `api/server.py`; status servicenya dikelola terpisah dari bot Telegram.
+- `aliza-market.service` disabled dan bukan scheduler produksi aktif.
+- Dashboard/API berada di `api/server.py`, diluncurkan melalui `scripts/run_dashboard.py`, dan dikelola terpisah dari bot Telegram.
 
-Dokumentasi kanonik dan status dokumen tersedia di [docs/README.md](docs/README.md). Report fase dan audit bertanggal disimpan di `docs/reports/`; dokumen lama dapat tetap dipertahankan sebagai audit trail dengan status historical atau superseded.
+## Dokumentasi
 
-## Menjalankan test
+Indeks dan status source of truth tersedia di [docs/README.md](docs/README.md).
+
+- [Aturan coding agent](docs/agent-rules/coding/)
+- [Aturan runtime LLM](docs/agent-rules/runtime/)
+- [Arsitektur](docs/architecture/)
+- [Runbook operasional](docs/runbooks/)
+- [Report fase dan maintenance](docs/reports/)
+- [Audit historis](docs/audits/)
+
+Dokumen di `docs/audits/` dan `docs/reports/` adalah snapshot bertanggal. Jangan menggunakannya sebagai status runtime terkini tanpa memeriksa tanggal dan commit.
+
+## Test
 
 Dari root repo dengan virtual environment proyek:
 
@@ -19,5 +30,5 @@ Dari root repo dengan virtual environment proyek:
 venv/bin/python -m pytest -q
 ```
 
-Perubahan dokumentasi saja tidak memerlukan eksekusi test Python, tetapi tetap harus diverifikasi dengan diff agar tidak menyentuh file kode.
+Kebijakan lengkap tersedia di [docs/architecture/testing.md](docs/architecture/testing.md); verifikasi manual setelah deploy ada di [docs/runbooks/smoke-test.md](docs/runbooks/smoke-test.md).
 

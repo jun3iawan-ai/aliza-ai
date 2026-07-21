@@ -77,7 +77,7 @@ Trade Database Structure
 
 Referensi ada di:
 
-docs/cursor-ai/ALIZA_ENGINE_CONTRACTS.md
+docs/architecture/engine-contracts.md
 
 ---
 
@@ -201,10 +201,10 @@ market_snapshot_engine
 
 AI harus mengikuti dokumentasi berikut:
 
-ALIZA_SYSTEM_PROMPT.md  
-ALIZA_ARCHITECTURE_MAP.md  
-ALIZA_DEVELOPMENT_RULES.md  
-ALIZA_ENGINE_CONTRACTS.md  
+`docs/agent-rules/coding/coding-agent-context.md`
+`docs/architecture/system-overview.md`
+`docs/agent-rules/coding/development-rules.md`
+`docs/architecture/engine-contracts.md`
 
 Jika dokumentasi bertentangan dengan kode, AI harus melaporkannya.
 
