@@ -6571,7 +6571,7 @@ def _format_signal_closed_alert(item: dict) -> str:
 
 
 async def signal_check_job(context: ContextTypes.DEFAULT_TYPE):
-    """Cek sinyal OPEN setiap 30 menit, update WIN/LOSS/EXPIRED, dan kirim notifikasi."""
+    """Cek sinyal OPEN setiap 10 menit, update WIN/LOSS/EXPIRED, dan kirim notifikasi."""
     try:
         closed = check_open_signals()
         if not closed:
@@ -6650,15 +6650,6 @@ async def signal_stats_command(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logging.warning("signal_stats_command: %s", e)
         await target.reply_text("Terjadi kesalahan saat membaca statistik sinyal.")
-
-
-async def signal_outcome_checker(context: ContextTypes.DEFAULT_TYPE):
-    try:
-        closed = check_open_signals()
-        if closed:
-            logging.info("signal_tracker: closed %d signals", len(closed))
-    except Exception as e:
-        logging.warning("signal_outcome_checker: %s", e)
 
 
 # ========== SNAPSHOT JOB (background, every 60s) ==========
@@ -7074,19 +7065,12 @@ def main():
         )
         logging.info("Whale alert checker job scheduled (every 600s, first in 120s).")
         app.job_queue.run_repeating(
-            signal_outcome_checker,
-            interval=600,
-            first=180,
-            name="signal_outcome_checker",
-        )
-        logging.info("Signal outcome checker job scheduled (every 600s, first in 180s).")
-        app.job_queue.run_repeating(
             signal_check_job,
-            interval=1800,
+            interval=600,
             first=150,
             name="signal_checker",
         )
-        logging.info("Signal checker job scheduled (every 1800s, first in 150s).")
+        logging.info("Signal checker job scheduled (every 600s, first in 150s).")
         app.job_queue.run_daily(
             evening_calendar_job,
             time=time(hour=14, minute=0, second=0, tzinfo=timezone.utc),
@@ -7102,13 +7086,6 @@ def main():
         #     name="calendar_reminder",
         # )
         # logging.info("Calendar reminder job scheduled (every 1800s, first in 90s).")
-        app.job_queue.run_repeating(
-            rsi_extreme_checker,
-            interval=600,
-            first=80,
-            name="rsi_extreme_checker",
-        )
-        logging.info("RSI extreme checker scheduled (every 600s).")
 
     try:
         initialize_macro_seen_dates()
