@@ -16,3 +16,7 @@ logs/
 
 # Internal security audit reports
 docs/audit/
+
+# Backtester raw cache/results
+backtest/data/
+backtest/results/
