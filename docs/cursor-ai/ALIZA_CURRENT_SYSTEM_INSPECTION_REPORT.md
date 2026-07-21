@@ -1,5 +1,7 @@
 # ALIZA AI — CURRENT SYSTEM INSPECTION REPORT
 
+> **Status: SUPERSEDED.** Snapshot pada 2025-03-13. Kondisi sistem terkini ada di `docs/README.md` dan report Fase 1–4 (`docs/reports/` — lihat Bagian 3). Jangan jadikan dokumen ini sebagai acuan status aktif.
+
 **Date:** 2025-03-13  
 **Scope:** Full system inspection (analysis only, no code modifications)  
 **Reference docs:** ALIZA_SYSTEM_PROMPT, ALIZA_ARCHITECTURE_MAP, ALIZA_DEVELOPMENT_RULES, ALIZA_ENGINE_CONTRACTS, ALIZA_AI_BEHAVIOR_RULES, ALIZA_DEBUG_PLAYBOOK, ALIZA_TEST_SYSTEM, ALIZA_SYSTEM_HEALTH_CHECK

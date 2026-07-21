@@ -19,27 +19,30 @@ core/
 
 Database SQLite:
 
-data/aliza.db
+`data/aliza.db`
 
-Struktur tabel trades tidak boleh diubah tanpa migrasi resmi.
-
----
-
-# 3. Trade Manager Adalah Satu-satunya Modul Database
-
-Database hanya boleh dimodifikasi oleh:
-
-engine/trading/trade_manager.py
+Struktur tabel `trades` atau `signal_tracking` tidak boleh diubah tanpa migrasi resmi dan test.
 
 ---
 
-# 4. Telegram Command Tidak Boleh Memanggil API
+# 3. Batasi Penulis Database
 
-Telegram command harus menggunakan:
+Penulis yang sah untuk `data/aliza.db`:
 
-market_snapshot_engine.get_market_snapshot()
+- `engine/trading/trade_manager.py` untuk trade
+- `engine/trading/signal_tracker.py` untuk schema/migrasi dan tracking signal
 
-Bukan memanggil API langsung.
+`engine/user_config.py` memakai database terpisah. Jangan menambah penulis baru ke `data/aliza.db` tanpa persetujuan eksplisit.
+
+---
+
+# 4. Utamakan Snapshot di Telegram
+
+Jalur market terjadwal dan opportunity scanner harus menggunakan:
+
+`market_snapshot_engine.get_market_snapshot()`
+
+Opportunity scanner wajib abort saat snapshot stale/invalid dan tidak boleh fallback ke market cache. Direct API call yang sudah ada pada command/checker khusus harus tetap memiliki timeout dan error handling; jangan menambah call baru tanpa kebutuhan eksplisit.
 
 ---
 
@@ -47,7 +50,7 @@ Bukan memanggil API langsung.
 
 Telegram handler harus ringan.
 
-Logika berat harus ditempatkan di engine modules.
+Logika berat atau blocking harus ditempatkan di engine module/executor, bukan dijalankan langsung pada event loop.
 
 ---
 
@@ -55,9 +58,9 @@ Logika berat harus ditempatkan di engine modules.
 
 Logika baru harus ditambahkan di:
 
-engine/
+`engine/`
 
-bukan langsung di telegram_bot.py.
+Koordinasi handler/job boleh berada di `interfaces/telegram_bot.py`, tetapi logika domain baru tetap ditempatkan di engine.
 
 ---
 
@@ -87,3 +90,5 @@ tp2
 risk_reward
 confidence
 risk_quality
+
+<!-- Diverifikasi akurat per 2026-07-21, commit f38ab55 -->

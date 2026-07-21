@@ -77,7 +77,7 @@ Trade Database Structure
 
 Referensi ada di:
 
-docs/ALIZA_ENGINE_CONTRACTS.md
+docs/cursor-ai/ALIZA_ENGINE_CONTRACTS.md
 
 ---
 
@@ -85,13 +85,14 @@ docs/ALIZA_ENGINE_CONTRACTS.md
 
 Database SQLite:
 
-data/aliza.db
+`data/aliza.db`
 
-Hanya modul berikut yang boleh memodifikasi database:
+Modul yang sah memodifikasi database ini:
 
-engine/trading/trade_manager.py
+- `engine/trading/trade_manager.py` untuk trade
+- `engine/trading/signal_tracker.py` untuk schema/migrasi dan tracking signal
 
-AI tidak boleh menulis query database langsung di modul lain.
+`engine/user_config.py` menulis database terpisah. AI tidak boleh menambah penulis baru ke `data/aliza.db` tanpa migrasi, test, dan persetujuan eksplisit.
 
 ---
 
@@ -99,23 +100,19 @@ AI tidak boleh menulis query database langsung di modul lain.
 
 Handler Telegram tidak boleh melakukan operasi berat seperti:
 
-API calls  
-Market scans  
-Heavy calculations  
+- market scan sinkron panjang
+- kalkulasi berat di event loop
+- API call baru tanpa timeout dan error handling
 
-Handler harus menggunakan:
-
-market_snapshot_engine.get_market_snapshot()
+Utamakan `market_snapshot_engine.get_market_snapshot()` untuk data terjadwal. Direct upstream call yang sudah ada pada command/checker khusus bukan alasan menambah call baru tanpa review.
 
 ---
 
 # 7. DO NOT BYPASS MARKET SNAPSHOT
 
-Semua command Telegram harus membaca data dari:
+Opportunity scanner wajib memakai snapshot tervalidasi dan abort jika snapshot stale/invalid; tidak ada fallback ke market cache. Perubahan yang melewati guard ini memerlukan persetujuan eksplisit. Jalur khusus yang memang menggunakan upstream langsung wajib mempunyai timeout, error handling, dan tidak boleh mengarang fallback data.
 
-market_snapshot_engine
-
-AI tidak boleh memanggil API langsung dari command handler.
+`snapshot_job` memanggil `scan_for_signals()`; kandidat produksi yang lolos diproses melalui unified gateway dan baru dicatat sebagai signal deterministik setelah dispatch berhasil. Jangan mengembalikan urutan record-before-dispatch.
 
 ---
 
@@ -184,9 +181,9 @@ AI tidak boleh mengubah rule trading tanpa diminta.
 
 # 13. NEVER BREAK THE MARKET PIPELINE
 
-Pipeline utama market adalah:
+Pipeline snapshot utama adalah:
 
-market_cache  
+External APIs
 ↓
 market_analyzer  
 ↓
@@ -194,9 +191,9 @@ market_radar
 ↓
 TradingBrain  
 ↓
-trade_setup  
+market_snapshot_engine
 
-AI tidak boleh mem-bypass pipeline ini.
+`market_cache` melayani sebagian jalur on-demand/legacy, bukan fallback opportunity scanner. AI tidak boleh mem-bypass validasi snapshot pada jalur sinyal terjadwal.
 
 ---
 
@@ -212,5 +209,7 @@ ALIZA_ENGINE_CONTRACTS.md
 Jika dokumentasi bertentangan dengan kode, AI harus melaporkannya.
 
 ---
+
+<!-- Diverifikasi akurat per 2026-07-21, commit f38ab55 -->
 
 END OF DOCUMENT

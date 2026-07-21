@@ -6,6 +6,8 @@
 
 **Terakhir diperbarui:** 2026-04-16
 
+**Verifikasi parameter:** 2026-07-21 pada commit `f38ab55`.
+
 **Referensi silang:** `docs/instructions/system-prompt.md`, `docs/instructions/persona.md`
 
 ---
@@ -63,6 +65,8 @@ Sinyal melewati dua layer filter sebelum sampai ke pengguna:
 |-------|-------|-----------|--------|
 | **Scan** | `engine/trading/signal_engine.py` (`scan_for_signals`) | RR ≥ 3, confidence ≥ 70 | Filter awal: hanya sinyal berkualitas tinggi yang lolos |
 | **Gateway** | `engine/signal_engine.py` (`process_signal`) + `engine/risk_manager` | RR ≥ 2, risk ≤ 2% entry–SL, max 3 posisi terbuka | Validasi risiko sebelum kirim ke Telegram |
+
+Opportunity scanner mempunyai prefilter lebih longgar, RR ≥ 1,3 (`engine/trading/opportunity_scanner.py`), sebelum quality score dan filter jalur alert lain. Nilai scan, gateway, dan opportunity ini diverifikasi langsung terhadap kode pada tanggal di atas.
 
 **Implikasi:** Scan lebih ketat dari gateway di sisi RR — sinyal yang lolos scan (RR ≥ 3) pasti lolos gateway (RR ≥ 2). Parameter gateway relevan untuk sinyal dari sumber lain (mis. manual, watchdog) yang bypass scan.
 
@@ -298,5 +302,7 @@ result = crew.kickoff()
 - **Review:** minimal satu **peer review** dari developer yang memahami pipeline market dan pipeline chat sebelum merge perubahan besar; **patch kecil** (typo, contoh) boleh satu reviewer.
 
 ---
+
+<!-- Diverifikasi akurat per 2026-07-21, commit f38ab55 -->
 
 *Akhir dokumen — patuhi semua section di atas untuk setiap pengembangan fitur baru.*

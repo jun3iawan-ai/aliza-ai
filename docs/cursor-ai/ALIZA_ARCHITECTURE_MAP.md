@@ -3,10 +3,8 @@
 ## USER INTERFACE
 
 User
-↓
-Telegram Bot
-↓
-Dashboard API
+├── Telegram Bot (`interfaces/telegram_bot.py`)
+└── Dashboard API (`api/server.py` + `api/dashboard_api.py`)
 
 ---
 
@@ -25,17 +23,17 @@ market_radar
 TradingBrain
 
 ↓
-trade_setup
+market_snapshot_engine
 
 ---
 
 ## MARKET SNAPSHOT
 
-market_snapshot_engine
+`snapshot_job` memanggil `update_market_snapshot()` setiap 60 detik.
 
-Stores validated market data every 60 seconds.
+Opportunity scanner membaca snapshot tervalidasi. Snapshot stale/invalid menghentikan scan tanpa fallback ke market cache.
 
-Telegram commands use snapshot instead of API calls.
+Sebagian command/checker khusus memiliki upstream call langsung dengan timeout dan error handling.
 
 ---
 
@@ -45,15 +43,17 @@ TradingBrain
 ↓
 Opportunity Scanner
 ↓
-Signal Engine
+Production Signal Scanner (`scan_for_signals`)
+↓
+Unified Gateway (risk + dedup + dispatch)
+↓
+Telegram
+↓
+Signal Tracker (record setelah dispatch sukses)
 
 Trade Manager
 ↓
-SQLite database
-
-Position Manager
-↓
-Telegram alerts
+SQLite `trades`
 
 ---
 
@@ -70,9 +70,26 @@ Altseason Detector
 
 ## STORAGE
 
-SQLite
-data/aliza.db
+`data/aliza.db`
 
 Tables:
 
-trades
+`trades` — ditulis oleh `engine/trading/trade_manager.py`
+
+`signal_tracking` — schema/migrasi dan row ditulis oleh `engine/trading/signal_tracker.py`
+
+`data/user_config.db` adalah database terpisah untuk konfigurasi user.
+
+---
+
+## DASHBOARD API
+
+`api/dashboard_api.py` menyediakan:
+
+- `/api/dashboard/market`
+- `/api/dashboard/quant`
+- `/api/dashboard/predict`
+- `/api/dashboard/signals`
+- `/api/dashboard/portfolio`
+
+<!-- Diverifikasi akurat per 2026-07-21, commit f38ab55 -->

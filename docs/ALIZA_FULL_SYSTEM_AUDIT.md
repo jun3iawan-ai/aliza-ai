@@ -1,5 +1,7 @@
 # ALIZA AI — FULL SYSTEM AUDIT
 
+> **Status: SUPERSEDED.** Snapshot pada 2025-03-13. Kondisi sistem terkini ada di `docs/README.md` dan report Fase 1–4 (`docs/reports/` — lihat Bagian 3). Jangan jadikan dokumen ini sebagai acuan status aktif.
+
 **Tanggal:** 2025-03-13  
 **Scope:** Market Data Layer, Snapshot Engine, Detectors, Trading Brain, Opportunity System, Auto Alert, Telegram Bot, Performance.
 

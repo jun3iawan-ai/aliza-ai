@@ -56,9 +56,9 @@ utils/
 
 # Market Pipeline
 
-Semua data market mengikuti pipeline berikut:
+Pipeline snapshot terjadwal mengikuti alur berikut:
 
-market_cache
+External APIs
 ↓
 market_analyzer
 ↓
@@ -66,19 +66,19 @@ market_radar
 ↓
 TradingBrain
 ↓
-trade_setup
+market_snapshot_engine
+
+`market_cache` tetap dipakai oleh sebagian jalur on-demand/legacy, tetapi bukan fallback opportunity scanner ketika snapshot stale.
 
 ---
 
 # Market Snapshot System
 
-Telegram bot tidak boleh memanggil API langsung.
+Job utama memperbarui snapshot tervalidasi setiap 60 detik melalui:
 
-Semua data market harus diambil dari:
+`snapshot_job` → `update_market_snapshot()`
 
-market_snapshot_engine.get_market_snapshot()
-
-Snapshot diupdate setiap 60 detik.
+Opportunity scanner membaca `market_snapshot_engine.get_market_snapshot()`. Jika snapshot stale/invalid, scanner abort dan tidak fallback ke market cache. Sebagian command atau checker khusus masih memakai client upstream langsung; jangan menambah API call baru di handler tanpa kebutuhan eksplisit, timeout, dan error handling.
 
 ---
 
@@ -86,11 +86,14 @@ Snapshot diupdate setiap 60 detik.
 
 Trade disimpan di SQLite database:
 
-data/aliza.db
+`data/aliza.db`
 
-Hanya modul berikut yang boleh mengubah database:
+Modul yang sah menulis database ini:
 
-engine/trading/trade_manager.py
+- `engine/trading/trade_manager.py` untuk tabel trade
+- `engine/trading/signal_tracker.py` untuk schema/migrasi dan row `signal_tracking`
+
+`engine/user_config.py` memakai database terpisah (`data/user_config.db` secara default).
 
 ---
 
@@ -114,20 +117,41 @@ Command utama:
 /quant
 /status
 
+Dashboard API tersedia di `api/dashboard_api.py` dan dipasang oleh `api/server.py`:
+
+- `/api/dashboard/market`
+- `/api/dashboard/quant`
+- `/api/dashboard/predict`
+- `/api/dashboard/signals`
+- `/api/dashboard/portfolio`
+
 ---
 
 # Background Jobs
 
-Telegram bot menjalankan job berikut:
+Telegram bot mendaftarkan job aktual melalui `app.job_queue`:
 
-market_snapshot_job
-trade_guardian_job
-position_management_job
-crash_detector_job
-whale_tracker_job
-altseason_detector_job
-signal_engine_job
-market_intelligence_job
+- `snapshot_job`
+- `near_support_checker`
+- `near_resistance_checker`
+- `rsi_extreme_checker`
+- `big_move_checker`
+- `watchdog_job`
+- `breaking_news_job`
+- `morning_brief_job`
+- `evening_summary_job`
+- `pre_fetch_brief_data_job`
+- `spot_signal_job`
+- `breakout_check_job`
+- `volume_spike_job`
+- `funding_alert_job`
+- `cfra_alert_job`
+- `macro_check_job`
+- `whale_alert_job`
+- `signal_check_job`
+- `evening_calendar_job`
+
+Di dalam `snapshot_job`, `scan_for_signals()` menjalankan filter RR/confidence. Kandidat yang lolos dikirim melalui unified gateway; signal deterministik baru dicatat setelah dispatch berhasil. E3 shadow berjalan pada jalur terpisah dan tidak memakai gateway produksi.
 
 ---
 
@@ -138,5 +162,7 @@ Saat memodifikasi kode:
 - Jangan mengubah arsitektur sistem
 - Jangan mengubah struktur database
 - Jangan mengubah interface trade_manager
-- Jangan memanggil API langsung dari Telegram command
-- Gunakan snapshot engine untuk data market
+- Utamakan snapshot engine untuk data market terjadwal
+- Jangan menambah API call langsung tanpa kebutuhan eksplisit, timeout, dan error handling
+
+<!-- Diverifikasi akurat per 2026-07-21, commit f38ab55 -->
