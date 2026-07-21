@@ -5,10 +5,31 @@ Mengumpulkan peluang trading berkualitas tinggi untuk unified gateway (process_s
 Hanya menggunakan data dari opportunity scanner; tidak ada API call baru.
 """
 
+import logging
+import math
+import os
+
 from engine.signal_engine import build_unified_signal
 
-# Threshold alert
-MIN_SCORE = 160
+def _load_min_score() -> float:
+    raw = os.getenv("AUTO_ALERT_MIN_SCORE", "70")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logging.getLogger(__name__).error(
+            "AUTO_ALERT_MIN_SCORE harus berupa angka dalam rentang 0-100"
+        )
+        raise RuntimeError("AUTO_ALERT_MIN_SCORE must be between 0 and 100") from None
+    if not math.isfinite(value) or not 0 <= value <= 100:
+        logging.getLogger(__name__).error(
+            "AUTO_ALERT_MIN_SCORE di luar rentang score 0-100: %r", raw
+        )
+        raise RuntimeError("AUTO_ALERT_MIN_SCORE must be between 0 and 100")
+    return value
+
+
+# Threshold alert; score berasal dari signal_quality_engine (0-100).
+MIN_SCORE = _load_min_score()
 MIN_RR = 2.5
 MIN_CONFIDENCE = 65
 
