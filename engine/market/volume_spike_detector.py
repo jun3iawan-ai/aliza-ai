@@ -12,6 +12,7 @@ from typing import Any
 
 import requests
 
+from engine.alerts import notification_governor as ngov
 from engine.market.market_snapshot_engine import get_market_snapshot
 
 try:
@@ -26,14 +27,20 @@ BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 TIMEOUT = 15
 
 WATCHLIST = ["BTC", "ETH", "BNB", "SOL", "XRP"]
-SPIKE_MULTIPLIER = 2.0
-COOLDOWN_HOURS = 4
+# Single source of truth for the spike threshold (was 2.0 here but the Telegram
+# dispatch site required >=4.0 on top of this — two thresholds for one signal,
+# see NOTIFIKASI_MITIGASI_REPORT.md item 6). 4.0 is what was actually effective
+# in production, so that's the value kept.
+SPIKE_MULTIPLIER = 4.0
+# Was 4h here; the Telegram dispatch site additionally re-gated with its own
+# 8h cooldown. That second gate is now removed (this is the sole cooldown
+# authority), so COOLDOWN_HOURS is set to 8 to preserve prior effective cadence.
+COOLDOWN_HOURS = 8
 
 # Cache avg quote volume per symbol: {"avg": float, "ts": float}
 _avg_vol_cache: dict[str, dict[str, Any]] = {}
 AVG_VOL_CACHE_TTL_SEC = 4 * 3600
 
-_last_alert_ts: dict[str, float] = {}
 ALERT_COOLDOWN_SEC = COOLDOWN_HOURS * 3600
 
 KLINES_LIMIT = 14
@@ -126,8 +133,7 @@ def check_volume_spike(symbol: str, current_volume: float) -> dict[str, Any] | N
     """
     sym = symbol.strip().upper()
     now = time.time()
-    last = _last_alert_ts.get(sym)
-    if last is not None and (now - last) < ALERT_COOLDOWN_SEC:
+    if not ngov.is_cooldown_allowed("volume_spike", sym, ALERT_COOLDOWN_SEC, now=now):
         return None
 
     try:
@@ -145,7 +151,7 @@ def check_volume_spike(symbol: str, current_volume: float) -> dict[str, Any] | N
         return None
 
     mult = cv / avg
-    _last_alert_ts[sym] = now
+    ngov.record_cooldown("volume_spike", sym, now=now)
     return {
         "symbol": sym,
         "current_volume": float(cv),
@@ -205,6 +211,10 @@ async def run_volume_spike_check() -> list[dict[str, Any]]:
     for symbol in WATCHLIST:
         row = data.get(symbol)
         if not row or not isinstance(row, dict):
+            continue
+        if not ngov.is_coin_snapshot_fresh(row):
+            logger.warning("volume_spike_detector: skip %s — stale snapshot data", symbol)
+            ngov.record_skipped_stale("volume_spike")
             continue
         vol = row.get("volume_24h")
         if vol is None:

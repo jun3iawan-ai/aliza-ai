@@ -12,6 +12,8 @@ from typing import Any
 
 import requests
 
+from engine.alerts import notification_governor as ngov
+
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -121,8 +123,8 @@ CACHE_TTL_SEC = 15 * 60  # 15 menit
 _funding_cache: dict[str, dict[str, Any]] = {}
 _oi_cache: dict[str, dict[str, Any]] = {}
 
-# Cooldown alert: key = "{COIN}|{condition}"
-_last_alert_ts: dict[str, float] = {}
+# Cooldown alert (key = "{COIN}|{condition}") persisted via notification_governor —
+# dulu dict in-memory, hilang tiap restart proses (lihat NOTIFIKASI_MITIGASI_REPORT.md).
 ALERT_COOLDOWN_SEC = COOLDOWN_HOURS * 3600
 
 
@@ -507,11 +509,10 @@ def check_funding_extremes() -> list[dict[str, Any]]:
             continue
 
         key = f"{coin}|{condition}"
-        last = _last_alert_ts.get(key)
-        if last is not None and (now - last) < ALERT_COOLDOWN_SEC:
+        if not ngov.is_cooldown_allowed("funding", key, ALERT_COOLDOWN_SEC, now=now):
             continue
 
-        _last_alert_ts[key] = now
+        ngov.record_cooldown("funding", key, now=now)
         out.append(
             {
                 "symbol": coin,

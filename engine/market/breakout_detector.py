@@ -1,6 +1,6 @@
 """
 Breakout detector: level support/resistance dari 90 candle daily Binance,
-deteksi tembus dengan margin 0.5%, cooldown 4 jam per coin.
+deteksi tembus dengan margin 0.5%, cooldown 8 jam per coin.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from typing import Any
 
 import requests
 
+from engine.alerts import notification_governor as ngov
 from engine.market.market_snapshot_engine import get_market_snapshot
 
 try:
@@ -31,10 +32,9 @@ WATCHLIST = ["BTC", "ETH", "BNB", "SOL", "XRP"]
 _sr_cache: dict[str, dict[str, Any]] = {}
 SR_CACHE_TTL_SEC = 4 * 3600
 
-# Cooldown alert per symbol (unix time)
-_last_alert_ts: dict[str, float] = {}
-# Level terakhir yang sudah memicu alert breakout per coin (harga SR yang ditembus)
-_broken_levels: dict[str, float] = {}
+# Cooldown timestamp + terakhir level yang memicu alert breakout: persisted via
+# notification_governor (data/alert_cooldown_state.json) — dulu dict in-memory,
+# hilang tiap restart proses (lihat NOTIFIKASI_MITIGASI_REPORT.md).
 ALERT_COOLDOWN_SEC = 8 * 3600
 MAX_BREAKOUT_DISTANCE_PCT = 0.02  # skip jika harga sudah >2% dari level
 
@@ -154,8 +154,7 @@ def check_breakout(symbol: str, current_price: float) -> dict[str, Any] | None:
     """
     sym = symbol.strip().upper()
     now = time.time()
-    last = _last_alert_ts.get(sym)
-    if last is not None and (now - last) < ALERT_COOLDOWN_SEC:
+    if not ngov.is_cooldown_allowed("breakout", sym, ALERT_COOLDOWN_SEC, now=now):
         return None
 
     try:
@@ -196,14 +195,14 @@ def check_breakout(symbol: str, current_price: float) -> dict[str, Any] | None:
         return None  # harga sudah terlalu jauh, alert tidak actionable
 
     level_f = float(level)
-    last_broken = _broken_levels.get(sym)
+    last_broken = ngov.get_value("breakout_level", sym)
     if last_broken is not None and last_broken > 0:
-        level_change = abs(level_f - last_broken) / last_broken
+        level_change = abs(level_f - float(last_broken)) / float(last_broken)
         if level_change < 0.005:
             return None
 
-    _broken_levels[sym] = level_f
-    _last_alert_ts[sym] = now
+    ngov.set_value("breakout_level", sym, level_f)
+    ngov.record_cooldown("breakout", sym, now=now)
     return {
         "symbol": sym,
         "direction": direction,
@@ -268,6 +267,10 @@ async def run_breakout_check() -> list[dict[str, Any]]:
     for symbol in WATCHLIST:
         row = data.get(symbol)
         if not row or not isinstance(row, dict):
+            continue
+        if not ngov.is_coin_snapshot_fresh(row):
+            logger.warning("breakout_detector: skip %s — stale snapshot data", symbol)
+            ngov.record_skipped_stale("breakout")
             continue
         p = row.get("price")
         pv = _safe_float(p)
