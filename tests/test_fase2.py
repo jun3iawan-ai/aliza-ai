@@ -132,3 +132,28 @@ def test_rsi_stream_matches_runtime_formula():
     prices = [100 + (index % 9) - index * 0.03 for index in range(300)]
     stream = calculate_rsi_series(prices)
     assert all(calculate_rsi(prices[:index + 1]) == stream[index] for index in range(len(prices)))
+
+
+def test_anti_lookahead_simulator_ignores_future_candles(monkeypatch):
+    import backtest.simulator as simulator
+
+    dataset = _dataset(50)
+    monkeypatch.setattr(
+        simulator,
+        "_call_brain",
+        lambda market_data, regime: {
+            "setup": "PULLBACK LONG",
+            "side": "LONG",
+            "entry": market_data["price"],
+            "sl": market_data["price"] - 1,
+            "tp1": market_data["price"] + 3,
+            "risk_reward": 3,
+            "confidence": 80,
+        },
+    )
+    end = dataset["4h"][39]["close_time"]
+    base = simulate_coin("BTC", dataset, 0, end, production_filters=True)
+    extended = copy.deepcopy(dataset)
+    extended["4h"].extend([_row(50, 250), _row(51, 251)])
+    extended["1d"].extend([_row(50, 250, step=24 * 60 * 60 * 1000)])
+    assert base == simulate_coin("BTC", extended, 0, end, production_filters=True)
