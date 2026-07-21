@@ -10,6 +10,7 @@ import logging
 import time
 
 from engine.state_store import load_state, save_state
+from engine.utils.formatters import format_price, format_ratio
 
 try:
     from engine.market.market_snapshot_engine import get_market_snapshot
@@ -386,18 +387,7 @@ def format_signal_message(signal):
     macro_ctx = signal.get("macro_context")
 
     def _fmt(v):
-        if v is None:
-            return "—"
-        if isinstance(v, float):
-            av = abs(v)
-            if av >= 1000:
-                return f"{v:,.2f}"
-            if av >= 10:
-                return f"{v:.2f}"
-            if av >= 0.01:
-                return f"{v:.4f}"
-            return f"{v:.8f}"
-        return v
+        return format_price(v)
 
     bal = 0.0
     try:
@@ -413,7 +403,7 @@ def format_signal_message(signal):
         f"SL    : {_fmt(sl)}\n"
         f"TP1   : {_fmt(tp1)}\n"
         f"TP2   : {_fmt(tp2)}\n\n"
-        f"RR : {_fmt(rr)} | Confidence : {_fmt(confidence)}\n\n"
+        f"RR : {format_ratio(rr)} | Confidence : {confidence}\n\n"
         "Market Context\n"
         f"BTC Trend : {btc_trend}\n"
         f"Market Risk : {market_risk}"
