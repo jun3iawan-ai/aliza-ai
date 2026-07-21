@@ -41,12 +41,12 @@ def funding_cost_pct(entry_ms, exit_ms, funding_history, fallback_rate=FALLBACK_
     return total, "binance_history" if used_history else "fallback_0.01pct_8h"
 
 
-def calculate_trade_pnl(side, entry_raw, exit_raw, notional, entry_ms, exit_ms, funding_history=None):
+def calculate_trade_pnl(side, entry_raw, exit_raw, notional, entry_ms, exit_ms, funding_history=None, fee_per_side=FEE_PER_SIDE, slippage_per_side=SLIPPAGE_PER_SIDE):
     """Net PnL percentage/USDT with two-sided fee+slippage and short funding."""
-    entry = effective_entry(entry_raw, side)
-    exit_price = effective_exit(exit_raw, side)
+    entry = effective_entry(entry_raw, side, slippage=slippage_per_side)
+    exit_price = effective_exit(exit_raw, side, slippage=slippage_per_side)
     gross_return = (exit_price / entry - 1) if side == "LONG" else (entry / exit_price - 1)
-    fee_pct = 2 * FEE_PER_SIDE
+    fee_pct = 2 * float(fee_per_side)
     funding_pct, funding_method = (0.0, "none")
     if side == "SHORT":
         funding_pct, funding_method = funding_cost_pct(entry_ms, exit_ms, funding_history)
@@ -54,7 +54,7 @@ def calculate_trade_pnl(side, entry_raw, exit_raw, notional, entry_ms, exit_ms, 
     return {
         "gross_pnl_pct": round(gross_return * 100, 8),
         "fee_pct": fee_pct * 100,
-        "slippage_pct": 2 * SLIPPAGE_PER_SIDE * 100,
+        "slippage_pct": 2 * float(slippage_per_side) * 100,
         "funding_pct": funding_pct * 100,
         "funding_method": funding_method,
         "pnl_pct": round(net_pct * 100, 8),
