@@ -2595,6 +2595,19 @@ def _reorder_section_by_rr(section_text: str, is_spot: bool = False) -> str:
             return t
         return parse_price(text, "Target")
 
+    def parse_target_far(text):
+        """Target yang RR-nya dihitung dari sini — final/"ambil sisa" target, BUKAN
+        target pertama yang diambil profit-nya (partial). Sebelum enforce_target_order
+        menjalankan urutan, "Target 2" adalah yang dimaksud (kalau ada); fallback ke
+        "Target 1"/"Target" untuk teks legacy yang cuma punya satu target."""
+        t = parse_price(text, "Target 2")
+        if t is not None:
+            return t
+        t = parse_price(text, "Target 1")
+        if t is not None:
+            return t
+        return parse_price(text, "Target")
+
     def parse_entry_any(text):
         if is_spot:
             for lab in ("Entry ideal", "Entry sekarang", "Entry"):
@@ -2639,10 +2652,61 @@ def _reorder_section_by_rr(section_text: str, is_spot: bool = False) -> str:
         )
         return result
 
-    def calc_rr(entry_text):
+    def fix_sl_percentage(entry_text):
+        """Hitung ulang '(X% dari entry)' di baris SL dari Entry/SL yang benar-benar
+        ditampilkan di pesan ini — jangan percaya angka persen yang ditulis LLM.
+        enforce_sl_range() di atas cuma mengganti angka dolar SL kalau di luar
+        rentang 5-8%; kalau SL sudah dalam rentang (atau setelah diganti), label
+        persennya sendiri tidak pernah disentuh — itu sebabnya "(5% dari entry)"
+        bisa nempel di teks padahal Entry/SL yang ditampilkan aslinya 6,00%."""
         entry = parse_entry_any(entry_text)
         sl = parse_price(entry_text, "SL")
-        target = parse_target_t1(entry_text)
+        if not entry or not sl or entry <= 0:
+            return entry_text
+        correct_pct = round(abs(entry - sl) / entry * 100, 1)
+        m = _re.search(r"(SL:\s*\$[\d,]+\.?\d*\s*\()([\d.]+)(%\s*dari entry\))", entry_text)
+        if not m:
+            return entry_text
+        return entry_text[: m.start(2)] + f"{correct_pct:.1f}" + entry_text[m.end(2) :]
+
+    def enforce_target_order(entry_text):
+        """Pastikan Target 1 (label 'ambil 50%', diambil duluan) selalu LEBIH DEKAT
+        ke entry daripada Target 2 (label 'ambil sisa', target akhir) — posisi
+        harga yang menentukan urutan, bukan sekadar label bebas yang ditulis LLM.
+        Root cause bug Target1/Target2 tertukar: enforce_min_rr (di bawah) dulu
+        cuma menulis ulang "Target 1" untuk memenuhi RR minimum tanpa mengecek
+        posisinya relatif ke Target 2 — kalau Target 1 asli LLM sudah dekat
+        (RR rendah), dipaksa naik jadi lebih jauh dari Target 2, sehingga
+        Target 1 > Target 2 padahal labelnya menyiratkan sebaliknya. Fungsi ini
+        menukar NILAI (dolar) dua target itu kalau urutannya kebalik, sebelum
+        enforce_min_rr/fix_target_percentages jalan — supaya keduanya selalu
+        beroperasi pada target yang sudah benar posisinya."""
+        entry = parse_entry_any(entry_text)
+        t1 = parse_price(entry_text, "Target 1")
+        t2 = parse_price(entry_text, "Target 2")
+        if entry is None or t1 is None or t2 is None:
+            return entry_text
+        is_short = is_short_entry(entry_text)
+        d1 = (entry - t1) if is_short else (t1 - entry)
+        d2 = (entry - t2) if is_short else (t2 - entry)
+        if d1 <= d2:
+            return entry_text  # Target 1 sudah lebih dekat (atau sama) — urutan benar
+        if max(t1, t2) > 1000:
+            t1_str, t2_str = f"{t2:,.2f}", f"{t1:,.2f}"
+        elif max(t1, t2) > 10:
+            t1_str, t2_str = f"{t2:.2f}", f"{t1:.2f}"
+        else:
+            t1_str, t2_str = f"{t2:.4f}", f"{t1:.4f}"
+        result = _re.sub(r"Target 1:\s*\$[\d,]+\.?\d*", "Target 1: $" + t1_str, entry_text)
+        result = _re.sub(r"Target 2:\s*\$[\d,]+\.?\d*", "Target 2: $" + t2_str, result)
+        return result
+
+    def calc_rr(entry_text):
+        """RR selalu dihitung dari target FINAL (Target 2 kalau ada, 'ambil sisa') —
+        itu yang mendefinisikan R-multiple, bukan target partial pertama."""
+        entry = parse_entry_any(entry_text)
+        sl = parse_price(entry_text, "SL")
+        target = parse_target_far(entry_text)
         if entry and sl and target and abs(entry - sl) > 0:
             sl_distance = abs(entry - sl)
             if is_short_entry(entry_text):
@@ -2651,10 +2715,13 @@ def _reorder_section_by_rr(section_text: str, is_spot: bool = False) -> str:
         return None
 
     def enforce_min_rr(entry_text, min_rr=MIN_RR):
-        """Adjust target agar RR minimal min_rr. Update nilai Target dan RR di teks."""
+        """Adjust target FINAL (Target 2, atau Target 1/Target legacy kalau tidak
+        ada Target 2) agar RR minimal min_rr. Sengaja tidak menyentuh Target 1
+        (partial) — itu dipertahankan sebagai target dekat, konsisten dengan
+        enforce_target_order di atas."""
         entry = parse_entry_any(entry_text)
         sl = parse_price(entry_text, "SL")
-        target = parse_target_t1(entry_text)
+        target = parse_target_far(entry_text)
         if not (entry and sl and target):
             return entry_text
         sl_distance = abs(entry - sl)
@@ -2670,10 +2737,8 @@ def _reorder_section_by_rr(section_text: str, is_spot: bool = False) -> str:
         # Hitung target baru
         if is_short:
             new_target = round(entry - (sl_distance * min_rr), 2)
-            new_rr = round((entry - new_target) / sl_distance, 1)
         else:
             new_target = round(entry + (sl_distance * min_rr), 2)
-            new_rr = round((new_target - entry) / sl_distance, 1)
         # Format target sesuai skala harga
         if entry > 1000:
             target_str = f"{new_target:,.2f}"
@@ -2681,8 +2746,15 @@ def _reorder_section_by_rr(section_text: str, is_spot: bool = False) -> str:
             target_str = f"{new_target:.2f}"
         else:
             target_str = f"{new_target:.4f}"
-        # Ganti Target 1 (spot/futures baru) atau Target (legacy)
-        if parse_price(entry_text, "Target 1") is not None:
+        # Ganti Target 2 (spot/futures baru dengan dua target), atau Target 1 /
+        # Target (legacy, cuma satu target)
+        if parse_price(entry_text, "Target 2") is not None:
+            result = _re.sub(
+                r"Target 2:\s*\$[\d,]+\.?\d*",
+                "Target 2: $" + target_str,
+                entry_text,
+            )
+        elif parse_price(entry_text, "Target 1") is not None:
             result = _re.sub(
                 r"Target 1:\s*\$[\d,]+\.?\d*",
                 "Target 1: $" + target_str,
@@ -2774,6 +2846,8 @@ def _reorder_section_by_rr(section_text: str, is_spot: bool = False) -> str:
     for e in entries:
         e = "\n".join(l.rstrip() for l in e.split("\n"))  # strip trailing spaces
         e = enforce_sl_range(e)
+        e = fix_sl_percentage(e)
+        e = enforce_target_order(e)
         e = enforce_min_rr(e)
         e = fix_target_percentages(e)
         e = fix_invalidation(e)
@@ -2809,7 +2883,33 @@ def _reorder_section_by_rr(section_text: str, is_spot: bool = False) -> str:
         result_parts.append("\n\n".join(entries_sorted))
     if footer_lines:
         result_parts.append("\n".join(footer_lines))
-    return "\n".join(result_parts)
+    result = "\n".join(result_parts)
+
+    # Pastikan section ini SELALU eksplisit bilang Entry/SL/Target di dalamnya
+    # estimasi AI (LLM), BUKAN sinyal yang sudah melalui backtest/validasi
+    # winrate (beda dari TradingBrain/E3 shadow yang tervalidasi) — ditambahkan
+    # di kode, tidak bergantung LLM menuliskannya sendiri di teks bebas, supaya
+    # selalu muncul dan tidak cuma kadang-kadang tergantung LLM ikut instruksi
+    # prompt atau tidak. Kalau section futures sudah punya baris peringatan
+    # risiko dari LLM ("⚠️ Futures berisiko tinggi..."), gabungkan ke baris itu
+    # alih-alih menambah baris disclaimer terpisah.
+    _ai_estimate_note = (
+        "Entry/SL/Target di atas estimasi AI (LLM), bukan sinyal yang sudah "
+        "melalui backtest/validasi winrate — beda dari sinyal deterministik/E3 "
+        "shadow yang tervalidasi. Gunakan sebagai referensi awal, selalu "
+        "konfirmasi manual sebelum entry."
+    )
+    if result.strip() and _ai_estimate_note not in result:
+        if not is_spot and "⚠️ Futures berisiko tinggi" in result:
+            result = _re.sub(
+                r"(⚠️ Futures berisiko tinggi\.[^\n]*)",
+                lambda m: m.group(1) + " " + _ai_estimate_note,
+                result,
+                count=1,
+            )
+        else:
+            result = result.rstrip() + "\n⚠️ " + _ai_estimate_note
+    return result
 
 def _extract_spot_section_from_brief_analysis(analysis: str) -> str:
     """Pisahkan spot/futures dari konten entry, bukan posisi header futures."""
@@ -4231,18 +4331,25 @@ Total probabilitas Bull+Base+Bear harus = 100%.
             if _cut is not None:
                 main_out = "\n".join(_lines[:_cut]).strip()
                 break
-    # Fallback kedua: jika dedup membuat main_out kosong, gunakan fallback
+    # Fallback kedua: jika dedup membuat main_out kosong, gunakan fallback.
+    # Catatan: ini HANYA soal main_out (section 6 KEPUTUSAN HARI INI) — spot_section
+    # dan futures_section datang dari panggilan LLM terpisah (_generate_spot_analysis/
+    # _generate_futures_analysis di atas, dijalankan paralel via asyncio.gather) dan
+    # tetap dikirim apa adanya di bawah fallback ini kalau berhasil, karena
+    # kegagalannya independen dari kegagalan main_out. Pesannya sengaja tidak
+    # menyebut detail implementasi ("LLM tidak mengikuti format", dst) ke user.
     if not main_out.strip():
         logging.warning("_generate_brief_analysis: main_out kosong setelah dedup — pakai fallback")
         main_out = (
             "⚡ KEPUTUSAN HARI INI\n"
             "Regime: —\n"
             "Bias: —\n"
-            f"Conviction: {conviction_preset}/10 — Analisis tidak tersedia (LLM tidak mengikuti format).\n"
+            f"Conviction: {conviction_preset}/10 — Analisis makro harian gagal diproses untuk sesi ini.\n"
             "Action: ⏸️ TAHAN\n"
             "Catalyst: Pantau event makro dan price action.\n\n"
             "📊 KONTEKS MARKET\n"
-            "Format analisis tidak sesuai — gunakan data di brief sebagai acuan.\n"
+            "Ringkasan makro tidak tersedia untuk sesi ini — gunakan data snapshot di atas, "
+            "serta SARAN SPOT/FUTURES di bawah, sebagai acuan.\n"
             "Cross-asset: tinjau manual dari data yang tersedia di brief.\n\n"
             "🎯 STRATEGI HARI INI\n"
             "Tahan posisi, set alert di level support/resistance, dan pantau kalender ekonomi.\n\n"
