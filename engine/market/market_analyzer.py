@@ -17,6 +17,7 @@ from engine.market.global_market_cache import get_global_market_data
 from engine.market.multi_timeframe_analyzer import analyze_multi_timeframe
 from engine.market.klines_cache import get_cached_klines, set_cached_klines
 from engine.indicators.constants import MIN_REQUIRED_DATA
+from engine.market.features import compute_features
 
 HEADERS = {"User-Agent": "AlizaAI"}
 logger = logging.getLogger(__name__)
@@ -324,6 +325,8 @@ def market_signal(symbol, radar_data=None):
         if prices:
             price_source = "coingecko"
 
+    feature_output = compute_features(closes_4h, closes_1d, price=price, price_series=prices)
+
     # 3. Resolve final price: Binance -> last known cache -> chart fallback.
     # Ticker tidak ditambahkan ke seri indikator karena bukan candle yang sudah close.
     def _is_valid_price(p):
@@ -395,6 +398,14 @@ def market_signal(symbol, radar_data=None):
         logger.warning("Invalid data — skipping signal")
         return None
     support, resistance = _support_resistance(prices)
+    if feature_output.get("valid"):
+        trend = feature_output["trend"]
+        rsi = feature_output["rsi"]
+        support = feature_output["support"]
+        resistance = feature_output["resistance"]
+        trend_4h = feature_output["trend_4h"]
+        trend_1d = feature_output["trend_1d"]
+        alignment = feature_output["trend_alignment"]
 
     global_data = get_global_market_data()
     fear = global_data["fear_greed"]
