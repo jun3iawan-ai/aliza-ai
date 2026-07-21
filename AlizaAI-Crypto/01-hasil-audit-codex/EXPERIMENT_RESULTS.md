@@ -70,3 +70,22 @@ Kandidat dipilih berdasarkan expectancy TUNE tertinggi dengan N≥200: E3 3×ATR
 | E2 support-distance | 72 | 22,22% [14,17–33,09] | +0,3105% | 1,0652 | −30,08% | XRP 74,1% | **GAGAL** (N<80, PF≤1,15) |
 
 E3 memenuhi seluruh kriteria numerik, termasuk konsentrasi profit coin terbesar <50%; namun walk-forward TUNE yang tidak stabil dan N holdout 149 tetap memerlukan validasi lanjutan. Hasil ini adalah usulan riset, bukan izin deploy.
+
+## Breakdown setup × regime × side kandidat E3
+
+| Periode | Setup | Regime | Side | N | WR | Expectancy | PF |
+|---|---|---|---|---:|---:|---:|---:|
+| TUNE | OVERBOUGHT REJECTION | DOWNTREND | SHORT | 1 | 0% | +1,8154% | 0 |
+| TUNE | OVERBOUGHT REJECTION | RANGE | SHORT | 230 | 20,87% | −0,0962% | 0,8518 |
+| TUNE | OVERSOLD BOUNCE | RANGE | LONG | 290 | 16,21% | +0,1542% | 0,8032 |
+| TUNE | PULLBACK LONG | TREND | LONG | 96 | 15,63% | −0,0889% | 0,7370 |
+| TUNE | PULLBACK SHORT | DOWNTREND | SHORT | 105 | 19,05% | −0,7354% | 0,5680 |
+| TUNE | PULLBACK SHORT | TREND | SHORT | 29 | 34,48% | +2,2827% | 2,1403 |
+| HOLDOUT | OVERBOUGHT REJECTION | DOWNTREND | SHORT | 4 | 25,00% | +1,0687% | 1,6350 |
+| HOLDOUT | OVERBOUGHT REJECTION | RANGE | SHORT | 45 | 33,33% | +1,1139% | 1,5917 |
+| HOLDOUT | OVERSOLD BOUNCE | RANGE | LONG | 39 | 20,51% | +0,6019% | 1,1479 |
+| HOLDOUT | PULLBACK LONG | TREND | LONG | 15 | 26,67% | +0,2801% | 1,0520 |
+| HOLDOUT | PULLBACK SHORT | DOWNTREND | SHORT | 37 | 27,03% | +2,2239% | 2,4836 |
+| HOLDOUT | PULLBACK SHORT | TREND | SHORT | 9 | 11,11% | −0,4602% | 0,5254 |
+
+Sel grup dengan N<30 (misalnya PULLBACK SHORT/TREND di TUNE dan grup DOWNTREND tertentu di holdout) adalah sampel kecil dan tidak konklusif.
