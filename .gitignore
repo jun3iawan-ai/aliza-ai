@@ -20,3 +20,21 @@ docs/audit/
 # Backtester raw cache/results
 backtest/data/
 backtest/results/
+
+# Test/tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Packaging artifacts
+*.egg-info/
+build/
+dist/
+
+# SQLite sidecar runtime files
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm

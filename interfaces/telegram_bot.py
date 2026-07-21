@@ -21,6 +21,7 @@ except ImportError:
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.environment import load_project_dotenv
+from core.graceful_shutdown import GracefulShutdownController
 
 load_project_dotenv()
 
@@ -6808,7 +6809,7 @@ async def snapshot_job(context: ContextTypes.DEFAULT_TYPE):
             with snapshot_state._snapshot_lock:
                 snapshot_state.CB_RECOVERY_ALERT_PENDING = False
 
-        # Auto alert: kirim alert untuk peluang berkualitas tinggi (score≥160, rr≥2.5, confidence≥65)
+        # Auto alert: score default ≥70 (valid 0–100), rr≥2.5, confidence≥65.
         if process_auto_alerts is not None:
             try:
                 opportunities = scan_opportunities()
@@ -6955,12 +6956,20 @@ def main():
         os.getenv("SHADOW_E3_DISPATCH", "false"),
     )
 
+    shutdown_controller = None
+
+    async def _post_shutdown(application):
+        if shutdown_controller is not None:
+            await shutdown_controller.post_shutdown(application)
+
     app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
         .post_init(_post_init_set_bot_commands)
+        .post_shutdown(_post_shutdown)
         .build()
     )
+    shutdown_controller = GracefulShutdownController(app, timeout_seconds=8.0)
 
     app.add_handler(TypeHandler(Update, _authorization_gate), group=-1)
     app.add_handler(CommandHandler("start", start))
@@ -7153,17 +7162,15 @@ def main():
     except Exception as e:
         logging.warning("initialize_macro_seen_dates: %s", e)
 
-    import signal as _signal
-    import sys as _sys
-
-    def _handle_sigterm(signum, frame):
-        logging.info("SIGTERM received — shutting down gracefully")
-        _sys.exit(0)
-
-    _signal.signal(_signal.SIGTERM, _handle_sigterm)
+    shutdown_controller.install_sigterm_handler()
 
     logging.info("AlizaAI Telegram Bot aktif (polling). Semua command terdaftar.")
-    app.run_polling()
+    try:
+        # SIGTERM is handled by GracefulShutdownController so blocking jobs cannot
+        # consume the complete systemd stop window before PTB closes its clients.
+        app.run_polling(stop_signals=None)
+    finally:
+        shutdown_controller.finish_process()
 
 
 if __name__ == "__main__":
