@@ -29,7 +29,7 @@ Parameter strategi, jalur live, service, dan `.env` tidak diubah.
 
 ```
 venv/bin/python -m pytest -q
-127 passed, 3 warnings, 74 subtests passed in 14.75s
+127 passed, 3 warnings, 74 subtests passed in 15.30s
 ```
 
 Test mencakup paritas feature, anti-lookahead, entry next-open, same-bar TP/SL, short outcome, biaya/funding, reproduksibilitas, Wilson interval, dan RSI stream. Smoke CLI tanpa data juga berhasil menghasilkan artefak kosong deterministik.
