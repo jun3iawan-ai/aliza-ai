@@ -1,11 +1,19 @@
 """
 Reusable macro event checks for the signal pipeline.
 
-Uses `engine.market.economic_calendar` (rule-based schedule + optional Serper enrichment).
-Does not import Telegram or bot code.
+Uses `engine.market.economic_calendar`, which already chains real-time sources
+before falling back to the rule-based schedule: FMP (Financial Modeling Prep,
+currently disabled via FMP_CALENDAR_ENABLED=false — the configured
+FMP_API_KEY has been returning HTTP 403; see BERITA_MITIGASI_REPORT.md) →
+Investing.com scrape (currently also failing, HTTP 403) → rule-based schedule
+(NFP/CPI/FOMC/etc. approximated from typical release-day patterns) → Serper
+search as best-effort enrichment on top. Does not import Telegram or bot code.
 
-TODO: Plug in a real-time economic calendar API (e.g. ForexFactory, Investing.com feed)
-if rule-based dates drift from actual release times.
+get_upcoming_events() fails open: any exception is caught internally and it
+returns [] rather than raising, so a total fetch failure looks identical to
+"genuinely no events" to callers (is_macro_safe_to_trade, breaking/calendar
+alerts). Re-enable FMP once FMP_API_KEY is refreshed; re-check Investing.com
+if its scrape starts working again.
 """
 
 from __future__ import annotations

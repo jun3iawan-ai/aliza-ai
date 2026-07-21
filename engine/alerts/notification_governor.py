@@ -138,6 +138,33 @@ def record_cooldown(namespace: str, key: str, now: float | None = None) -> None:
     set_value(f"cooldown:{namespace}", key, now)
 
 
+def prune_cooldown_namespace(namespace: str, older_than_sec: float, now: float | None = None) -> int:
+    """Drop `cooldown:{namespace}` entries older than `older_than_sec`.
+
+    `is_cooldown_allowed`/`record_cooldown` never delete anything — fine for
+    callers with a small fixed key space (coins: BTC, ETH, ...), but a caller
+    keyed on something unbounded (e.g. one key per distinct news title) would
+    otherwise grow STATE_FILE forever. Returns the number of entries removed.
+    """
+    now = time.time() if now is None else now
+    state = _load_state()
+    bucket = state.get(f"cooldown:{namespace}")
+    if not isinstance(bucket, dict):
+        return 0
+    stale: list[str] = []
+    for k, ts in bucket.items():
+        try:
+            if (now - float(ts)) > older_than_sec:
+                stale.append(k)
+        except (TypeError, ValueError):
+            stale.append(k)
+    for k in stale:
+        del bucket[k]
+    if stale:
+        _save_state()
+    return len(stale)
+
+
 def is_duplicate_value(namespace: str, key: str, value: float, epsilon: float = 0.01) -> bool:
     """True if `value` is (near-)identical to the last recorded value for `key`."""
     last = get_value(f"dedup:{namespace}", key)
