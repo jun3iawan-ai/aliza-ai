@@ -10,6 +10,8 @@ import math
 import os
 
 from engine.signal_engine import build_unified_signal
+from engine.utils.formatters import format_price, format_ratio
+
 
 def _load_min_score() -> float:
     raw = os.getenv("AUTO_ALERT_MIN_SCORE", "70")
@@ -53,34 +55,26 @@ def _format_alert_message(opp):
     confidence = opp.get("confidence")
     score = opp.get("score")
 
-    def _num(x):
-        if x is None:
-            return "—"
-        try:
-            return round(float(x), 2)
-        except (TypeError, ValueError):
-            return "—"
-
     lines = [
         "🚨 ALIZA TRADE ALERT",
         "",
         f"{coin} {setup}",
         "",
-        f"Entry : {_num(entry)}",
-        f"SL : {_num(sl)}",
-        f"TP1 : {_num(tp1)}",
-        f"TP2 : {_num(tp2)}",
+        f"Entry : {format_price(entry)}",
+        f"SL : {format_price(sl)}",
+        f"TP1 : {format_price(tp1)}",
+        f"TP2 : {format_price(tp2)}",
         "",
-        f"RR : {_num(rr)}",
+        f"RR : {format_ratio(rr)}",
         f"Confidence : {confidence}",
-        f"Score : {_num(score)}",
+        f"Score : {format_ratio(score)}",
     ]
     return "\n".join(lines)
 
 
 def process_auto_alerts(opportunities):
     """
-    Filter opportunity yang memenuhi syarat alert (score≥160, rr≥2.5, confidence≥65).
+    Filter opportunity yang memenuhi syarat alert (score≥MIN_SCORE, rr≥2.5, confidence≥65).
     Return list untuk gateway: message + signal (unified) per item.
     Dedup & risk ditangani oleh engine.signal_engine.process_signal.
     """
