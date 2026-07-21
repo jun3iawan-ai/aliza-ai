@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from engine.brain import trading_brain
 from engine.brain.trading_brain import TradingBrain
 from engine.intelligence.market_regime_detector import detect_market_regime
-from engine.market.features import compute_features, calculate_rsi_series
+from engine.market.features import compute_features, calculate_rsi_series, average_true_range
 
 from .costs import calculate_trade_pnl
 
@@ -54,31 +54,61 @@ def _lower_resolution(dataset):
 
 
 def _exit_event(position, rows, now_ms):
-    rows = [row for row in rows if int(row["open_time"]) >= position["entry_time"] and int(row["close_time"]) <= now_ms]
-    for row in rows:
+    has_cursor = "lower_cursor" in position
+    cursor = int(position.get("lower_cursor", 0))
+    side = position["side"]
+    tp, sl = float(position["tp1"]), float(position["sl"])
+    while cursor < len(rows):
+        row = rows[cursor]
+        if int(row["close_time"]) > now_ms:
+            break
+        cursor += 1
+        if int(row["open_time"]) < int(position["entry_time"]):
+            continue
         high, low = float(row["high"]), float(row["low"])
-        side = position["side"]
-        tp, sl = float(position["tp1"]), float(position["sl"])
         if side == "LONG":
             if high >= tp and low <= sl:
+                if has_cursor:
+                    position["lower_cursor"] = cursor
                 return "LOSS", sl, row["close_time"], "same_bar_tp_sl"
             if low <= sl:
+                if has_cursor:
+                    position["lower_cursor"] = cursor
                 return "LOSS", sl, row["close_time"], "sl"
             if high >= tp:
+                if has_cursor:
+                    position["lower_cursor"] = cursor
                 return "WIN", tp, row["close_time"], "tp1"
         else:
             if low <= tp and high >= sl:
+                if has_cursor:
+                    position["lower_cursor"] = cursor
                 return "LOSS", sl, row["close_time"], "same_bar_tp_sl"
             if high >= sl:
+                if has_cursor:
+                    position["lower_cursor"] = cursor
                 return "LOSS", sl, row["close_time"], "sl"
             if low <= tp:
+                if has_cursor:
+                    position["lower_cursor"] = cursor
                 return "WIN", tp, row["close_time"], "tp1"
-    if now_ms - position["entry_time"] >= TIME_STOP_MS:
+    if has_cursor:
+        position["lower_cursor"] = cursor
+    if now_ms - position["entry_time"] >= position.get("time_stop_ms", TIME_STOP_MS):
         return "EXPIRED", position["last_close"], now_ms, "time_stop_7d"
     return None
 
 
-def _trade_record(position, result, exit_price, exit_time, exit_reason, resolution, funding_history, notional):
+def _mae_pct(position, rows, exit_time):
+    observed = [row for row in rows if int(row["open_time"]) >= position["entry_time"] and int(row["close_time"]) <= exit_time]
+    if not observed:
+        return 0.0
+    entry = float(position["entry_price"])
+    if position["side"] == "LONG":
+        return round((min(float(row["low"]) for row in observed) / entry - 1) * 100, 8)
+    return round((entry / max(float(row["high"]) for row in observed) - 1) * 100, 8)
+
+def _trade_record(position, result, exit_price, exit_time, exit_reason, resolution, funding_history, notional, observed_rows=None):
     pnl = calculate_trade_pnl(
         position["side"],
         position["entry_price"],
@@ -101,6 +131,7 @@ def _trade_record(position, result, exit_price, exit_time, exit_reason, resoluti
         "entry_price": position["entry_price"],
         "signal_price": position["signal_price"],
         "exit_price": exit_price,
+        "mae_pct": _mae_pct(position, observed_rows or [], exit_time),
         "sl": position["sl"],
         "tp1": position["tp1"],
         "rr": position.get("risk_reward"),
@@ -121,8 +152,9 @@ def _trade_record(position, result, exit_price, exit_time, exit_reason, resoluti
     }
 
 
-def simulate_coin(coin, dataset, start_ms, end_ms, setups=None, production_filters=True, notional=100.0, btc_dataset=None):
+def simulate_coin(coin, dataset, start_ms, end_ms, setups=None, production_filters=True, notional=100.0, btc_dataset=None, experiment=None):
     setups = set(setups or SETUPS)
+    experiment = dict(experiment or {})
     all_candles = sorted(dataset.get("4h", []), key=lambda row: int(row["open_time"]))
     candles = [row for row in all_candles if start_ms <= int(row["close_time"]) <= end_ms]
     one_day = sorted(dataset.get("1d", []), key=lambda row: int(row["close_time"]))
@@ -131,7 +163,7 @@ def simulate_coin(coin, dataset, start_ms, end_ms, setups=None, production_filte
     funding = dataset.get("funding") or []
     closes_4h = [float(row["close"]) for row in all_candles]
     rsi_series = calculate_rsi_series(closes_4h)
-    rsi_series = calculate_rsi_series(closes_4h)
+    atr_series = average_true_range(all_candles, 14)
     position = None
     pending = None
     trades = []
@@ -147,6 +179,7 @@ def simulate_coin(coin, dataset, start_ms, end_ms, setups=None, production_filte
                 "entry_price": float(candle["open"]),
                 "entry_time": int(candle["open_time"]),
                 "last_close": float(candle["close"]),
+                "lower_cursor": 0,
             }
             pending = None
 
@@ -155,7 +188,7 @@ def simulate_coin(coin, dataset, start_ms, end_ms, setups=None, production_filte
             event = _exit_event(position, lower_rows, now)
             if event:
                 result, exit_price, exit_time, reason = event
-                trades.append(_trade_record(position, result, exit_price, exit_time, reason, lower_resolution, funding, notional))
+                trades.append(_trade_record(position, result, exit_price, exit_time, reason, lower_resolution, funding, notional, lower_rows))
                 position = None
 
         if position or pending or index + 1 >= len(candles):
@@ -185,8 +218,45 @@ def simulate_coin(coin, dataset, start_ms, end_ms, setups=None, production_filte
             "support": feature["support"],
             "resistance": feature["resistance"],
             "trend_alignment": feature["trend_alignment"],
+            "open": float(candle["open"]),
         }
         signal = _call_brain(market_data, regime)
+        if not signal or signal.get("setup") not in setups:
+            continue
+        atr = atr_series[rsi_index] if rsi_index < len(atr_series) else None
+        if experiment.get("disable_setup") == signal.get("setup"):
+            continue
+        if experiment.get("funding_positive_only") and signal.get("setup") == "PULLBACK SHORT":
+            funding_rows = [item for item in funding if int(item.get("timestamp", 0)) <= now]
+            if not funding_rows or float(funding_rows[-1].get("funding_rate", 0)) <= 0:
+                continue
+        if experiment.get("support_distance_filter") and signal.get("setup") == "OVERSOLD BOUNCE":
+            support = feature.get("support")
+            if support is None or float(candle["close"]) > float(support) * 1.01:
+                continue
+        entry_offset = 1
+        if experiment.get("confirmation") and signal.get("setup") in ("OVERSOLD BOUNCE", "OVERBOUGHT REJECTION"):
+            next_candle = candles[index + 1] if index + 1 < len(candles) else None
+            if next_candle is None:
+                continue
+            bullish = signal.get("side") == "LONG"
+            next_open = float(next_candle["open"])
+            next_close = float(next_candle["close"])
+            if (bullish and next_close <= next_open) or ((not bullish) and next_close >= next_open):
+                continue
+            entry_offset = 2
+        if atr and experiment.get("sl_atr_multiplier"):
+            distance = float(experiment["sl_atr_multiplier"]) * float(atr)
+            signal["sl"] = float(signal["entry"]) - distance if signal.get("side") == "LONG" else float(signal["entry"]) + distance
+        if atr and experiment.get("tp_mode") in ("2x_atr", "3x_atr"):
+            multiple = 2.0 if experiment["tp_mode"] == "2x_atr" else 3.0
+            signal["tp1"] = float(signal["entry"]) + multiple * float(atr) if signal.get("side") == "LONG" else float(signal["entry"]) - multiple * float(atr)
+        if signal.get("entry") and signal.get("sl") and signal.get("tp1"):
+            signal["risk_reward"] = round(abs(float(signal["tp1"]) - float(signal["entry"])) / abs(float(signal["entry"]) - float(signal["sl"])), 2)
+        if experiment.get("rr_min") is not None and (signal.get("risk_reward") is None or float(signal.get("risk_reward")) < float(experiment["rr_min"])):
+            continue
+        if experiment.get("confidence_min") is not None and float(signal.get("confidence") or 0) < float(experiment["confidence_min"]):
+            continue
         if not signal or signal.get("setup") not in setups:
             continue
         if production_filters and (
@@ -198,7 +268,7 @@ def simulate_coin(coin, dataset, start_ms, end_ms, setups=None, production_filte
         if signal.get("side") not in ("LONG", "SHORT") or signal.get("sl") is None or signal.get("tp1") is None:
             continue
         pending = {
-            "entry_index": index + 1,
+            "entry_index": index + entry_offset,
             "trade": {
                 "coin": coin,
                 "setup": signal["setup"],
@@ -210,10 +280,11 @@ def simulate_coin(coin, dataset, start_ms, end_ms, setups=None, production_filte
                 "tp1": float(signal["tp1"]),
                 "risk_reward": signal.get("risk_reward"),
                 "confidence": signal.get("confidence"),
+                "time_stop_ms": int(experiment.get("time_stop_days", 7)) * 24 * 60 * 60 * 1000,
             },
         }
 
     if position:
         exit_time = int(candles[-1]["close_time"])
-        trades.append(_trade_record(position, "EXPIRED", position["last_close"], exit_time, "end_of_period", lower_resolution, funding, notional))
+        trades.append(_trade_record(position, "EXPIRED", position["last_close"], exit_time, "end_of_period", lower_resolution, funding, notional, lower_rows))
     return trades
