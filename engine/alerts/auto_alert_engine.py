@@ -5,10 +5,33 @@ Mengumpulkan peluang trading berkualitas tinggi untuk unified gateway (process_s
 Hanya menggunakan data dari opportunity scanner; tidak ada API call baru.
 """
 
-from engine.signal_engine import build_unified_signal
+import logging
+import math
+import os
 
-# Threshold alert
-MIN_SCORE = 160
+from engine.signal_engine import build_unified_signal
+from engine.utils.formatters import format_price, format_ratio
+
+
+def _load_min_score() -> float:
+    raw = os.getenv("AUTO_ALERT_MIN_SCORE", "70")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logging.getLogger(__name__).error(
+            "AUTO_ALERT_MIN_SCORE harus berupa angka dalam rentang 0-100"
+        )
+        raise RuntimeError("AUTO_ALERT_MIN_SCORE must be between 0 and 100") from None
+    if not math.isfinite(value) or not 0 <= value <= 100:
+        logging.getLogger(__name__).error(
+            "AUTO_ALERT_MIN_SCORE di luar rentang score 0-100: %r", raw
+        )
+        raise RuntimeError("AUTO_ALERT_MIN_SCORE must be between 0 and 100")
+    return value
+
+
+# Threshold alert; score berasal dari signal_quality_engine (0-100).
+MIN_SCORE = _load_min_score()
 MIN_RR = 2.5
 MIN_CONFIDENCE = 65
 
@@ -32,34 +55,26 @@ def _format_alert_message(opp):
     confidence = opp.get("confidence")
     score = opp.get("score")
 
-    def _num(x):
-        if x is None:
-            return "—"
-        try:
-            return round(float(x), 2)
-        except (TypeError, ValueError):
-            return "—"
-
     lines = [
         "🚨 ALIZA TRADE ALERT",
         "",
         f"{coin} {setup}",
         "",
-        f"Entry : {_num(entry)}",
-        f"SL : {_num(sl)}",
-        f"TP1 : {_num(tp1)}",
-        f"TP2 : {_num(tp2)}",
+        f"Entry : {format_price(entry)}",
+        f"SL : {format_price(sl)}",
+        f"TP1 : {format_price(tp1)}",
+        f"TP2 : {format_price(tp2)}",
         "",
-        f"RR : {_num(rr)}",
+        f"RR : {format_ratio(rr)}",
         f"Confidence : {confidence}",
-        f"Score : {_num(score)}",
+        f"Score : {format_ratio(score)}",
     ]
     return "\n".join(lines)
 
 
 def process_auto_alerts(opportunities):
     """
-    Filter opportunity yang memenuhi syarat alert (score≥160, rr≥2.5, confidence≥65).
+    Filter opportunity yang memenuhi syarat alert (score≥MIN_SCORE, rr≥2.5, confidence≥65).
     Return list untuk gateway: message + signal (unified) per item.
     Dedup & risk ditangani oleh engine.signal_engine.process_signal.
     """

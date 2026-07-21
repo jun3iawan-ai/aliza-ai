@@ -78,10 +78,29 @@ def _get_price_from_binance(symbol):
     return None
 
 
+def _extract_closed_kline_closes(data, now_ms=None):
+    """Ekstrak close hanya dari candle Binance yang closeTime-nya sudah lewat."""
+    cutoff_ms = int(now_ms if now_ms is not None else time.time() * 1000)
+    closes = []
+    for candle in data if isinstance(data, list) else []:
+        if not isinstance(candle, (list, tuple)) or len(candle) < 7:
+            continue
+        try:
+            close_time = int(candle[6])
+            close_price = float(candle[4])
+        except (TypeError, ValueError):
+            continue
+        if close_time > cutoff_ms:
+            continue
+        if close_price > 0:
+            closes.append(close_price)
+    return closes
+
+
 def _get_binance_klines(symbol_usdt, interval, limit=100):
     """
     Fetch OHLCV klines from Binance. symbol_usdt must be e.g. BTCUSDT, ETHUSDT.
-    Returns list of close prices (oldest to newest), or [] on failure.
+    Returns list of closed-candle prices (oldest to newest), or [] on failure.
     Uses klines cache to reduce API requests; TTL 4h=300s, 1d=600s.
     """
     if not symbol_usdt or not isinstance(symbol_usdt, str):
@@ -116,13 +135,8 @@ def _get_binance_klines(symbol_usdt, interval, limit=100):
         data = r.json()
         if not isinstance(data, list):
             return []
-        closes = []
-        for candle in data:
-            if isinstance(candle, (list, tuple)) and len(candle) >= 5:
-                c = _safe_float(candle[4])
-                if c is not None and c > 0:
-                    closes.append(c)
-        if len(closes) >= 1:
+        closes = _extract_closed_kline_closes(data)
+        if closes:
             set_cached_klines(sym, interval, closes)
             return closes
         return []
@@ -273,11 +287,8 @@ def market_signal(symbol, radar_data=None):
         chart = get_coin_market_chart(symbol, vs_currency="usd", days=90)
         prices = _get_prices_from_chart(chart)
 
-    # 3. Append Binance price as latest candle so indicators stay consistent
-    if prices and price is not None and price > 0:
-        prices.append(price)
-
-    # 4. Resolve final price: Binance -> last known cache -> chart fallback
+    # 3. Resolve final price: Binance -> last known cache -> chart fallback.
+    # Ticker tidak ditambahkan ke seri indikator karena bukan candle yang sudah close.
     def _is_valid_price(p):
         return p is not None and isinstance(p, (int, float)) and p > 0
 
@@ -297,10 +308,10 @@ def market_signal(symbol, radar_data=None):
         logger.warning("Invalid data — skipping signal")
         return None
 
-    # Fallback untuk non-Binance coins: gunakan CoinGecko daily prices
-    # sebagai proxy timeframe jika Binance klines kosong
-    _closes_4h_mtf = closes_4h if len(closes_4h) >= 30 else prices
-    _closes_1d_mtf = closes_1d if len(closes_1d) >= 50 else prices
+    # Setiap timeframe harus berasal dari seri aslinya. Data kurang ditandai
+    # unavailable agar analyzer menghasilkan UNKNOWN, bukan false alignment.
+    _closes_4h_mtf = closes_4h if len(closes_4h) >= 30 else []
+    _closes_1d_mtf = closes_1d if len(closes_1d) >= 50 else []
     mtf = analyze_multi_timeframe(_closes_4h_mtf, _closes_1d_mtf)
     trend_4h = mtf.get("trend_4h")
     trend_1d = mtf.get("trend_1d")

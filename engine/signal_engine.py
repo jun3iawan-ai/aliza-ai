@@ -42,7 +42,7 @@ def validate_signal_risk(signal: dict) -> bool:
     try:
         from engine.risk_manager import validate_proposed_trade
 
-        return validate_proposed_trade(entry, sl, tp1)
+        return validate_proposed_trade(entry, sl, tp1, signal.get("side"))
     except Exception as e:
         logger.error(
             "Risk validation error — REJECTING signal for safety (risk checker failure, not rule rejection): %s",
@@ -200,12 +200,22 @@ def build_unified_signal(
     tp2: Any = None,
     rr: Any = None,
     confidence: Any = None,
+    side: Optional[str] = None,
     **extra: Any,
 ) -> dict:
     """Format kanonis untuk gateway (tanpa mengubah logika strategi di sumber)."""
     c = (coin or "").strip().upper()
     sym = c if c.endswith("USDT") else (f"{c}USDT" if c else "UNKNOWN")
     typ = str(setup or extra.get("type") or "ALERT")
+    setup_upper = str(setup or "").strip().upper()
+    normalized_side = str(side or extra.get("side") or "").strip().upper()
+    if normalized_side not in {"LONG", "SHORT"}:
+        if setup_upper in {"OVERSOLD BOUNCE", "PULLBACK LONG", "LONG"}:
+            normalized_side = "LONG"
+        elif setup_upper in {"OVERBOUGHT REJECTION", "PULLBACK SHORT", "SHORT"}:
+            normalized_side = "SHORT"
+        else:
+            normalized_side = None
     base = {
         "symbol": sym,
         "type": typ,
@@ -218,6 +228,7 @@ def build_unified_signal(
         "tp2": tp2,
         "coin": c,
         "setup": setup,
+        "side": normalized_side,
         "signal_type": SIGNAL_TYPE_TRADE,
     }
     merged = {**base}
@@ -237,7 +248,7 @@ def attach_strategy_source(sig: dict) -> dict:
     u["type"] = str(u.get("setup") or "ALERT")
     u["stop_loss"] = u.get("sl")
     u["take_profit"] = u.get("tp1")
-    u["source"] = "strategy"
+    u["source"] = "deterministic"
     u["signal_type"] = SIGNAL_TYPE_TRADE
     return u
 

@@ -12,6 +12,17 @@ import logging
 TP_MAX_PCT = 0.08
 MIN_STOP_DISTANCE_PCT = 0.005
 
+SETUP_SIDE = {
+    "OVERSOLD BOUNCE": "LONG",
+    "PULLBACK LONG": "LONG",
+    "OVERBOUGHT REJECTION": "SHORT",
+    "PULLBACK SHORT": "SHORT",
+}
+
+
+def _side_for_setup(setup):
+    return SETUP_SIDE.get(str(setup or "").strip().upper())
+
 try:
     from engine.learning.confidence_adjuster import adjust_confidence
 except ImportError:
@@ -114,6 +125,7 @@ class TradingBrain:
             logging.info("TradingBrain %s NO SETUP reason=%s", coin, reject_reason or "no_condition_met")
             return {
                 "setup": "NO SETUP",
+                "side": None,
                 "entry": entry if entry is not None else 0,
                 "sl": None,
                 "tp1": None,
@@ -256,6 +268,7 @@ class TradingBrain:
             logging.info("TradingBrain %s NO SETUP reason=%s", coin, reject_reason or "no_condition_met")
             return {
                 "setup": setup,
+                "side": _side_for_setup(setup),
                 "entry": entry,
                 "sl": sl,
                 "tp1": tp1,
@@ -272,7 +285,10 @@ class TradingBrain:
             tp1, tp2 = _cap_tp_short(entry, tp1, tp2)
 
         rr = _risk_reward(entry, sl, tp1)
-        if validate_proposed_trade is not None and not validate_proposed_trade(entry, sl, tp1):
+        side = _side_for_setup(setup)
+        if validate_proposed_trade is not None and not validate_proposed_trade(
+            entry, sl, tp1, side
+        ):
             return None
         confidence = _confidence_from_rr(rr, rsi)
         if adjust_confidence is not None and get_strategy_stats is not None:
@@ -285,6 +301,7 @@ class TradingBrain:
 
         return {
             "setup": setup,
+            "side": side,
             "entry": entry,
             "sl": sl,
             "tp1": tp1,

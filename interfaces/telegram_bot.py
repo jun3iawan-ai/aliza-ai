@@ -5123,6 +5123,9 @@ def _parse_and_record_signals(text: str, market_score: int = 0) -> None:
             record_signal({
                 "coin": coin,
                 "setup": setup,
+                "side": "SHORT" if setup == "SHORT" else "LONG",
+                "source": "llm",
+                "dispatch_status": "SENT",
                 "entry": entry,
                 "sl": sl,
                 "tp": tp,
@@ -5255,15 +5258,19 @@ async def morning_brief_job(context: ContextTypes.DEFAULT_TYPE):
         logging.warning("morning_brief: analisis kosong")
         return
 
+    analysis_sent = False
     try:
-        await safe_dispatch(str(analysis).strip(), chat_id=chat_id, force=True)
+        analysis_sent = bool(
+            await safe_dispatch(str(analysis).strip(), chat_id=chat_id, force=True)
+        )
     except Exception as e:
         logging.error("morning_brief dispatch analysis: %s", e)
-    try:
-        _ms = result.get("total_score", 0) if result else 0
-        _parse_and_record_signals(str(analysis), market_score=_ms)
-    except Exception:
-        pass
+    if analysis_sent:
+        try:
+            _ms = result.get("total_score", 0) if result else 0
+            _parse_and_record_signals(str(analysis), market_score=_ms)
+        except Exception:
+            pass
 
 
 async def morning_brief_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5378,15 +5385,19 @@ async def evening_summary_job(context: ContextTypes.DEFAULT_TYPE):
         logging.warning("evening_summary: analisis kosong")
         return
 
+    analysis_sent = False
     try:
-        await safe_dispatch(str(analysis).strip(), chat_id=chat_id, force=True)
+        analysis_sent = bool(
+            await safe_dispatch(str(analysis).strip(), chat_id=chat_id, force=True)
+        )
     except Exception as e:
         logging.error("evening_summary dispatch analysis: %s", e)
-    try:
-        _ms = result.get("total_score", 0) if result else 0
-        _parse_and_record_signals(str(analysis), market_score=_ms)
-    except Exception:
-        pass
+    if analysis_sent:
+        try:
+            _ms = result.get("total_score", 0) if result else 0
+            _parse_and_record_signals(str(analysis), market_score=_ms)
+        except Exception:
+            pass
 
 
 async def evening_summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6560,7 +6571,7 @@ def _format_signal_closed_alert(item: dict) -> str:
 
 
 async def signal_check_job(context: ContextTypes.DEFAULT_TYPE):
-    """Cek sinyal OPEN setiap 30 menit, update WIN/LOSS/EXPIRED, dan kirim notifikasi."""
+    """Cek sinyal OPEN setiap 10 menit, update WIN/LOSS/EXPIRED, dan kirim notifikasi."""
     try:
         closed = check_open_signals()
         if not closed:
@@ -6641,16 +6652,48 @@ async def signal_stats_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await target.reply_text("Terjadi kesalahan saat membaca statistik sinyal.")
 
 
-async def signal_outcome_checker(context: ContextTypes.DEFAULT_TYPE):
-    try:
-        closed = check_open_signals()
-        if closed:
-            logging.info("signal_tracker: closed %d signals", len(closed))
-    except Exception as e:
-        logging.warning("signal_outcome_checker: %s", e)
-
-
 # ========== SNAPSHOT JOB (background, every 60s) ==========
+
+async def _dispatch_and_record_deterministic_signal(sig: dict, chat_id) -> bool:
+    """Dispatch lewat gateway; persist tracking hanya setelah pengiriman sukses."""
+    key = f"{sig.get('coin', '')}|{sig.get('setup', '')}"
+    uni = attach_strategy_source(sig)
+    sent = await process_signal(
+        key,
+        uni,
+        format_signal_message(uni),
+        chat_id=chat_id,
+    )
+    if not sent:
+        return False
+
+    try:
+        sig_to_record = dict(sig)
+        sig_to_record.setdefault(
+            "signal_time",
+            datetime.now(timezone(timedelta(hours=7))).isoformat(),
+        )
+        sig_to_record.setdefault(
+            "tp", sig.get("tp") or sig.get("tp1") or sig.get("take_profit")
+        )
+        sig_to_record["dispatch_status"] = "SENT"
+        sig_to_record["source"] = "deterministic"
+        mctx = calculate_market_score()
+        sig_to_record["market_score"] = mctx.get("total_score")
+        try:
+            snapshot = get_market_snapshot()
+            regime = (
+                (snapshot.get("market_intelligence") or {}).get("market_regime")
+                or "UNKNOWN"
+            )
+        except Exception:
+            regime = "UNKNOWN"
+        sig_to_record["regime"] = regime
+        record_signal(sig_to_record)
+    except Exception as track_err:
+        logging.warning("signal_tracker record failed after dispatch: %s", track_err)
+    return True
+
 
 async def snapshot_job(context: ContextTypes.DEFAULT_TYPE):
     """Refresh market snapshot; run in executor to avoid blocking the event loop."""
@@ -6740,31 +6783,8 @@ async def snapshot_job(context: ContextTypes.DEFAULT_TYPE):
         try:
             sig = scan_for_signals()
             if sig:
-                try:
-                    # Track signal accuracy history in SQLite (dedup handled in tracker).
-                    sig_to_record = dict(sig)
-                    sig_to_record.setdefault("signal_time", datetime.now(timezone(timedelta(hours=7))).isoformat())
-                    sig_to_record.setdefault("tp", sig.get("tp") or sig.get("tp1") or sig.get("take_profit"))
-                    mctx = calculate_market_score()
-                    sig_to_record["market_score"] = mctx.get("total_score")
-                    try:
-                        _snap = get_market_snapshot()
-                        _regime = ((_snap.get("market_intelligence") or {}).get("market_regime")) or "UNKNOWN"
-                    except Exception:
-                        _regime = "UNKNOWN"
-                    sig_to_record["regime"] = _regime
-                    record_signal(sig_to_record)
-                except Exception as track_err:
-                    logging.warning("signal_tracker record failed: %s", track_err)
-                key = f"{sig.get('coin', '')}|{sig.get('setup', '')}"
                 chat_id = context.bot_data.get("chat_id")
-                uni = attach_strategy_source(sig)
-                await process_signal(
-                    key,
-                    uni,
-                    format_signal_message(uni),
-                    chat_id=chat_id,
-                )
+                await _dispatch_and_record_deterministic_signal(sig, chat_id)
         except Exception as sig_err:
             logging.debug("Signal engine dispatch error: %s", sig_err)
 
@@ -7045,19 +7065,12 @@ def main():
         )
         logging.info("Whale alert checker job scheduled (every 600s, first in 120s).")
         app.job_queue.run_repeating(
-            signal_outcome_checker,
-            interval=600,
-            first=180,
-            name="signal_outcome_checker",
-        )
-        logging.info("Signal outcome checker job scheduled (every 600s, first in 180s).")
-        app.job_queue.run_repeating(
             signal_check_job,
-            interval=1800,
+            interval=600,
             first=150,
             name="signal_checker",
         )
-        logging.info("Signal checker job scheduled (every 1800s, first in 150s).")
+        logging.info("Signal checker job scheduled (every 600s, first in 150s).")
         app.job_queue.run_daily(
             evening_calendar_job,
             time=time(hour=14, minute=0, second=0, tzinfo=timezone.utc),
@@ -7073,13 +7086,6 @@ def main():
         #     name="calendar_reminder",
         # )
         # logging.info("Calendar reminder job scheduled (every 1800s, first in 90s).")
-        app.job_queue.run_repeating(
-            rsi_extreme_checker,
-            interval=600,
-            first=80,
-            name="rsi_extreme_checker",
-        )
-        logging.info("RSI extreme checker scheduled (every 600s).")
 
     try:
         initialize_macro_seen_dates()
