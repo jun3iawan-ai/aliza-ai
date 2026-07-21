@@ -8,6 +8,7 @@ import logging
 from datetime import datetime
 
 from engine.market.market_snapshot_engine import get_market_snapshot, is_snapshot_valid
+from engine.utils.formatters import format_price, format_ratio
 
 try:
     from engine.brain.opportunity_ranker import rank_opportunities
@@ -121,20 +122,20 @@ def format_opportunities_message(opportunities, max_items=3):
         sl = opp.get("sl")
         tp1 = opp.get("tp1")
         tp2 = opp.get("tp2")
-        rr = round(opp.get("rr", 0), 2)
+        rr = format_ratio(opp.get("rr", 0))
         trend = opp.get("trend") or "—"
         confidence = opp.get("confidence")
         risk_quality = opp.get("risk_quality") or "—"
         message += f"{i}️⃣ {coin} {setup}\n"
         message += f"Trend : {trend}\n"
         if entry is not None:
-            message += f"Entry : {round(entry, 2)}\n"
+            message += f"Entry : {format_price(entry)}\n"
         if sl is not None:
-            message += f"SL : {round(sl, 2)}\n"
+            message += f"SL : {format_price(sl)}\n"
         if tp1 is not None:
-            message += f"TP1 : {round(tp1, 2)}\n"
+            message += f"TP1 : {format_price(tp1)}\n"
         if tp2 is not None:
-            message += f"TP2 : {round(tp2, 2)}\n"
+            message += f"TP2 : {format_price(tp2)}\n"
         message += f"RR : {rr}\n"
         if confidence is not None:
             message += f"Confidence : {confidence}\n"
