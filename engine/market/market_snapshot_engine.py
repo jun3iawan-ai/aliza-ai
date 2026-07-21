@@ -213,6 +213,13 @@ def _coverage_for_symbol(symbol, data, valid, reason=None):
         if not valid and reason:
             coverage["reason"] = reason
     coverage["valid"] = bool(valid)
+    if not valid:
+        logging.warning(
+            "data_coverage coin=%s klines_4h=%d klines_1d=%d price_source=%s reason=%s",
+            coverage.get("coin", str(symbol).upper()), int(coverage.get("klines_4h", 0)),
+            int(coverage.get("klines_1d", 0)), coverage.get("price_source", "none"),
+            coverage.get("reason", reason or "validation_failed"),
+        )
     return coverage
 
 def update_market_snapshot():
