@@ -467,10 +467,21 @@ def _empty_stats() -> dict[str, Any]:
 
 
 def _stats_breakdown(
-    conn: sqlite3.Connection, column: str
+    conn: sqlite3.Connection, column: str, source_filter: str | None = None
 ) -> list[dict[str, Any]]:
     if column not in {"source", "side", "setup"}:
         raise ValueError("unsupported breakdown column")
+    if source_filter is None:
+        source_clause = ""
+        source_params: tuple[Any, ...] = ()
+    elif source_filter == "deterministic":
+        # Legacy/LLM tetap terlihat pada breakdown historis Fase 1, tetapi
+        # shadow tidak boleh mencemari statistik produksi default.
+        source_clause = "WHERE IFNULL(source, '') != 'shadow_e3'"
+        source_params = ()
+    else:
+        source_clause = "WHERE source = ?"
+        source_params = (source_filter,)
     rows = conn.execute(
         f"""
         SELECT IFNULL({column}, 'UNKNOWN') AS label,
@@ -479,10 +490,11 @@ def _stats_breakdown(
                SUM(CASE WHEN status='LOSS' THEN 1 ELSE 0 END) AS loss,
                SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END) AS open,
                SUM(CASE WHEN status='EXPIRED' THEN 1 ELSE 0 END) AS expired
-        FROM signal_tracking
+        FROM signal_tracking {source_clause}
         GROUP BY IFNULL({column}, 'UNKNOWN')
         ORDER BY label
-        """
+        """,
+        source_params,
     ).fetchall()
     result: list[dict[str, Any]] = []
     for row in rows:
@@ -504,7 +516,7 @@ def _stats_breakdown(
 
 
 def get_signal_stats(source: str | None = "deterministic") -> dict[str, Any]:
-    """Statistik utama terfilter deterministic; breakdown selalu mencakup semua source."""
+    """Statistik terfilter source; default produksi mengecualikan shadow_e3."""
     result = _empty_stats()
     result["source_filter"] = source
     conn: sqlite3.Connection | None = None
@@ -590,9 +602,9 @@ def get_signal_stats(source: str | None = "deterministic") -> dict[str, Any]:
                     }
                     for row in by_coin
                 ],
-                "by_source": _stats_breakdown(conn, "source"),
-                "by_side": _stats_breakdown(conn, "side"),
-                "by_setup": _stats_breakdown(conn, "setup"),
+                "by_source": _stats_breakdown(conn, "source", source),
+                "by_side": _stats_breakdown(conn, "side", source),
+                "by_setup": _stats_breakdown(conn, "setup", source),
             }
         )
         return result

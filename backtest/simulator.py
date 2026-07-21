@@ -117,6 +117,8 @@ def _trade_record(position, result, exit_price, exit_time, exit_reason, resoluti
         position["entry_time"],
         exit_time,
         funding_history,
+        fee_per_side=float(position.get("fee_per_side", 0.001)),
+        slippage_per_side=float(position.get("slippage_per_side", 0.0005)),
     )
     entry_dt = datetime.fromtimestamp(position["entry_time"] / 1000, tz=timezone.utc)
     exit_dt = datetime.fromtimestamp(exit_time / 1000, tz=timezone.utc)
@@ -281,6 +283,8 @@ def simulate_coin(coin, dataset, start_ms, end_ms, setups=None, production_filte
                 "risk_reward": signal.get("risk_reward"),
                 "confidence": signal.get("confidence"),
                 "time_stop_ms": int(experiment.get("time_stop_days", 7)) * 24 * 60 * 60 * 1000,
+                "fee_per_side": float(experiment.get("fee_per_side", 0.001)),
+                "slippage_per_side": float(experiment.get("slippage_per_side", 0.0005)),
             },
         }
 

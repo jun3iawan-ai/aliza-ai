@@ -94,6 +94,11 @@ from engine.trading.signal_tracker import (
     check_open_signals,
     get_signal_stats,
 )
+from engine.shadow.e3_shadow import (
+    collect_shadow_signals,
+    dispatch_enabled as shadow_dispatch_enabled,
+    format_shadow_message,
+)
 from engine.signal_engine import (
     SIGNAL_TYPE_INFORMATIONAL,
     attach_strategy_source,
@@ -6652,6 +6657,27 @@ async def signal_stats_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await target.reply_text("Terjadi kesalahan saat membaca statistik sinyal.")
 
 
+
+async def shadow_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ringkasan outcome E3 shadow, terpisah dari /signal_stats produksi."""
+    msg = update.effective_message
+    if not msg or not _authorized_chat(update):
+        return
+    try:
+        stats = get_signal_stats(source="shadow_e3")
+        lines = [
+            "🧪 Shadow E3 Stats",
+            f"N: {int(stats.get('total_signals', 0))} | WIN {int(stats.get('win', 0))} | LOSS {int(stats.get('loss', 0))} | OPEN {int(stats.get('open', 0))}",
+            f"WR: {float(stats.get('win_rate', 0)):.2f}% | Expectancy: {float(stats.get('avg_pnl', 0)):+.3f}%",
+            "Per setup:",
+        ]
+        for row in stats.get("by_setup") or []:
+            lines.append(f"- {row.get('setup')}: N={row.get('total')} W={row.get('win')} L={row.get('loss')} WR={float(row.get('win_rate', 0)):.1f}%")
+        await msg.reply_text("\n".join(lines))
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("shadow_stats_command: %s", exc)
+        await msg.reply_text("Gagal membaca statistik shadow.")
+
 # ========== SNAPSHOT JOB (background, every 60s) ==========
 
 async def _dispatch_and_record_deterministic_signal(sig: dict, chat_id) -> bool:
@@ -6693,6 +6719,31 @@ async def _dispatch_and_record_deterministic_signal(sig: dict, chat_id) -> bool:
     except Exception as track_err:
         logging.warning("signal_tracker record failed after dispatch: %s", track_err)
     return True
+
+
+async def _run_shadow_e3(snapshot: dict, chat_id) -> int:
+    """Jalankan E3 riset secara terpisah; tidak pernah memanggil process_signal."""
+    try:
+        candidates = collect_shadow_signals(snapshot)
+        dispatched = shadow_dispatch_enabled()
+        recorded = 0
+        for candidate in candidates:
+            shadow = dict(candidate)
+            if dispatched:
+                sent = await safe_dispatch(format_shadow_message(shadow), chat_id=chat_id)
+                if not sent:
+                    logging.warning("shadow_e3 dispatch failed coin=%s", shadow.get("coin"))
+                    continue
+                shadow["dispatch_status"] = "SENT"
+            else:
+                shadow["dispatch_status"] = "RECORDED"
+            if record_signal(shadow):
+                recorded += 1
+        logging.info("shadow_e3 recorded=%d dispatch=%s", recorded, dispatched)
+        return recorded
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("shadow_e3 runtime error: %s", exc)
+        return 0
 
 
 async def snapshot_job(context: ContextTypes.DEFAULT_TYPE):
@@ -6788,6 +6839,9 @@ async def snapshot_job(context: ContextTypes.DEFAULT_TYPE):
         except Exception as sig_err:
             logging.debug("Signal engine dispatch error: %s", sig_err)
 
+        # E3 shadow: jalur riset terisolasi, default OFF, tanpa dedup gateway produksi.
+        await _run_shadow_e3(snapshot, context.bot_data.get("chat_id"))
+
         # BTC smart alert (NON-SPAM): hanya kirim saat signal berubah
         if analyze_btc_signal is not None and should_alert_btc is not None and should_send_alert is not None:
             try:
@@ -6875,6 +6929,7 @@ async def _post_init_set_bot_commands(application):
                 BotCommand("set_balance", "Set modal akun (USDT) untuk position sizing"),
                 BotCommand("balance", "Lihat ringkasan akun dan risk"),
                 BotCommand("status", "Status sistem"),
+                BotCommand("shadow_stats", "Statistik shadow E3"),
             ]
         )
     except Exception as e:
@@ -6893,6 +6948,11 @@ def main():
     logging.info(
         "Telegram dispatcher mode: %s",
         "PRIMARY (alerts enabled)" if IS_PRIMARY_DISPATCHER else "NON-PRIMARY (alerts skipped)",
+    )
+    logging.info(
+        "Shadow E3 mode: enabled=%s dispatch=%s",
+        os.getenv("SHADOW_E3_ENABLED", "false"),
+        os.getenv("SHADOW_E3_DISPATCH", "false"),
     )
 
     app = (
@@ -6945,6 +7005,7 @@ def main():
     app.add_handler(CommandHandler("check_big_move", check_big_move_command))
     app.add_handler(CommandHandler("signal_stats", signal_stats_command))
     app.add_handler(CommandHandler("stats", signal_stats_command))
+    app.add_handler(CommandHandler("shadow_stats", shadow_stats_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_button_handler))
 
     app.add_error_handler(_error_handler)
