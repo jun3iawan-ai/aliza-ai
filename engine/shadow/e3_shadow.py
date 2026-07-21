@@ -1,0 +1,146 @@
+"""Research-only E3 shadow signal generation.
+
+This module is deliberately isolated from the production signal gateway.  It
+only becomes active when ``SHADOW_E3_ENABLED=true`` and never calls
+``process_signal`` (therefore it cannot enter production dedup/state).
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import time
+from datetime import datetime, timezone
+from threading import Lock
+from typing import Any
+
+import requests
+
+from engine.brain.trading_brain import TradingBrain
+from engine.market.features import average_true_range
+
+logger = logging.getLogger(__name__)
+
+KLINES_URL = "https://api.binance.com/api/v3/klines"
+KLINE_LIMIT = 100
+CACHE_TTL_SEC = 900
+_cache: dict[str, tuple[float, list[dict[str, float | int]]]] = {}
+_cache_lock = Lock()
+
+
+def enabled() -> bool:
+    return os.getenv("SHADOW_E3_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def dispatch_enabled() -> bool:
+    return os.getenv("SHADOW_E3_DISPATCH", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _closed_4h_klines(symbol: str) -> list[dict[str, float | int]]:
+    coin = str(symbol or "").upper().replace("USDT", "")
+    if not coin:
+        return []
+    now = time.time()
+    with _cache_lock:
+        cached = _cache.get(coin)
+        if cached and now - cached[0] < CACHE_TTL_SEC:
+            return list(cached[1])
+    try:
+        response = requests.get(
+            KLINES_URL,
+            params={"symbol": f"{coin}USDT", "interval": "4h", "limit": KLINE_LIMIT},
+            timeout=10,
+        )
+        if response.status_code != 200:
+            logger.warning("shadow_e3 kline HTTP %s coin=%s", response.status_code, coin)
+            return []
+        raw = response.json()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("shadow_e3 kline fetch failed coin=%s: %s", coin, exc)
+        return []
+    rows: list[dict[str, float | int]] = []
+    now_ms = int(time.time() * 1000)
+    for item in raw if isinstance(raw, list) else []:
+        try:
+            close_time = int(item[6])
+            if close_time >= now_ms:
+                continue
+            rows.append({
+                "open_time": int(item[0]),
+                "open": float(item[1]),
+                "high": float(item[2]),
+                "low": float(item[3]),
+                "close": float(item[4]),
+                "volume": float(item[5]),
+                "close_time": close_time,
+            })
+        except (TypeError, ValueError, IndexError):
+            continue
+    with _cache_lock:
+        _cache[coin] = (now, rows)
+    return list(rows)
+
+
+def build_shadow_signal(symbol: str, market_data: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Build E3 levels from an already-produced market snapshot row."""
+    if not isinstance(market_data, dict) or len(rows or []) < 15:
+        return None
+    atr_values = average_true_range(rows, 14)
+    atr = atr_values[-1] if atr_values else None
+    if atr is None or float(atr) <= 0:
+        return None
+    data = dict(market_data)
+    data["symbol"] = symbol
+    try:
+        signal = TradingBrain().analyze(data)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("shadow_e3 TradingBrain failed coin=%s: %s", symbol, exc)
+        return None
+    if not signal or signal.get("setup") in (None, "NO SETUP"):
+        return None
+    setup = str(signal.get("setup"))
+    entry = float(signal.get("entry") or data.get("price"))
+    side = str(signal.get("side") or "").upper()
+    if side not in {"LONG", "SHORT"} or entry <= 0:
+        return None
+    if setup == "OVERSOLD BOUNCE":
+        support = data.get("support")
+        if support is None or entry > float(support) * 1.01:
+            return None
+    distance = float(atr)
+    signal["coin"] = str(symbol).upper().replace("USDT", "")
+    signal["side"] = side
+    signal["entry"] = entry
+    signal["sl"] = entry - distance if side == "LONG" else entry + distance
+    signal["tp1"] = entry + 3 * distance if side == "LONG" else entry - 3 * distance
+    signal["risk_reward"] = 3.0
+    signal["atr_14"] = distance
+    signal["source"] = "shadow_e3"
+    signal["dispatch_status"] = "RECORDED"
+    signal["signal_time"] = datetime.now(timezone.utc).isoformat()
+    signal["regime"] = str(data.get("market_regime") or data.get("regime") or "UNKNOWN")
+    return signal
+
+
+def collect_shadow_signals(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    if not enabled():
+        return []
+    rows_by_coin: list[dict[str, Any]] = []
+    for symbol, market_data in (snapshot.get("data") or {}).items():
+        rows = _closed_4h_klines(symbol)
+        signal = build_shadow_signal(symbol, market_data, rows)
+        if signal:
+            rows_by_coin.append(signal)
+    logger.info("shadow_e3 candidates=%d", len(rows_by_coin))
+    return rows_by_coin
+
+
+def format_shadow_message(signal: dict[str, Any]) -> str:
+    return (
+        "🧪 SHADOW/RISET — BUKAN SINYAL PRODUKSI\n\n"
+        f"{signal.get('coin', '—')} {signal.get('setup', '—')} {signal.get('side', '—')}\n"
+        f"Entry: {float(signal.get('entry', 0)):.8g}\n"
+        f"SL (1×ATR): {float(signal.get('sl', 0)):.8g}\n"
+        f"TP (3×ATR): {float(signal.get('tp1', 0)):.8g}\n"
+        f"ATR14 4h: {float(signal.get('atr_14', 0)):.8g}"
+    )
