@@ -61,7 +61,7 @@ Coin dengan outcome: **8 positif dari 11**; 10 coin core lain tidak menghasilkan
 
 | Kandidat post-hoc | N | Expectancy | PF | Verdict kalibrasi |
 |---|---:|---:|---:|---|
-| E3 3×ATR / 7 hari | 146 | +0,4447% | 1,1736 | positif, PF di bawah kriteria 1,15? **LOLOS PF numerik**, namun bukan pemenang yang dipilih |
+| E3 3×ATR / 7 hari | 146 | +0,4447% | 1,1736 | positif, PF 1,1736 di atas ambang 1,15 (post-hoc), namun bukan pemenang yang dipilih |
 | ATR 1,5× (E1) | 18 | −0,6372% | 0,6885 | sampel kecil; tidak konklusif |
 
 E3 3×ATR/7 hari ikut terlihat positif karena diuji setelah melihat grid; angka ini hanya mengukur kemudahan grid “lolos”, bukan validasi independen. Catatan: PF 1,1736 sebenarnya di atas ambang 1,15; N=146 juga di atas 80, tetapi konfigurasi tetap post-hoc dan tidak dipromosikan.
