@@ -189,6 +189,7 @@ try:
 except ImportError:
     should_send_alert = None
 
+from engine.alerts import notification_governor as ngov
 from engine.monitoring.system_monitor import check_system_health
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -197,20 +198,20 @@ DEFAULT_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 _bot_instance = None
 _dispatch_semaphore = asyncio.Semaphore(5)
 _calendar_reminder_last_sent: dict[str, datetime] = {}
-_whale_alert_last_sent: dict[tuple[str, str], datetime] = {}
+# NOTE: cooldown state for near_support/near_resistance/rsi/big_move/whale/
+# volume_spike/breakout/funding used to live in plain in-memory dicts here
+# (and in their respective detector modules) — wiped on every process
+# restart, which is the root cause documented in NOTIFIKASI_MITIGASI_REPORT.md.
+# They are now persisted via engine.alerts.notification_governor (ngov);
+# only the cooldown *durations* remain as module constants below.
 _WHALE_ALERT_COOLDOWN_SEC = 4 * 3600
 _WHALE_MONITOR_COINS = ("BTC", "ETH", "BNB", "SOL", "XRP")
-_snapshot_alert_last_sent: dict[tuple[str, str], datetime] = {}
 _SNAPSHOT_ALERT_COOLDOWN_SEC = 4 * 3600
 ALERT_COIN_BLACKLIST: set[str] = {
     "WLFI",
     "SKY",
     "PIXEL",
 }
-_snapshot_alert_last_pct: dict[tuple[str, str], float] = {}  # track nilai pct terakhir per coin
-_volume_spike_last_sent: dict[str, datetime] = {}
-_VOLUME_SPIKE_COOLDOWN_SEC = 8 * 3600
-_VOLUME_SPIKE_MIN_MULTIPLIER = 4.0
 
 # Production logging: file + console, avoid duplicate handlers on reload
 LOG_DIR = "logs"
@@ -887,7 +888,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/testalert\n"
             "Test notifikasi\n\n"
             "/marketdebug\n"
-            "Debug data market"
+            "Debug data market\n\n"
+            "/alert_stats\n"
+            "Statistik alert (terkirim/digest/skip/rate-limit)"
         )
         await update.message.reply_text(msg)
     except Exception as e:
@@ -1786,6 +1789,45 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logging.error("STATUS ERROR: %s", e)
         await update.message.reply_text("Gagal memuat status.")
+
+
+# ========== ALERT STATS ==========
+
+async def alert_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Observability untuk mitigasi spam notifikasi: alert terkirim/di-digest/
+    di-skip(stale)/kena rate-limit per jenis, sejak proses ini terakhir start."""
+    logging.info("COMMAND RECEIVED: /alert_stats")
+    try:
+        stats = ngov.get_stats_snapshot()
+        rl = stats.pop("_rate_limit", {})
+        lines = ["📊 ALERT STATS (sejak proses terakhir start)", ""]
+        if not stats:
+            lines.append("Belum ada alert yang diproses pada proses ini.")
+        else:
+            for alert_type in sorted(stats.keys()):
+                s = stats[alert_type]
+                sent_individual = s.get("sent_individual", 0)
+                sent_digested = s.get("sent_digested", 0)
+                skipped_stale = s.get("skipped_stale", 0)
+                lines.append(
+                    f"• {alert_type}: terkirim={sent_individual} | "
+                    f"di-digest={sent_digested} | skip(stale)={skipped_stale}"
+                )
+        lines.append("")
+        lines.append(
+            f"⏳ Rate limit jam ini: {rl.get('sent_this_hour', 0)}/{rl.get('max_per_hour', ngov.MAX_ALERTS_PER_HOUR)} "
+            f"terkirim, {rl.get('suppressed_this_hour', 0)} tersaring"
+        )
+        lines.append(f"🔢 Pending di buffer digest: {ngov.pending_count()}")
+        lines.append(
+            f"⚙️ Threshold digest: {ngov.ALERT_DIGEST_THRESHOLD} | "
+            f"Cooldown big move: {ngov.BIG_MOVE_COOLDOWN_SEC}s | "
+            f"Snapshot max age: {ngov.SNAPSHOT_MAX_AGE_SEC}s"
+        )
+        await update.message.reply_text("\n".join(lines))
+    except Exception as e:
+        logging.error("ALERT_STATS ERROR: %s", e, exc_info=True)
+        await update.message.reply_text("Gagal memuat alert stats.")
 
 
 # ========== TESTALERT ==========
@@ -5411,8 +5453,8 @@ async def evening_summary_command(update: Update, context: ContextTypes.DEFAULT_
     await evening_summary_job(context)
 
 
-async def spot_signal_job(context: ContextTypes.DEFAULT_TYPE):
-    """Kirim hanya section saran spot (5 coin) via LLM; terjadwal 6x/hari WIB."""
+async def spot_signal_job(context: ContextTypes.DEFAULT_TYPE, _bypass_dedup: bool = False):
+    """Kirim hanya section saran spot (5 coin) via LLM; terjadwal 3x/hari WIB."""
     chat_id = None
     try:
         if context and getattr(context, "bot_data", None):
@@ -5503,6 +5545,20 @@ async def spot_signal_job(context: ContextTypes.DEFAULT_TYPE):
         logging.warning("spot_signal skipped: LLM tidak menghasilkan analisis (timeout/error/AI off)")
         return
 
+    # Dedup: kalau isi section persis sama dengan pengiriman sebelumnya dalam
+    # <2 jam (mis. beberapa run "Tidak ada setup spot yang layak" berturutan
+    # akibat restart proses di antara dua jadwal resmi 06/12/21 WIB), jangan
+    # kirim ulang — jadwal resminya sendiri TIDAK diubah oleh cek ini.
+    now_ts = time_module.time()
+    if not _bypass_dedup:
+        last = ngov.get_value("spot_signal", "last_sent") or {}
+        last_text = last.get("text")
+        last_ts = last.get("ts")
+        if last_text == spot_section and last_ts is not None and (now_ts - float(last_ts)) < 7200:
+            logging.info("spot_signal skipped: konten identik dengan pengiriman <2 jam lalu")
+            return
+    ngov.set_value("spot_signal", "last_sent", {"text": spot_section, "ts": now_ts})
+
     msg = (
         "📈 SARAN SPOT TERBAIK\n"
         f"{_spot_signal_wib_header_line()}\n"
@@ -5517,7 +5573,7 @@ async def spot_signal_job(context: ContextTypes.DEFAULT_TYPE):
 
 async def spot_signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info("COMMAND RECEIVED: /spot_signal")
-    await spot_signal_job(context)
+    await spot_signal_job(context, _bypass_dedup=True)
 
 
 async def breakout_check_job(context: ContextTypes.DEFAULT_TYPE):
@@ -5534,7 +5590,9 @@ async def breakout_check_job(context: ContextTypes.DEFAULT_TYPE):
             return
         for b in breakouts:
             msg = format_breakout_alert_message(b)
-            await safe_dispatch(msg, chat_id=chat_id, force=False)
+            coin = b.get("symbol", "")
+            direction = b.get("direction", "")
+            ngov.queue_alert("breakout", "BREAKOUT", f"{coin} {direction}", msg)
     except Exception as e:
         logging.error("breakout_check_job: %s", e, exc_info=True)
 
@@ -5566,7 +5624,9 @@ async def check_breakout_command(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def volume_spike_job(context: ContextTypes.DEFAULT_TYPE):
-    """Cek volume spike top 5 coin setiap 5 menit; threshold ≥4.0x; cooldown 8 jam per coin."""
+    """Cek volume spike top 5 coin setiap 5 menit; threshold & cooldown ditentukan
+    tunggal di volume_spike_detector.py (SPIKE_MULTIPLIER, ALERT_COOLDOWN_SEC) —
+    tidak ada gate kedua di sini lagi (lihat NOTIFIKASI_MITIGASI_REPORT.md item 6)."""
     try:
         spikes = await run_volume_spike_check()
         chat_id = None
@@ -5577,17 +5637,11 @@ async def volume_spike_job(context: ContextTypes.DEFAULT_TYPE):
         if not chat_id:
             logging.warning("volume_spike_job: no chat_id")
             return
-        now_utc = datetime.now(timezone.utc)
         for s in spikes:
-            if s.get("multiplier", 0.0) < _VOLUME_SPIKE_MIN_MULTIPLIER:
-                continue
             coin = s.get("symbol", "")
-            last = _volume_spike_last_sent.get(coin)
-            if last is not None and (now_utc - last).total_seconds() < _VOLUME_SPIKE_COOLDOWN_SEC:
-                continue
-            _volume_spike_last_sent[coin] = now_utc
+            mult = s.get("multiplier", 0.0)
             msg = format_volume_spike_alert_message(s)
-            await safe_dispatch(msg, chat_id=chat_id, force=False)
+            ngov.queue_alert("volume_spike", "VOLUME SPIKE", f"{coin} {mult:.2f}x", msg)
     except Exception as e:
         logging.error("volume_spike_job: %s", e, exc_info=True)
 
@@ -5632,7 +5686,9 @@ async def funding_alert_job(context: ContextTypes.DEFAULT_TYPE):
             return
         for item in alerts:
             msg = format_funding_alert_message(item)
-            await safe_dispatch(msg, chat_id=chat_id, force=False)
+            coin = item.get("symbol", "")
+            condition = item.get("condition", "")
+            ngov.queue_alert("funding", "FUNDING EXTREME", f"{coin} {condition}", msg)
     except Exception as e:
         logging.error("funding_alert_job: %s", e, exc_info=True)
 
@@ -5927,13 +5983,11 @@ def _wib_now_label() -> str:
 
 
 def _whale_alert_allowed(coin: str, condition: str, now_utc: datetime) -> bool:
-    key = (coin, condition)
-    last_sent = _whale_alert_last_sent.get(key)
-    if last_sent is not None:
-        elapsed = (now_utc - last_sent).total_seconds()
-        if elapsed < _WHALE_ALERT_COOLDOWN_SEC:
-            return False
-    _whale_alert_last_sent[key] = now_utc
+    key = f"{coin}:{condition}"
+    now_ts = now_utc.timestamp()
+    if not ngov.is_cooldown_allowed("whale_alert", key, _WHALE_ALERT_COOLDOWN_SEC, now=now_ts):
+        return False
+    ngov.record_cooldown("whale_alert", key, now=now_ts)
     return True
 
 
@@ -6005,6 +6059,11 @@ async def whale_alert_job(context: ContextTypes.DEFAULT_TYPE):
             if not isinstance(coin_data, dict):
                 continue
 
+            if not ngov.is_coin_snapshot_fresh(coin_data):
+                logging.warning("whale_alert_job: skip %s — stale snapshot data", coin)
+                ngov.record_skipped_stale("whale_alert")
+                continue
+
             whale_result = analyze_whale_flow(coin_data) or {}
             whale_pressure = str(whale_result.get("whale_pressure", "NEUTRAL")).upper()
             accumulation_result = detect_whale_accumulation(coin, coin_data) or {}
@@ -6012,22 +6071,19 @@ async def whale_alert_job(context: ContextTypes.DEFAULT_TYPE):
             confidence = str(accumulation_result.get("confidence", "MEDIUM"))
 
             if whale_pressure == "BUYING" and _whale_alert_allowed(coin, "BUYING", now_utc):
-                await safe_dispatch(
+                ngov.queue_alert(
+                    "whale_alert", "WHALE BUYING", f"{coin} — tekanan BUYING",
                     _format_whale_buying_alert(coin, coin_data),
-                    chat_id=chat_id,
-                    force=False,
                 )
             if whale_pressure == "SELLING" and _whale_alert_allowed(coin, "SELLING", now_utc):
-                await safe_dispatch(
+                ngov.queue_alert(
+                    "whale_alert", "WHALE SELLING", f"{coin} — tekanan SELLING",
                     _format_whale_selling_alert(coin, coin_data),
-                    chat_id=chat_id,
-                    force=False,
                 )
             if has_accum and _whale_alert_allowed(coin, "ACCUMULATION", now_utc):
-                await safe_dispatch(
+                ngov.queue_alert(
+                    "whale_alert", "WHALE ACCUMULATION", f"{coin} — akumulasi ({confidence})",
                     _format_whale_accumulation_alert(coin, coin_data, confidence),
-                    chat_id=chat_id,
-                    force=False,
                 )
     except Exception as e:
         logging.error("whale_alert_job: %s", e, exc_info=True)
@@ -6071,19 +6127,17 @@ async def check_whale_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 def _snapshot_alert_allowed(coin: str, condition: str, now_utc: datetime, pct: float | None = None) -> bool:
-    key = (coin, condition)
-    last_sent = _snapshot_alert_last_sent.get(key)
-    if last_sent is not None:
-        elapsed = (now_utc - last_sent).total_seconds()
-        if elapsed < _SNAPSHOT_ALERT_COOLDOWN_SEC:
-            return False
-    # Cek apakah nilai pct sama persis dengan yang terakhir dikirim (data stale)
+    """Persisted cooldown + identical-value dedup gate (survives process restart)."""
+    key = f"{coin}:{condition}"
+    now_ts = now_utc.timestamp()
+    if not ngov.is_cooldown_allowed("snapshot_alert", key, _SNAPSHOT_ALERT_COOLDOWN_SEC, now=now_ts):
+        return False
+    # Cek apakah nilai pct sama persis dengan yang terakhir dikirim (data stale/tidak berubah)
+    if pct is not None and ngov.is_duplicate_value("snapshot_alert", key, pct):
+        return False
     if pct is not None:
-        last_pct = _snapshot_alert_last_pct.get(key)
-        if last_pct is not None and abs(pct - last_pct) < 0.01:
-            return False  # Data tidak berubah — skip
-        _snapshot_alert_last_pct[key] = pct
-    _snapshot_alert_last_sent[key] = now_utc
+        ngov.record_value("snapshot_alert", key, pct)
+    ngov.record_cooldown("snapshot_alert", key, now=now_ts)
     return True
 
 
@@ -6168,6 +6222,10 @@ async def near_support_checker(context: ContextTypes.DEFAULT_TYPE):
             rel = abs(price - support) / support
             if rel >= 0.01 or rel < 0.0005:
                 continue
+            if not ngov.is_coin_snapshot_fresh(coin_data):
+                logging.warning("near_support_checker: skip %s — stale snapshot data", coin)
+                ngov.record_skipped_stale("near_support")
+                continue
             jarak_pct = rel * 100.0
             if not _snapshot_alert_allowed(coin, "near_support", now_utc):
                 continue
@@ -6180,7 +6238,12 @@ async def near_support_checker(context: ContextTypes.DEFAULT_TYPE):
                 "——\n"
                 f"Aliza Engine • {_wib_now_label()}"
             )
-            await safe_dispatch(msg, chat_id=chat_id, force=False)
+            ngov.queue_alert(
+                "near_support",
+                "NEAR SUPPORT",
+                f"{coin} @ {_fmt_snapshot_usd(price)} (jarak {jarak_pct:.2f}%)",
+                msg,
+            )
     except Exception as e:
         logging.error("near_support_checker: %s", e, exc_info=True)
 
@@ -6220,6 +6283,10 @@ async def near_resistance_checker(context: ContextTypes.DEFAULT_TYPE):
             rel = abs(price - resistance) / resistance
             if rel >= 0.01 or rel < 0.0005:
                 continue
+            if not ngov.is_coin_snapshot_fresh(coin_data):
+                logging.warning("near_resistance_checker: skip %s — stale snapshot data", coin)
+                ngov.record_skipped_stale("near_resistance")
+                continue
             jarak_pct = rel * 100.0
             if not _snapshot_alert_allowed(coin, "near_resistance", now_utc):
                 continue
@@ -6232,7 +6299,12 @@ async def near_resistance_checker(context: ContextTypes.DEFAULT_TYPE):
                 "——\n"
                 f"Aliza Engine • {_wib_now_label()}"
             )
-            await safe_dispatch(msg, chat_id=chat_id, force=False)
+            ngov.queue_alert(
+                "near_resistance",
+                "NEAR RESISTANCE",
+                f"{coin} @ {_fmt_snapshot_usd(price)} (jarak {jarak_pct:.2f}%)",
+                msg,
+            )
     except Exception as e:
         logging.error("near_resistance_checker: %s", e, exc_info=True)
 
@@ -6266,6 +6338,10 @@ async def rsi_extreme_checker(context: ContextTypes.DEFAULT_TYPE):
             price = _snapshot_float(coin_data.get("price"))
             if price is None:
                 continue
+            if not ngov.is_coin_snapshot_fresh(coin_data):
+                logging.warning("rsi_extreme_checker: skip %s — stale snapshot data", coin)
+                ngov.record_skipped_stale("rsi_extreme")
+                continue
             trend = str(coin_data.get("trend") or "—")
             if rsi < 30:
                 if not _snapshot_alert_allowed(coin, "oversold", now_utc):
@@ -6278,7 +6354,7 @@ async def rsi_extreme_checker(context: ContextTypes.DEFAULT_TYPE):
                     "——\n"
                     f"Aliza Engine • {_wib_now_label()}"
                 )
-                await safe_dispatch(msg, chat_id=chat_id, force=False)
+                ngov.queue_alert("rsi_extreme", "RSI OVERSOLD", f"{coin} RSI {rsi:.1f}", msg)
             elif rsi > 75:
                 if not _snapshot_alert_allowed(coin, "overbought", now_utc):
                     continue
@@ -6290,7 +6366,7 @@ async def rsi_extreme_checker(context: ContextTypes.DEFAULT_TYPE):
                     "——\n"
                     f"Aliza Engine • {_wib_now_label()}"
                 )
-                await safe_dispatch(msg, chat_id=chat_id, force=False)
+                ngov.queue_alert("rsi_extreme", "RSI OVERBOUGHT", f"{coin} RSI {rsi:.1f}", msg)
     except Exception as e:
         logging.error("rsi_extreme_checker: %s", e, exc_info=True)
 
@@ -6324,21 +6400,22 @@ async def big_move_checker(context: ContextTypes.DEFAULT_TYPE):
             price = _snapshot_float(coin_data.get("price"))
             if price is None:
                 continue
-            # Validasi umur data — skip jika snapshot coin lebih dari 30 menit
-            coin_ts = coin_data.get("timestamp") or coin_data.get("last_updated")
-            if coin_ts:
-                try:
-                    from datetime import timezone as _tz
-                    if hasattr(coin_ts, "timestamp"):
-                        age_sec = (datetime.now(_tz.utc) - coin_ts.replace(tzinfo=_tz.utc) if coin_ts.tzinfo is None else datetime.now(_tz.utc) - coin_ts).total_seconds()
-                    else:
-                        age_sec = (datetime.utcnow() - datetime.fromisoformat(str(coin_ts))).total_seconds()
-                    if age_sec > 1800:  # 30 menit
-                        continue
-                except Exception:
-                    pass
-            if not _snapshot_alert_allowed(coin, "big_move", now_utc, pct):
+            # Validasi umur data — skip jika snapshot coin lebih dari SNAPSHOT_MAX_AGE_SEC.
+            # (Sebelumnya cek ini membandingkan epoch float dengan hasattr/isoformat dan
+            # selalu gagal secara diam-diam — lihat NOTIFIKASI_MITIGASI_REPORT.md.)
+            if not ngov.is_coin_snapshot_fresh(coin_data):
+                logging.warning("big_move_checker: skip %s — stale snapshot data", coin)
+                ngov.record_skipped_stale("big_move")
                 continue
+            direction = "up" if pct > 0 else "down"
+            # Cooldown khusus big_move (BIG_MOVE_COOLDOWN_SEC, default 2 jam), per (coin, arah) —
+            # terpisah dari cooldown 4 jam near_support/near_resistance/rsi supaya bisa
+            # dikonfigurasi independen dan supaya alert naik & turun tidak saling menekan.
+            key = f"{coin}:{direction}"
+            if not ngov.is_cooldown_allowed("big_move", key, ngov.BIG_MOVE_COOLDOWN_SEC, now=now_utc.timestamp()):
+                continue
+            if ngov.is_duplicate_value("big_move", key, pct):
+                continue  # nilai persis sama dengan alert terakhir — data tidak benar-benar berubah
             if pct > 0:
                 msg = (
                     "🚀 BIG MOVE ALERT\n\n"
@@ -6357,9 +6434,55 @@ async def big_move_checker(context: ContextTypes.DEFAULT_TYPE):
                     "——\n"
                     f"Aliza Engine • {_wib_now_label()}"
                 )
-            await safe_dispatch(msg, chat_id=chat_id, force=False)
+            ngov.record_cooldown("big_move", key, now=now_utc.timestamp())
+            ngov.record_value("big_move", key, pct)
+            ngov.queue_alert("big_move", "BIG MOVE", f"{coin} {pct:+.2f}% @ {_fmt_snapshot_usd(price)}", msg)
     except Exception as e:
         logging.error("big_move_checker: %s", e, exc_info=True)
+
+
+async def alert_digest_flush_job(context: ContextTypes.DEFAULT_TYPE):
+    """Drain the ngov "noise" alert buffer (near_support/near_resistance/rsi/
+    big_move/whale/volume_spike/breakout/funding) every 60s.
+
+    Why a flush job instead of dispatching straight from each checker: the
+    2026-07-21 incident (NOTIFIKASI_MITIGASI_REPORT.md) showed that after a
+    process restart, every checker's first run fires within the same ~60s
+    window and can independently produce a handful of alerts each — 19-20
+    Telegram messages landed within 30 seconds. Routing all of them through
+    one periodic flush lets a burst be recognized *across* checkers and
+    collapsed into a single digest message, and gives the per-hour rate
+    limit one choke point to enforce.
+    """
+    try:
+        chat_id = None
+        if context and getattr(context, "bot_data", None):
+            chat_id = context.bot_data.get("chat_id")
+        if not chat_id:
+            chat_id = DEFAULT_CHAT_ID
+
+        now = datetime.now(timezone.utc).timestamp()
+        summary = ngov.pop_previous_hour_summary(now)
+        messages = ngov.flush_pending()
+        if not messages and not summary:
+            return
+        if not chat_id:
+            logging.warning("alert_digest_flush_job: no chat_id — dropping %d pending message(s)", len(messages))
+            return
+
+        if summary:
+            await safe_dispatch(summary, chat_id=chat_id, force=False)
+
+        for msg in messages:
+            if ngov.allow_rate_limited_dispatch(now):
+                await safe_dispatch(msg, chat_id=chat_id, force=False)
+            else:
+                logging.warning(
+                    "alert_digest_flush_job: MAX_ALERTS_PER_HOUR (%d) reached — suppressing 1 message",
+                    ngov.MAX_ALERTS_PER_HOUR,
+                )
+    except Exception as e:
+        logging.error("alert_digest_flush_job: %s", e, exc_info=True)
 
 
 async def check_near_support_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6993,6 +7116,7 @@ def main():
     app.add_handler(CommandHandler("quant", quant_command))
     app.add_handler(CommandHandler("marketstate", marketstate_command))
     app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("alert_stats", alert_stats_command))
     app.add_handler(CommandHandler("testalert", testalert))
     app.add_handler(CommandHandler("marketdebug", marketdebug))
     app.add_handler(CommandHandler("market_context", market_context_command))
@@ -7113,6 +7237,13 @@ def main():
             name="funding_alert_checker",
         )
         logging.info("Funding alert checker job scheduled (every 300s, first in 60s).")
+        app.job_queue.run_repeating(
+            alert_digest_flush_job,
+            interval=60,
+            first=65,
+            name="alert_digest_flush",
+        )
+        logging.info("Alert digest flush job scheduled (every 60s, first in 65s).")
         app.job_queue.run_repeating(
             cfra_alert_job,
             interval=1800,
