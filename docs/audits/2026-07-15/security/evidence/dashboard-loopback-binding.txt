@@ -1,0 +1,6 @@
+]633;E;echo "dashboard_binding_default=127.0.0.1";63e88f93-b1a5-4c44-8b7b-c6bdfc9afa3b]633;Cdashboard_binding_default=127.0.0.1
+wildcard_binding=rejected
+binding_tests=8_passed
+dashboard_enabled=disabled
+dashboard_active=inactive
+git_commit=05cc1138313698e01cfe426c292fcfa42e361e10

@@ -1,0 +1,23 @@
+Status: active
+
+     To                         Action      From
+     --                         ------      ----
+[ 1] 80                         ALLOW IN    Anywhere                  
+[ 2] 443                        ALLOW IN    Anywhere                  
+[ 3] 8000                       ALLOW IN    Anywhere                  
+[ 4] 8080                       ALLOW IN    Anywhere                  
+[ 5] 5432/tcp                   ALLOW IN    172.17.0.0/16             
+[ 6] 5432/tcp                   ALLOW IN    172.18.0.0/16             
+[ 7] 2222/tcp                   ALLOW IN    Anywhere                   # SSH
+[ 8] 80/tcp                     ALLOW IN    Anywhere                   # HTTP
+[ 9] 443/tcp                    ALLOW IN    Anywhere                   # HTTPS
+[10] 8001/tcp                   DENY IN     Anywhere                  
+[11] 80 (v6)                    ALLOW IN    Anywhere (v6)             
+[12] 443 (v6)                   ALLOW IN    Anywhere (v6)             
+[13] 8000 (v6)                  ALLOW IN    Anywhere (v6)             
+[14] 8080 (v6)                  ALLOW IN    Anywhere (v6)             
+[15] 2222/tcp (v6)              ALLOW IN    Anywhere (v6)              # SSH
+[16] 80/tcp (v6)                ALLOW IN    Anywhere (v6)              # HTTP
+[17] 443/tcp (v6)               ALLOW IN    Anywhere (v6)              # HTTPS
+[18] 8001/tcp (v6)              DENY IN     Anywhere (v6)             
+

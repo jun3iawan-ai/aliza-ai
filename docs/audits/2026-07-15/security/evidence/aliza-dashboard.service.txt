@@ -1,0 +1,20 @@
+# /etc/systemd/system/aliza-dashboard.service
+[Unit]
+Description=AlizaAI Dashboard API
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/aliza-ai
+EnvironmentFile=-/opt/aliza-ai/.env
+ExecStart=/opt/aliza-ai/venv/bin/python /opt/aliza-ai/scripts/run_dashboard.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
+# /etc/systemd/system/aliza-dashboard.service.d/security.conf
+[Service]
+UMask=0077

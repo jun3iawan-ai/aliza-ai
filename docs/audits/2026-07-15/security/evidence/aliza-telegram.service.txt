@@ -1,0 +1,20 @@
+# /etc/systemd/system/aliza-telegram.service
+[Unit]
+Description=AlizaAI Telegram Bot
+After=network.target
+
+[Service]
+TimeoutStopSec=15
+User=ubuntu
+WorkingDirectory=/opt/aliza-ai
+EnvironmentFile=-/opt/aliza-ai/.env
+ExecStart=/opt/aliza-ai/venv/bin/python /opt/aliza-ai/interfaces/telegram_bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
+# /etc/systemd/system/aliza-telegram.service.d/security.conf
+[Service]
+UMask=0077

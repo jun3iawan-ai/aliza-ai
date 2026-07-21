@@ -1,0 +1,8 @@
+]633;E;echo "jwt_secret_configured=true";63e88f93-b1a5-4c44-8b7b-c6bdfc9afa3b]633;Cjwt_secret_configured=true
+jwt_secret_minimum_length_valid=true
+jwt_security_tests=14_passed
+jwt_algorithm=HS256
+jwt_fallback_secret=removed
+dashboard_enabled=disabled
+dashboard_active=inactive
+git_commit=3cdd41f3000eb8a0bbb1c2cab4c53cc5818e2f20

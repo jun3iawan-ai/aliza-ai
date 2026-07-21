@@ -1,0 +1,11 @@
+]633;E;echo "dashboard_login_ip_limit=20_per_60_seconds";ea7a3caa-5685-4f75-85c8-ac0bd76111fa]633;Cdashboard_login_ip_limit=20_per_60_seconds
+dashboard_login_identity_limit=5_per_60_seconds
+dashboard_register_limit=10_per_60_seconds
+dashboard_chat_limit=10_per_60_seconds
+dashboard_input_bounds=true
+dashboard_unknown_user_dummy_argon2=true
+dashboard_rate_limit_tests=16_passed
+dashboard_security_test_total=74_passed
+dashboard_enabled=disabled
+dashboard_active=inactive
+git_commit=3ace19fd08279c4e9e4e36fe83faf029b1daeedd

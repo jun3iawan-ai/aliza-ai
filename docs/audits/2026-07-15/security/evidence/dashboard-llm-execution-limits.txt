@@ -1,0 +1,12 @@
+]633;E;echo "dashboard_llm_timeout_default_seconds=45";ea7a3caa-5685-4f75-85c8-ac0bd76111fa]633;Cdashboard_llm_timeout_default_seconds=45
+dashboard_llm_timeout_max_seconds=120
+dashboard_llm_concurrency_default=2
+dashboard_llm_concurrency_max=8
+dashboard_llm_executor=global
+dashboard_llm_slot_full_status=503
+dashboard_llm_failed_write_suppression=true
+dashboard_execution_limit_tests=14_passed
+dashboard_security_test_total=88_passed
+dashboard_enabled=disabled
+dashboard_active=inactive
+git_commit=8a96fa2b2c690c14fd14f83bb85548462d029134

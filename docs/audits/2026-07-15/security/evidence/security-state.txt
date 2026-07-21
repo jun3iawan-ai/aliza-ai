@@ -1,0 +1,5 @@
+]633;E;echo "telegram_active=$(systemctl is-active aliza-telegram.service)";63e88f93-b1a5-4c44-8b7b-c6bdfc9afa3b]633;Ctelegram_active=active
+telegram_umask=0077
+dashboard_enabled=disabled
+dashboard_active=inactive
+git_commit=6d3b9b1559ff9d6e4520c1edf700502eec9aab0c

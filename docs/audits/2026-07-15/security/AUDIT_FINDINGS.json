@@ -1,0 +1,221 @@
+{
+  "repository": {
+    "path": "/opt/aliza-ai",
+    "branch": "main",
+    "commit": "3592e321084197e9f835d18140b97087e0c92a7a",
+    "audit_time_utc": "2026-07-15T02:55:34Z"
+  },
+  "readiness": {
+    "classification": "Research only",
+    "go_no_go": "NO-GO for live trading",
+    "reason": "P1 findings affect market-data integrity, strategy validation, risk authority, execution/reconciliation, and security; no OMS or valid backtest exists."
+  },
+  "score": {
+    "total": 25,
+    "maximum": 100,
+    "categories": [
+      {"name": "Strategy and model validity", "score": 5, "maximum": 20, "evidence": "Rule-based strategy exists; no calibrated model or OOS validation.", "main_deductions": "Uncalibrated scores and invalid outcome tracker.", "confidence": "high"},
+      {"name": "Risk management", "score": 5, "maximum": 20, "evidence": "RR, open-count and advisory sizing exist.", "main_deductions": "Fragmented fail-open gates; no daily loss, equity drawdown, or atomic reservation.", "confidence": "high"},
+      {"name": "Market-data integrity", "score": 7, "maximum": 15, "evidence": "REST timeouts, snapshot age gate, and circuit breaker exist.", "main_deductions": "Open candles, duplicated ticker, false timeframe fallback, no source freshness/gap validation.", "confidence": "high"},
+      {"name": "Execution and order lifecycle", "score": 1, "maximum": 15, "evidence": "Only signed balance GET and local SQLite trades exist.", "main_deductions": "No executor, OMS, fills, idempotency, reconciliation, or exchange stop.", "confidence": "high"},
+      {"name": "Backtest validity", "score": 0, "maximum": 10, "evidence": "No backtest implementation found.", "main_deductions": "Point-price outcome tracker is not a cost-aware simulator and mishandles short setup names.", "confidence": "high"},
+      {"name": "Reliability and recovery", "score": 3, "maximum": 10, "evidence": "systemd restart, snapshot lock, and rotated logs exist.", "main_deductions": "No reconciliation/readiness/restore proof; dashboard unmanaged and paths inconsistent.", "confidence": "medium"},
+      {"name": "Security", "score": 1, "maximum": 5, "evidence": "Production dependencies mostly pinned.", "main_deductions": "Public unauthenticated admin API and world-readable secret/state/log files.", "confidence": "high"},
+      {"name": "Monitoring and auditability", "score": 3, "maximum": 5, "evidence": "Snapshot watchdog, rejection logging, and alerts exist.", "main_deductions": "No source-age, execution, exposure, mismatch, or active-version metrics.", "confidence": "medium"}
+    ]
+  },
+  "findings": [
+    {
+      "id": "ALIZA-001", "severity": "P1", "confidence": "high", "category": "market_data", "title": "Open candle and current ticker are both included in indicators",
+      "evidence": [{"file": "engine/market/market_analyzer.py", "start_line": 81, "end_line": 130, "symbol": "_get_binance_klines"}, {"file": "engine/market/market_analyzer.py", "start_line": 262, "end_line": 278, "symbol": "market_signal"}],
+      "observed_behavior": "All returned kline closes are accepted without close-time validation and the current ticker is appended to the selected price series.",
+      "failure_scenario": "An intrabar spike affects features twice, emits a signal, then reverses before candle close.",
+      "impact": "Unstable or false entry/exit signals and trend alignment.",
+      "root_cause": "No closed-candle cutoff and mixed ticker/candle semantics.",
+      "recommendation": "Use timestamped closed candles only and attach a data-cutoff timestamp to every signal.",
+      "validation_test": "Replay candle boundaries and prove features remain unchanged until the candle closes.", "effort": "M"
+    },
+    {
+      "id": "ALIZA-002", "severity": "P1", "confidence": "high", "category": "market_data_strategy", "title": "4h and 1d fallback can use the same non-independent series",
+      "evidence": [{"file": "engine/market/market_analyzer.py", "start_line": 300, "end_line": 304, "symbol": "market_signal"}, {"file": "engine/market/multi_timeframe_analyzer.py", "start_line": 29, "end_line": 78, "symbol": "analyze_multi_timeframe"}],
+      "observed_behavior": "The common prices series substitutes for either missing timeframe and can feed both timeframe calculations.",
+      "failure_scenario": "A daily/CoinGecko proxy appears aligned with itself and is classified strong or partial.",
+      "impact": "TradingBrain accepts setups based on false multi-timeframe confirmation.",
+      "root_cause": "Fallback lacks correct timestamped resampling or unavailable-state semantics.",
+      "recommendation": "Fail closed per missing timeframe or resample closed timestamped OHLC correctly.",
+      "validation_test": "Source outage fixtures must return UNKNOWN rather than a false aligned state.", "effort": "M"
+    },
+    {
+      "id": "ALIZA-003", "severity": "P1", "confidence": "high", "category": "data_freshness", "title": "Snapshot freshness measures local collection time, not source data age or completeness",
+      "evidence": [{"file": "engine/market/market_snapshot_engine.py", "start_line": 74, "end_line": 94, "symbol": "validate_market_data"}, {"file": "engine/market/market_snapshot_engine.py", "start_line": 246, "end_line": 305, "symbol": "update_market_snapshot"}, {"file": "engine/market/market_snapshot_engine.py", "start_line": 341, "end_line": 398, "symbol": "is_snapshot_valid"}],
+      "observed_behavior": "Any non-empty collected subset can receive a fresh local timestamp; source timestamps, BTC presence, gaps, and expected universe are not gated.",
+      "failure_scenario": "Partial or stale source data is wrapped in a fresh snapshot and scanned.",
+      "impact": "Signals may be generated from stale or incomplete markets.",
+      "root_cause": "Minimal schema validation without provenance.",
+      "recommendation": "Gate per-source timestamps, candle age/closure, universe completeness, gaps, and required BTC context.",
+      "validation_test": "Inject stale, partial, missing, duplicate, and out-of-order data.", "effort": "M"
+    },
+    {
+      "id": "ALIZA-004", "severity": "P1", "confidence": "high", "category": "backtest_validation", "title": "Outcome metrics are materially invalid and no backtest/OOS evidence exists",
+      "evidence": [{"file": "engine/trading/signal_tracker.py", "start_line": 163, "end_line": 220, "symbol": "check_open_signals"}],
+      "observed_behavior": "A periodically sampled point price decides outcomes; only setup exactly equal to SHORT uses short logic; no backtest engine exists.",
+      "failure_scenario": "PULLBACK SHORT follows long rules or both levels trade between polls with fabricated ordering.",
+      "impact": "Misleading win rate, PnL, confidence adjustment, and strategy claims.",
+      "root_cause": "Snapshot tracking substitutes for event-based backtesting.",
+      "recommendation": "Quarantine these metrics and implement a closed-OHLC next-bar cost-aware simulator with explicit direction.",
+      "validation_test": "Long/short, same-bar SL/TP, gaps, fees, funding, OOS and walk-forward tests.", "effort": "L"
+    },
+    {
+      "id": "ALIZA-005", "severity": "P1", "confidence": "high", "category": "risk", "title": "Risk controls are fragmented, incomplete, and partly fail-open",
+      "evidence": [{"file": "engine/risk_manager.py", "start_line": 19, "end_line": 62, "symbol": "validate_proposed_trade"}, {"file": "engine/portfolio/risk_manager.py", "start_line": 9, "end_line": 44, "symbol": "evaluate_trade"}, {"file": "engine/portfolio/drawdown_protector.py", "start_line": 24, "end_line": 44, "symbol": "check_drawdown"}, {"file": "interfaces/telegram_bot.py", "start_line": 1254, "end_line": 1303, "symbol": "entry"}],
+      "observed_behavior": "DB/history failures can become zero exposure or trading allowed; declared portfolio-risk constants are unused; manual entry uses a different gate.",
+      "failure_scenario": "A state failure or concurrent entries bypass aggregate exposure controls.",
+      "impact": "Incorrect exposure state and an unsafe base for future execution.",
+      "root_cause": "No authoritative fail-closed atomic risk service.",
+      "recommendation": "Create one final risk gate with atomic reservation, daily loss, drawdown, exposure and health checks.",
+      "validation_test": "DB failure, concurrent entry, daily-loss, drawdown, stale-balance and TOCTOU tests.", "effort": "L"
+    },
+    {
+      "id": "ALIZA-006", "severity": "P1", "confidence": "high", "category": "execution_reconciliation", "title": "OMS, exchange execution, reconciliation, and protective orders are absent",
+      "evidence": [{"file": "engine/binance_balance.py", "start_line": 38, "end_line": 79, "symbol": "_signed_get/fetch_spot_balance"}, {"file": "engine/trading/trade_manager.py", "start_line": 81, "end_line": 148, "symbol": "create_trade"}, {"file": "engine/trading/trade_manager.py", "start_line": 250, "end_line": 267, "symbol": "close_trade"}],
+      "observed_behavior": "Private exchange code performs only account GET; entry and close mutate SQLite.",
+      "failure_scenario": "A future live call has no idempotency, fill state, timeout recovery, stop protection or restart reconciliation.",
+      "impact": "The system cannot safely control live capital.",
+      "root_cause": "A notification/paper tracker is not an execution architecture.",
+      "recommendation": "Keep live disabled and build an OMS, exchange-side protection, reconciliation and recovery before any executor.",
+      "validation_test": "Mock ACK-timeout, duplicate, partial-fill, cancel, restart, mismatch and reduce-only scenarios.", "effort": "L"
+    },
+    {
+      "id": "ALIZA-007", "severity": "P1", "confidence": "high", "category": "security", "title": "Production credential, state, and log files are world-readable",
+      "evidence": [{"file": ".env", "start_line": 0, "end_line": 0, "symbol": "filesystem mode 0755"}, {"file": "data/aliza.db", "start_line": 0, "end_line": 0, "symbol": "filesystem mode 0644"}, {"file": "logs/aliza.log", "start_line": 0, "end_line": 0, "symbol": "filesystem mode 0644"}],
+      "observed_behavior": "The active service reads .env while local filesystem modes permit reads by other users.",
+      "failure_scenario": "A low-privilege local compromise copies bot/API/database credentials or state.",
+      "impact": "Bot takeover, confidentiality loss, and possible exchange impact depending on unverified key permissions.",
+      "root_cause": "Permissive file and directory ownership modes.",
+      "recommendation": "Apply owner-only permissions, dedicated service identity, rotate credentials, and verify no-withdrawal/IP whitelist.",
+      "validation_test": "Permission audit and rotation evidence without printing values.", "effort": "S"
+    },
+    {
+      "id": "ALIZA-008", "severity": "P1", "confidence": "high", "category": "application_security", "title": "Internet-facing dashboard and admin routes lack authorization",
+      "evidence": [{"file": "scripts/run_dashboard.py", "start_line": 28, "end_line": 32, "symbol": "uvicorn.run"}, {"file": "api/server.py", "start_line": 126, "end_line": 243, "symbol": "chat/admin routes"}, {"file": "api/auth.py", "start_line": 15, "end_line": 119, "symbol": "auth implementation"}],
+      "observed_behavior": "The app listens on all interfaces; admin and chat routes have no auth dependency; direct SHA-256 and a literal JWT fallback are used.",
+      "failure_scenario": "A remote user enumerates accounts/usage or drives unauthorized LLM workload.",
+      "impact": "Confidentiality, cost, availability and account-integrity risk.",
+      "root_cause": "Token issuance is disconnected from route authorization.",
+      "recommendation": "Bind privately until JWT/RBAC, modern password hashing, mandatory secrets and rate limits are enforced.",
+      "validation_test": "Unauthenticated, role, brute-force and rate-limit tests.", "effort": "M"
+    },
+    {
+      "id": "ALIZA-009", "severity": "P1", "confidence": "high", "category": "authorization_state", "title": "Telegram entry and close commands are not chat-authorized",
+      "evidence": [{"file": "interfaces/telegram_bot.py", "start_line": 1207, "end_line": 1318, "symbol": "entry"}, {"file": "interfaces/telegram_bot.py", "start_line": 1321, "end_line": 1330, "symbol": "_authorized_chat"}, {"file": "interfaces/telegram_bot.py", "start_line": 1494, "end_line": 1508, "symbol": "close"}],
+      "observed_behavior": "Authorization is used for balance commands but not entry/close.",
+      "failure_scenario": "Any bot user creates or closes simulated positions.",
+      "impact": "Corrupt portfolio/risk state; critical if execution is ever attached.",
+      "root_cause": "Per-handler rather than global authorization.",
+      "recommendation": "Use global allowlist middleware and deny production startup without an allowlist.",
+      "validation_test": "Unauthorized-chat tests for every state-changing handler.", "effort": "S"
+    },
+    {
+      "id": "ALIZA-010", "severity": "P2", "confidence": "high", "category": "state_idempotency", "title": "Local trade and signal-dedup state are not atomic or idempotent",
+      "evidence": [{"file": "engine/trading/trade_manager.py", "start_line": 8, "end_line": 148, "symbol": "DB_PATH/init/create_trade"}, {"file": "engine/state_store.py", "start_line": 8, "end_line": 18, "symbol": "load_state/save_state"}],
+      "observed_behavior": "Relative DB path, no trade uniqueness/state-transition constraint, and unlocked non-atomic JSON overwrite.",
+      "failure_scenario": "Duplicate command/job or crash creates duplicate rows or corrupts dedup state.",
+      "impact": "Incorrect exposure and repeated notification.",
+      "root_cause": "No transactional idempotency key or durable state machine.",
+      "recommendation": "Use absolute configured storage, transactions, unique keys and atomic durable state.",
+      "validation_test": "Concurrent writer and crash-injection tests.", "effort": "M"
+    },
+    {
+      "id": "ALIZA-011", "severity": "P2", "confidence": "high", "category": "auditability", "title": "Signals are recorded before risk, dedup, and dispatch succeed",
+      "evidence": [{"file": "interfaces/telegram_bot.py", "start_line": 6685, "end_line": 6709, "symbol": "snapshot_job"}, {"file": "engine/signal_engine.py", "start_line": 269, "end_line": 328, "symbol": "process_signal"}],
+      "observed_behavior": "record_signal runs before process_signal can reject or fail.",
+      "failure_scenario": "A risk-rejected, duplicate, or unsent signal enters performance history.",
+      "impact": "Phantom trades and biased metrics.",
+      "root_cause": "No persisted signal lifecycle.",
+      "recommendation": "Persist generated/validated/sent/rejected states and start outcome tracking only after send acknowledgement.",
+      "validation_test": "Risk reject, duplicate, Telegram timeout and restart tests.", "effort": "M"
+    },
+    {
+      "id": "ALIZA-012", "severity": "P2", "confidence": "high", "category": "position_sizing", "title": "Position sizing is advisory and not exchange-precision safe",
+      "evidence": [{"file": "engine/position_sizer.py", "start_line": 48, "end_line": 129, "symbol": "calculate_position_size"}, {"file": "engine/trading/signal_engine.py", "start_line": 253, "end_line": 286, "symbol": "scan_for_signals"}],
+      "observed_behavior": "Float linear-unit math omits finite/config bounds, instrument metadata, fees, slippage, leverage, tick/step and min notional.",
+      "failure_scenario": "Displayed quantity is invalid or understates risk.",
+      "impact": "Unsafe manual sizing and unusable live order quantity.",
+      "root_cause": "Generic calculator is not instrument-aware execution sizing.",
+      "recommendation": "Use Decimal, instrument metadata, conservative rounding and strict finite/bounds checks.",
+      "validation_test": "Property tests across spot/perpetual instruments and pathological inputs.", "effort": "M"
+    },
+    {
+      "id": "ALIZA-013", "severity": "P2", "confidence": "high", "category": "model_validity", "title": "Confidence and probability labels are uncalibrated heuristic scores",
+      "evidence": [{"file": "engine/brain/trading_brain.py", "start_line": 76, "end_line": 88, "symbol": "_confidence_from_rr"}, {"file": "engine/brain/trading_brain.py", "start_line": 270, "end_line": 280, "symbol": "TradingBrain.analyze"}, {"file": "engine/prediction/probability_engine.py", "start_line": 10, "end_line": 39, "symbol": "calculate_probabilities"}],
+      "observed_behavior": "Rule points are presented as confidence/probability without empirical calibration.",
+      "failure_scenario": "Users interpret 70-85 as profit probability.",
+      "impact": "Overconfidence and poor capital decisions.",
+      "root_cause": "No labels, OOS dataset, calibration or drift monitoring.",
+      "recommendation": "Rename to heuristic score until validated and calibrated leakage-free.",
+      "validation_test": "Reliability curve, Brier/log loss and regime stability tests.", "effort": "M"
+    },
+    {
+      "id": "ALIZA-014", "severity": "P2", "confidence": "high", "category": "signal_reliability", "title": "Auto-alert score threshold is unreachable",
+      "evidence": [{"file": "engine/alerts/auto_alert_engine.py", "start_line": 10, "end_line": 13, "symbol": "MIN_SCORE"}, {"file": "engine/alerts/auto_alert_engine.py", "start_line": 60, "end_line": 77, "symbol": "process_auto_alerts"}, {"file": "engine/brain/signal_quality_engine.py", "start_line": 117, "end_line": 129, "symbol": "calculate_signal_quality"}],
+      "observed_behavior": "The alert requires 160 while upstream score is clamped to 100.",
+      "failure_scenario": "The intended auto-alert path never emits.",
+      "impact": "Missed notifications and false operational confidence.",
+      "root_cause": "Inconsistent score contract.",
+      "recommendation": "Define one score range and compatible threshold.",
+      "validation_test": "A maximum-quality opportunity must trigger at the configured boundary.", "effort": "S"
+    },
+    {
+      "id": "ALIZA-015", "severity": "P2", "confidence": "high", "category": "reliability_database", "title": "API import mutates the database and health is not readiness",
+      "evidence": [{"file": "core/database.py", "start_line": 1, "end_line": 86, "symbol": "module import"}, {"file": "api/server.py", "start_line": 86, "end_line": 93, "symbol": "health"}],
+      "observed_behavior": "A global PostgreSQL connection executes CREATE/commit during import; health always returns ok.",
+      "failure_scenario": "Import/test changes production schema or stale DB connection breaks traffic while health stays green.",
+      "impact": "Unsafe deployment/testing and false availability.",
+      "root_cause": "Migration, connection lifecycle, and readiness are conflated with module import.",
+      "recommendation": "Use explicit migrations, pooled request-scoped connections and dependency-aware readiness.",
+      "validation_test": "Import-no-write, DB outage, stale-connection and readiness tests.", "effort": "M"
+    },
+    {
+      "id": "ALIZA-016", "severity": "P2", "confidence": "high", "category": "test_code_quality", "title": "No automated tests and broad exception handling hide failures",
+      "evidence": [{"file": "requirements-dev.txt", "start_line": 1, "end_line": 4, "symbol": "test dependency only"}, {"file": "api/dashboard_api.py", "start_line": 27, "end_line": 42, "symbol": "missing optional modules"}],
+      "observed_behavior": "No test files exist; static scan counted 297 broad exception handlers and about 80 exception-pass patterns; seven local import targets are absent.",
+      "failure_scenario": "A risk/data dependency silently disables after a change.",
+      "impact": "Critical regressions can reach the active signal service undetected.",
+      "root_cause": "No CI test safety net and degraded-mode behavior is not explicit.",
+      "recommendation": "Add risk-first unit/integration tests, typed contracts, narrow exceptions and fallback metrics.",
+      "validation_test": "CI must fail on critical contract and fallback regressions.", "effort": "L"
+    },
+    {
+      "id": "ALIZA-017", "severity": "P3", "confidence": "high", "category": "deployment_hygiene", "title": "Deployment paths, process ownership, and worktree state are inconsistent",
+      "evidence": [{"file": "scripts/deploy/deploy.sh", "start_line": 3, "end_line": 10, "symbol": "deploy script"}, {"file": "import", "start_line": 0, "end_line": 0, "symbol": "untracked empty file"}],
+      "observed_behavior": "Deploy script targets /home/ubuntu while audited repo is /opt; dashboard runs although discovered API service is inactive and points elsewhere.",
+      "failure_scenario": "Deployment updates a different tree or an unmanaged process keeps old code.",
+      "impact": "Version, rollback, and audit ambiguity.",
+      "root_cause": "No canonical immutable release path/process manifest.",
+      "recommendation": "Consolidate paths and units, expose active commit, and enforce clean-release checks.",
+      "validation_test": "After deployment, process CWD and reported commit must equal the release manifest.", "effort": "S"
+    }
+  ],
+  "unknowns": [
+    "Actual exchange API permissions, withdrawal disablement, and IP whitelist were not inspected.",
+    "Firewall, reverse proxy, TLS, and public reachability of port 8001 require manual verification.",
+    "Production environment values were not read.",
+    "PostgreSQL runtime state, backup contents, restore drills, and retention were not inspected.",
+    "NTP and exchange clock synchronization were not verified.",
+    "Runtime logs, databases, current positions, and historical performance were not read.",
+    "Webhook service authentication outside the repository is unknown.",
+    "The active dashboard process commit and process supervisor are unknown."
+  ],
+  "tests_executed": [
+    {"name": "Python AST parse", "result": "passed", "detail": "110 of 110 repository Python files parsed without importing modules."},
+    {"name": "Static local-import target scan", "result": "completed", "detail": "Seven missing local targets identified; several are optional imports."},
+    {"name": "Static source/deployment inventory", "result": "completed", "detail": "Read-only git, systemd, process, listener, permission, and source searches."}
+  ],
+  "tests_skipped": [
+    {"name": "Application import/API tests", "reason": "Skipped because core.database connects to PostgreSQL and executes DDL/commit during import."},
+    {"name": "Repository test suite", "reason": "Not available: zero test files found."},
+    {"name": "Exchange integration", "reason": "Skipped to avoid private API/credential use and any external side effect."},
+    {"name": "Bot/server/worker execution", "reason": "Skipped by mandatory read-only safety policy."},
+    {"name": "Backtest", "reason": "Not available: no backtest engine or verified safe replay script found."}
+  ]
+}

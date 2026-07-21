@@ -1,0 +1,10 @@
+]633;E;echo "dashboard_sensitive_routes_require_jwt=true";ea7a3caa-5685-4f75-85c8-ac0bd76111fa]633;Cdashboard_sensitive_routes_require_jwt=true
+dashboard_admin_routes_require_admin=true
+dashboard_registration_admin_only=true
+dashboard_chat_identity_source=jwt
+dashboard_public_routes=root,health,login
+endpoint_auth_tests=13_passed
+dashboard_security_test_total=35_passed
+dashboard_enabled=disabled
+dashboard_active=inactive
+git_commit=228469a1803e1ec0dc0ada7143e1902ff4e0d600

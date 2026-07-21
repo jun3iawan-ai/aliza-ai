@@ -1,0 +1,8 @@
+]633;E;echo "dashboard_docs_default=disabled";ea7a3caa-5685-4f75-85c8-ac0bd76111fa]633;Cdashboard_docs_default=disabled
+dashboard_openapi_default=disabled
+dashboard_docs_explicit_enable_required=true
+dashboard_docs_tests=7_passed
+dashboard_security_test_total=42_passed
+dashboard_enabled=disabled
+dashboard_active=inactive
+git_commit=125819582e397e09763b26514062ea8dd81b49d7

@@ -1,0 +1,6 @@
+]633;E;echo "tested_pid=175523";63e88f93-b1a5-4c44-8b7b-c6bdfc9afa3b]633;Ctested_pid=175523
+telegram_active=active
+telegram_umask=0077
+global_auth_tests=6_passed
+runtime_auth_errors=none
+git_commit=e6563f37ead6ef1aa334a126d201b082717bccd4
