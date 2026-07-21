@@ -22,6 +22,14 @@ CALENDAR_CACHE_SECONDS = int(os.getenv("ECONOMIC_CALENDAR_CACHE_SEC", "3600"))
 TIMEOUT = 20
 WIB = timezone(timedelta(hours=7))
 
+
+def _fmp_calendar_enabled() -> bool:
+    """FMP_API_KEY sedang HTTP 403 terus-menerus (lihat BERITA_MITIGASI_REPORT.md)
+    — default off supaya tidak buang request tiap siklus ke endpoint yang jelas
+    gagal. Set FMP_CALENDAR_ENABLED=true di .env begitu key FMP diperbarui.
+    Dibaca saat dipanggil (bukan konstanta modul) supaya gampang di-toggle di test."""
+    return (os.getenv("FMP_CALENDAR_ENABLED", "false") or "").strip().lower() == "true"
+
 _fmp_calendar_cache: dict[str, Any] = {"ts": 0.0, "days": 0, "events": None}
 
 HIGH_IMPACT = [
@@ -398,7 +406,8 @@ def get_upcoming_events(days_ahead: int = 2) -> list[dict[str, str]]:
     """
     Ambil event ekonomi US HIGH/MEDIUM impact untuk N hari ke depan.
 
-    Urutan: FMP (jika ``FMP_API_KEY``) → Investing.com (cadangan) → rule-based;
+    Urutan: FMP (jika ``FMP_API_KEY`` DAN ``FMP_CALENDAR_ENABLED=true`` — default
+    off, lihat `_fmp_calendar_enabled`) → Investing.com (cadangan) → rule-based;
     lalu merge FOMC hardcoded bila sumber bukan rule-based; + Serper opsional.
     Cache hasil gabungan ~1 jam.
     """
@@ -416,10 +425,15 @@ def get_upcoming_events(days_ahead: int = 2) -> list[dict[str, str]]:
         events: list[dict[str, str]] = []
         source_used = "none"
         fmp_key = (os.getenv("FMP_API_KEY") or "").strip()
-        if fmp_key:
+        if fmp_key and _fmp_calendar_enabled():
             events = _fetch_from_fmp(days, fmp_key)
             if events:
                 source_used = "fmp"
+        elif fmp_key:
+            logger.debug(
+                "economic_calendar: FMP_API_KEY tersedia tapi dilewati "
+                "(FMP_CALENDAR_ENABLED=false)"
+            )
 
         if not events:
             try:

@@ -2941,9 +2941,12 @@ def _now_ts() -> float:
 
 SERPER_NEWS_URL = "https://google.serper.dev/news"
 
-# Judul berita yang sudah di-alert → unix timestamp (cleanup >24h; dedup anti-spam)
-SENT_NEWS_TITLES: dict[str, float] = {}
-_SENT_NEWS_RETENTION_SEC = 86400
+# Dedup judul berita yang sudah di-alert, 24 jam — persisted via
+# notification_governor (ngov), namespace "news_title". Sebelumnya pakai dict
+# in-memory (SENT_NEWS_TITLES) yang di-reset tiap restart proses, kelas bug
+# yang sama dengan insiden 21 Juli (lihat NOTIFIKASI_MITIGASI_REPORT.md) —
+# hanya belum pernah teramati aktif untuk job ini (lihat BERITA_MITIGASI_REPORT.md).
+_NEWS_TITLE_DEDUP_SEC = 86400
 
 BREAKING_KEYWORDS = [
     # Fed & rates
@@ -3039,11 +3042,13 @@ BREAKING_BLACKLIST = [
 ]
 
 
-def _cleanup_sent_news_titles() -> None:
-    now = _now_ts()
-    stale = [k for k, ts in SENT_NEWS_TITLES.items() if now - ts > _SENT_NEWS_RETENTION_SEC]
-    for k in stale:
-        del SENT_NEWS_TITLES[k]
+def _prune_sent_news_titles() -> None:
+    """Buang entri dedup berita yang lebih lama dari _NEWS_TITLE_DEDUP_SEC dari
+    state persisten. Perlu dijalankan manual (beda dari cooldown per-coin di
+    checker lain) karena key-nya per judul artikel — jumlahnya tidak terbatas
+    seperti daftar coin, jadi kalau tidak di-prune, data/alert_cooldown_state.json
+    tumbuh terus."""
+    ngov.prune_cooldown_namespace("news_title", _NEWS_TITLE_DEDUP_SEC)
 
 
 def _serper_news_fetch(query: str, num: int) -> list[dict[str, Any]]:
@@ -3117,6 +3122,7 @@ def _fetch_crypto_news() -> list[dict[str, Any]]:
             logging.warning("NewsAPI crypto HTTP %s", r.status_code)
             return []
         articles = r.json().get("articles") or []
+        logging.info("_fetch_crypto_news: %d artikel mentah dari NewsAPI", len(articles))
         out = []
         for item in articles[:10]:
             if not isinstance(item, dict):
@@ -3161,6 +3167,7 @@ def _fetch_macro_news() -> list[dict[str, Any]]:
             logging.warning("NewsAPI macro HTTP %s", r.status_code)
             return []
         articles = r.json().get("articles") or []
+        logging.info("_fetch_macro_news: %d artikel mentah dari NewsAPI", len(articles))
         out = []
         for item in articles[:5]:
             if not isinstance(item, dict):
@@ -3206,13 +3213,22 @@ def _summarize_news_for_brief(news_items: list[dict]) -> str:
     if not lines:
         return "Tidak ada berita terbaru yang tersedia."
     return "\n".join(lines)
-def _is_breaking_news(title: str, snippet: str) -> bool:
+def _hits_breaking_blacklist(title: str, snippet: str) -> bool:
     blob = f"{title or ''} {snippet or ''}".lower()
+    return any(bk in blob for bk in BREAKING_BLACKLIST)
+
+
+def _hits_breaking_keyword(title: str, snippet: str) -> bool:
+    blob = f"{title or ''} {snippet or ''}".lower()
+    return any(kw in blob for kw in BREAKING_KEYWORDS)
+
+
+def _is_breaking_news(title: str, snippet: str) -> bool:
     # Cek blacklist dulu — kalau ada blacklist keyword, langsung skip
-    if any(bk in blob for bk in BREAKING_BLACKLIST):
+    if _hits_breaking_blacklist(title, snippet):
         return False
     # Cek apakah ada breaking keyword
-    return any(kw in blob for kw in BREAKING_KEYWORDS)
+    return _hits_breaking_keyword(title, snippet)
 
 
 def _translate_news_to_id(title: str, snippet: str) -> tuple[str, str]:
@@ -3242,7 +3258,8 @@ SNIPPET ASLI: {snippet[:300]}"""
 
 
 async def breaking_news_job(context: ContextTypes.DEFAULT_TYPE):
-    """Cek berita breaking ~1 jam; maks 3 alert per run; dedup 24h."""
+    """Cek berita breaking ~1 jam; maks 3 alert per run; dedup 24h (persisted
+    via notification_governor, namespace "news_title")."""
     logging.info("breaking_news_job: scan start")
     chat_id = None
     try:
@@ -3256,7 +3273,7 @@ async def breaking_news_job(context: ContextTypes.DEFAULT_TYPE):
         logging.warning("breaking_news_job: no chat_id")
         return
 
-    _cleanup_sent_news_titles()
+    _prune_sent_news_titles()
 
     crypto_news: list[dict[str, Any]] = []
     macro_news: list[dict[str, Any]] = []
@@ -3271,6 +3288,12 @@ async def breaking_news_job(context: ContextTypes.DEFAULT_TYPE):
 
     combined = crypto_news + macro_news
     sent = 0
+    n_total = len(combined)
+    n_blacklisted = 0
+    n_not_breaking = 0
+    n_stale = 0
+    n_dedup_skipped = 0
+    n_dispatch_failed = 0
     for item in combined:
         if sent >= 3:
             break
@@ -3278,7 +3301,13 @@ async def breaking_news_job(context: ContextTypes.DEFAULT_TYPE):
             continue
         title = str(item.get("title") or "").strip()
         snippet = str(item.get("snippet") or "").strip()
-        if not title or not _is_breaking_news(title, snippet):
+        if not title:
+            continue
+        if _hits_breaking_blacklist(title, snippet):
+            n_blacklisted += 1
+            continue
+        if not _hits_breaking_keyword(title, snippet):
+            n_not_breaking += 1
             continue
         # Skip berita lama (>3 jam)
         time_str = str(item.get("time") or "").lower()
@@ -3295,19 +3324,23 @@ async def breaking_news_job(context: ContextTypes.DEFAULT_TYPE):
             except Exception:  # noqa: BLE001
                 pass
         if _news_skipped:
+            n_stale += 1
             continue
         # Fallback: format lama "2 hours ago" dari Serper
         if "hour" in time_str:
             try:
                 hours_ago = int(time_str.split()[0])
                 if hours_ago > 3:
+                    n_stale += 1
                     continue
             except Exception:
                 pass
         if "day" in time_str or "week" in time_str:
+            n_stale += 1
             continue
         key = title[:400]
-        if key in SENT_NEWS_TITLES:
+        if not ngov.is_cooldown_allowed("news_title", key, _NEWS_TITLE_DEDUP_SEC):
+            n_dedup_skipped += 1
             continue
         src = str(item.get("source") or "—")
         time_s = str(item.get("time") or "—")
@@ -3322,12 +3355,23 @@ async def breaking_news_job(context: ContextTypes.DEFAULT_TYPE):
         )
         try:
             await safe_dispatch(msg, chat_id=chat_id, force=False)
-            SENT_NEWS_TITLES[key] = _now_ts()
+            ngov.record_cooldown("news_title", key)
             sent += 1
         except Exception as e:  # noqa: BLE001
+            n_dispatch_failed += 1
             logging.warning("breaking_news_job dispatch: %s", e)
 
-    logging.info("breaking_news_job: scan done, alerts_sent=%s", sent)
+    logging.info(
+        "breaking_news_job: scan done, alerts_sent=%s "
+        "(total=%s blacklisted=%s not_breaking=%s stale=%s dedup_skipped=%s dispatch_failed=%s)",
+        sent,
+        n_total,
+        n_blacklisted,
+        n_not_breaking,
+        n_stale,
+        n_dedup_skipped,
+        n_dispatch_failed,
+    )
 
 
 def _funding_projection_block_from_coin_details(
