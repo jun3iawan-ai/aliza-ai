@@ -19,7 +19,13 @@ from engine.market_signal import generate_signal
 from engine.market.market_radar import market_radar
 from engine.market.global_market_cache import get_global_market_data
 from engine.market.dynamic_universe import get_tradable_coins
-from engine.market.market_universe import MAJOR_COINS
+from engine.market.market_universe import (
+    MAJOR_COINS,
+    get_polling_coins,
+    get_universe_status,
+    record_coin_validation,
+)
+from engine.market.market_analyzer import get_data_coverage
 
 ENRICH_HEADERS = {"User-Agent": "AlizaAI"}
 
@@ -42,6 +48,7 @@ market_snapshot = {
     "data": {},
     "timestamp": None,
     "market_intelligence": None,
+    "data_coverage": {},
 }
 
 _WIB = timezone(timedelta(hours=7))
@@ -65,10 +72,10 @@ def get_tradable_coins_fallback():
     try:
         coins = get_tradable_coins()
         if coins:
-            return list(coins)
+            return get_polling_coins(coins)
     except Exception as e:
         logging.warning("market_snapshot_engine get_tradable_coins: %s", e)
-    return list(MAJOR_COINS)
+    return get_polling_coins(MAJOR_COINS)
 
 
 def validate_market_data(data):
@@ -193,6 +200,21 @@ def _enrich_collected_with_binance_24h(collected):
             pass
 
 
+def _coverage_for_symbol(symbol, data, valid, reason=None):
+    payload = data.get("market_data") if isinstance(data, dict) and isinstance(data.get("market_data"), dict) else data
+    coverage = payload.get("data_coverage") if isinstance(payload, dict) else None
+    if not isinstance(coverage, dict):
+        coverage = get_data_coverage(symbol)
+    if not coverage:
+        coverage = {"coin": str(symbol).upper(), "klines_4h": 0, "klines_1d": 0, "price_source": "none", "reason": reason or ("ok" if valid else "validation_failed")}
+    else:
+        coverage = dict(coverage)
+        coverage["coin"] = str(symbol).upper()
+        if not valid and reason:
+            coverage["reason"] = reason
+    coverage["valid"] = bool(valid)
+    return coverage
+
 def update_market_snapshot():
     """
     Fetch data market via generate_signal(symbol, radar_data) untuk semua get_tradable_coins().
@@ -203,8 +225,11 @@ def update_market_snapshot():
     Jika validasi gagal, retry sekali setelah 30 detik untuk coin yang gagal.
     """
     coins = get_tradable_coins_fallback()
+    coverage_summary = {"_universe": get_universe_status(MAJOR_COINS)}
     if not coins:
         logging.warning("market_snapshot_engine: no coins to fetch")
+        with _snapshot_lock:
+            market_snapshot["data_coverage"] = coverage_summary
         return
 
     # Fetch radar sekali per snapshot cycle (hindari API call berulang per coin)
@@ -245,6 +270,7 @@ def update_market_snapshot():
 
     collected = {}
     failed = []
+    validation_results = {}
 
     for symbol in coins:
         logging.info("Snapshot processing coin: %s", symbol)
@@ -254,12 +280,15 @@ def update_market_snapshot():
             if data and validate_market_data(to_validate):
                 collected[symbol] = data
                 logging.info("Snapshot success: %s", symbol)
+                validation_results[symbol] = (data, True, "ok")
             else:
                 failed.append(symbol)
                 logging.warning("Snapshot failed validation: %s", symbol)
+                validation_results[symbol] = (data, False, "validation_failed")
         except Exception as e:
             logging.error("Snapshot error for %s: %s", symbol, str(e))
             failed.append(symbol)
+            validation_results[symbol] = (None, False, "exception")
 
     if failed:
         time.sleep(RETRY_DELAY_SEC)
@@ -272,10 +301,19 @@ def update_market_snapshot():
                     collected[symbol] = data
                     failed.remove(symbol)
                     logging.info("Snapshot success: %s", symbol)
+                    validation_results[symbol] = (data, True, "ok")
                 else:
                     logging.warning("Snapshot failed validation: %s", symbol)
+                    validation_results[symbol] = (data, False, "validation_failed")
             except Exception as e:
                 logging.error("Snapshot error for %s: %s", symbol, str(e))
+                validation_results[symbol] = (None, False, "exception")
+
+    for symbol in coins:
+        data, valid, reason = validation_results.get(symbol, (None, False, "not_processed"))
+        coverage_summary[symbol] = _coverage_for_symbol(symbol, data, valid, reason)
+        record_coin_validation(symbol, valid, reason=reason)
+    coverage_summary["_universe"] = get_universe_status(MAJOR_COINS)
 
     if collected:
         _enrich_collected_with_binance_24h(collected)
@@ -302,11 +340,13 @@ def update_market_snapshot():
             market_snapshot["data"] = collected
             market_snapshot["timestamp"] = snapshot_ts
             market_snapshot["market_intelligence"] = market_intelligence
+            market_snapshot["data_coverage"] = coverage_summary
         logging.info("market_snapshot_engine: updated %d coins", len(collected))
     else:
         logging.warning("market_snapshot_engine: no valid data collected")
         with _snapshot_lock:
             market_snapshot["market_intelligence"] = None
+            market_snapshot["data_coverage"] = coverage_summary
     logging.info("Snapshot completed. Valid coins: %d", len(collected))
 
 
@@ -319,7 +359,8 @@ def get_market_snapshot():
         ts = market_snapshot.get("timestamp")
         data = deepcopy(market_snapshot.get("data") or {})
         intel = deepcopy(market_snapshot.get("market_intelligence"))
-        return {"data": data, "timestamp": ts, "market_intelligence": intel}
+        coverage = deepcopy(market_snapshot.get("data_coverage") or {})
+        return {"data": data, "timestamp": ts, "market_intelligence": intel, "data_coverage": coverage}
 
 
 def get_snapshot_timestamp_str():
