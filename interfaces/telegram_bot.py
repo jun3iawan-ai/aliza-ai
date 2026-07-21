@@ -5984,7 +5984,14 @@ def _wib_now_label() -> str:
 
 def _whale_alert_allowed(coin: str, condition: str, now_utc: datetime) -> bool:
     key = f"{coin}:{condition}"
-    now_ts = now_utc.timestamp()
+    # now_utc is a naive datetime.utcnow() — .timestamp() on a naive datetime is
+    # interpreted as LOCAL time, not UTC (Python stdlib behavior). This VPS runs
+    # Asia/Jakarta (UTC+7), so a bare .timestamp() here silently stored cooldown
+    # epochs 7h in the past. Elapsed-time comparisons still happened to cancel
+    # out (same bias on write and read), but the stored absolute timestamps were
+    # wrong — found while inspecting data/alert_cooldown_state.json during
+    # restart verification (NOTIFIKASI_DEPLOY_VERIFIKASI_REPORT.md).
+    now_ts = now_utc.replace(tzinfo=timezone.utc).timestamp()
     if not ngov.is_cooldown_allowed("whale_alert", key, _WHALE_ALERT_COOLDOWN_SEC, now=now_ts):
         return False
     ngov.record_cooldown("whale_alert", key, now=now_ts)
@@ -6129,7 +6136,9 @@ async def check_whale_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 def _snapshot_alert_allowed(coin: str, condition: str, now_utc: datetime, pct: float | None = None) -> bool:
     """Persisted cooldown + identical-value dedup gate (survives process restart)."""
     key = f"{coin}:{condition}"
-    now_ts = now_utc.timestamp()
+    # See _whale_alert_allowed for why .replace(tzinfo=timezone.utc) is required
+    # here instead of a bare now_utc.timestamp() on this naive datetime.
+    now_ts = now_utc.replace(tzinfo=timezone.utc).timestamp()
     if not ngov.is_cooldown_allowed("snapshot_alert", key, _SNAPSHOT_ALERT_COOLDOWN_SEC, now=now_ts):
         return False
     # Cek apakah nilai pct sama persis dengan yang terakhir dikirim (data stale/tidak berubah)
@@ -6412,7 +6421,10 @@ async def big_move_checker(context: ContextTypes.DEFAULT_TYPE):
             # terpisah dari cooldown 4 jam near_support/near_resistance/rsi supaya bisa
             # dikonfigurasi independen dan supaya alert naik & turun tidak saling menekan.
             key = f"{coin}:{direction}"
-            if not ngov.is_cooldown_allowed("big_move", key, ngov.BIG_MOVE_COOLDOWN_SEC, now=now_utc.timestamp()):
+            # See _whale_alert_allowed for why .replace(tzinfo=timezone.utc) is required
+            # here instead of a bare now_utc.timestamp() on this naive datetime.
+            now_ts = now_utc.replace(tzinfo=timezone.utc).timestamp()
+            if not ngov.is_cooldown_allowed("big_move", key, ngov.BIG_MOVE_COOLDOWN_SEC, now=now_ts):
                 continue
             if ngov.is_duplicate_value("big_move", key, pct):
                 continue  # nilai persis sama dengan alert terakhir — data tidak benar-benar berubah
@@ -6434,7 +6446,7 @@ async def big_move_checker(context: ContextTypes.DEFAULT_TYPE):
                     "——\n"
                     f"Aliza Engine • {_wib_now_label()}"
                 )
-            ngov.record_cooldown("big_move", key, now=now_utc.timestamp())
+            ngov.record_cooldown("big_move", key, now=now_ts)
             ngov.record_value("big_move", key, pct)
             ngov.queue_alert("big_move", "BIG MOVE", f"{coin} {pct:+.2f}% @ {_fmt_snapshot_usd(price)}", msg)
     except Exception as e:

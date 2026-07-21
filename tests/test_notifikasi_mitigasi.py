@@ -66,6 +66,21 @@ class SnapshotAlertCooldownTests(TestCase):
             telegram_bot._snapshot_alert_allowed("ETH", "near_support", t0 + timedelta(minutes=5))
         )
 
+    def test_recorded_cooldown_timestamp_matches_real_utc_epoch(self):
+        """Regression: datetime.utcnow().timestamp() (naive) is interpreted by
+        Python as LOCAL time, not UTC — on a server whose local tz isn't UTC
+        (this VPS runs Asia/Jakarta, UTC+7) that silently stores cooldown
+        epochs offset by the local UTC delta. Caught live during restart
+        verification by inspecting data/alert_cooldown_state.json and finding
+        recorded timestamps ~7h off from the real wall clock. Elapsed-time
+        cooldown math still happened to cancel out (same bias on write and
+        read), but this guards the stored absolute epoch directly."""
+        real_now = time.time()
+        telegram_bot._snapshot_alert_allowed("TZCOIN", "tz_regression", datetime.utcnow())
+        recorded = ngov.get_value("cooldown:snapshot_alert", "TZCOIN:tz_regression")
+        self.assertIsNotNone(recorded)
+        self.assertLess(abs(recorded - real_now), 5)
+
     def test_cooldown_is_scoped_per_coin_and_condition(self):
         t0 = datetime(2026, 1, 1, 0, 0, 0)
         self.assertTrue(telegram_bot._snapshot_alert_allowed("SOL", "near_resistance", t0))
@@ -105,6 +120,19 @@ class BigMoveCooldownTests(IsolatedAsyncioTestCase):
             snapshot["data"]["OM"]["timestamp"] = time.time()
             await telegram_bot.big_move_checker(ctx)
             self.assertEqual(ngov.pending_count(), 0)
+
+    async def test_recorded_cooldown_timestamp_matches_real_utc_epoch(self):
+        """Same regression as SnapshotAlertCooldownTests, for big_move_checker's
+        own now_utc.replace(tzinfo=timezone.utc).timestamp() conversion."""
+        real_now = time.time()
+        snapshot = {"data": {"OM": {"price": 0.0669, "price_change_percentage_24h": -5.11, "timestamp": real_now}}}
+        ctx = SimpleNamespace(bot_data={})
+        with patch.object(telegram_bot, "get_market_snapshot", return_value=snapshot), \
+             patch.object(telegram_bot, "DEFAULT_CHAT_ID", "12345"):
+            await telegram_bot.big_move_checker(ctx)
+        recorded = ngov.get_value("cooldown:big_move", "OM:down")
+        self.assertIsNotNone(recorded)
+        self.assertLess(abs(recorded - real_now), 5)
 
     async def test_opposite_direction_is_not_blocked_by_cooldown(self):
         fresh_ts = time.time()
