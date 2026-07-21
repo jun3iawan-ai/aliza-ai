@@ -285,7 +285,10 @@ class TradingBrain:
             tp1, tp2 = _cap_tp_short(entry, tp1, tp2)
 
         rr = _risk_reward(entry, sl, tp1)
-        if validate_proposed_trade is not None and not validate_proposed_trade(entry, sl, tp1):
+        side = _side_for_setup(setup)
+        if validate_proposed_trade is not None and not validate_proposed_trade(
+            entry, sl, tp1, side
+        ):
             return None
         confidence = _confidence_from_rr(rr, rsi)
         if adjust_confidence is not None and get_strategy_stats is not None:
@@ -298,7 +301,7 @@ class TradingBrain:
 
         return {
             "setup": setup,
-            "side": _side_for_setup(setup),
+            "side": side,
             "entry": entry,
             "sl": sl,
             "tp1": tp1,

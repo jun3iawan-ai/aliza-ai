@@ -42,7 +42,7 @@ def validate_signal_risk(signal: dict) -> bool:
     try:
         from engine.risk_manager import validate_proposed_trade
 
-        return validate_proposed_trade(entry, sl, tp1)
+        return validate_proposed_trade(entry, sl, tp1, signal.get("side"))
     except Exception as e:
         logger.error(
             "Risk validation error — REJECTING signal for safety (risk checker failure, not rule rejection): %s",
