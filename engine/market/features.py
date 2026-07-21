@@ -55,6 +55,29 @@ def calculate_rsi_series(prices, period=14):
     return values
 
 
+def average_true_range(rows, period=14):
+    """Wilder ATR on closed OHLC rows; value at index is past-only."""
+    rows = list(rows or [])
+    values = [None] * len(rows)
+    if len(rows) < period + 1:
+        return values
+    true_ranges = []
+    for index, row in enumerate(rows):
+        high = float(row["high"])
+        low = float(row["low"])
+        if index == 0:
+            true_ranges.append(high - low)
+            continue
+        previous_close = float(rows[index - 1]["close"])
+        true_ranges.append(max(high - low, abs(high - previous_close), abs(low - previous_close)))
+    atr = sum(true_ranges[1:period + 1]) / period
+    values[period] = atr
+    for index in range(period + 1, len(rows)):
+        atr = (atr * (period - 1) + true_ranges[index]) / period
+        values[index] = atr
+    return values
+
+
 def support_resistance(prices):
     if not prices or len(prices) < 20:
         return None, None

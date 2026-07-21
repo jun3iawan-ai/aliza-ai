@@ -15,6 +15,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 BINANCE_BASE_URL = "https://api.binance.com"
+FUTURES_BASE_URL = "https://fapi.binance.com"
 KLINE_COLUMNS = ["open_time", "open", "high", "low", "close", "volume", "close_time"]
 INTERVAL_MS = {
     "5m": 5 * 60 * 1000,
@@ -85,10 +86,10 @@ class BinanceDataLoader:
             writer.writerows(rows)
         return path
 
-    def _get(self, endpoint, params, retries=5):
+    def _get(self, endpoint, params, retries=5, base_url=BINANCE_BASE_URL):
         delay = 1.0
         for attempt in range(retries):
-            response = self.session.get(BINANCE_BASE_URL + endpoint, params=params, timeout=30)
+            response = self.session.get(base_url + endpoint, params=params, timeout=30)
             if response.status_code == 200:
                 return response.json()
             if response.status_code in (418, 429, 500, 502, 503, 504):
@@ -150,8 +151,7 @@ class BinanceDataLoader:
         while cursor < end_ms:
             payload = self._get(
                 "/fapi/v1/fundingRate",
-                {"symbol": f"{coin.upper()}USDT", "startTime": cursor, "endTime": end_ms, "limit": 1000},
-            )
+                {"symbol": f"{coin.upper()}USDT", "startTime": cursor, "endTime": end_ms, "limit": 1000}, base_url=FUTURES_BASE_URL)
             if not payload:
                 break
             rows.extend({"timestamp": int(item["fundingTime"]), "funding_rate": float(item["fundingRate"])} for item in payload)
