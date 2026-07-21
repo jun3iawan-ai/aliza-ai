@@ -40,11 +40,41 @@ _last_known_price = {}
 # Cache harga CoinGecko yang di-pre-fetch per snapshot cycle
 _CG_PRICE_CACHE: dict[str, float] = {}
 
+_last_data_coverage: dict[str, dict] = {}
+
 
 def set_cg_price_cache(prices: dict[str, float]) -> None:
     """Dipanggil oleh snapshot engine sebelum loop; isi cache harga CoinGecko."""
     global _CG_PRICE_CACHE
     _CG_PRICE_CACHE = dict(prices)
+
+
+def _record_data_coverage(symbol, klines_4h, klines_1d, price_source, reason, alignment=None):
+    coverage = {
+        "coin": str(symbol or "").upper(),
+        "klines_4h": int(len(klines_4h or [])),
+        "klines_1d": int(len(klines_1d or [])),
+        "price_source": price_source if price_source in ("binance", "coingecko", "none") else "none",
+        "reason": reason,
+    }
+    if alignment is not None:
+        coverage["alignment"] = alignment
+    _last_data_coverage[coverage["coin"]] = coverage
+    log_method = logger.info if reason == "ok" else logger.warning
+    log_method(
+        "data_coverage coin=%s klines_4h=%d klines_1d=%d price_source=%s reason=%s%s",
+        coverage["coin"], coverage["klines_4h"], coverage["klines_1d"],
+        coverage["price_source"], reason,
+        "" if alignment is None else " alignment=" + str(alignment),
+    )
+    return coverage
+
+
+def get_data_coverage(symbol=None):
+    if symbol is None:
+        return {key: dict(value) for key, value in _last_data_coverage.items()}
+    value = _last_data_coverage.get(str(symbol or "").upper())
+    return dict(value) if value else {}
 
 
 def _safe_float(val, default=None):
@@ -244,12 +274,16 @@ def market_signal(symbol, radar_data=None):
     symbol = (symbol or "").strip().upper() or "BTC"
 
     # 1. Binance as primary price source; CoinGecko fallback for non-Binance coins
+    price_source = "none"
     price = _get_price_from_binance(symbol)
+    if price is not None and price > 0:
+        price_source = "binance"
     if price is None or price <= 0:
         # Cek cache pre-fetch dulu
         cached_cg = _CG_PRICE_CACHE.get(symbol)
         if cached_cg and cached_cg > 0:
             price = cached_cg
+            price_source = "coingecko"
             logging.info("market_analyzer: CoinGecko cache hit %s = %s", symbol, price)
         else:
             # fallback individual (tetap ada sebagai safety net)
@@ -266,6 +300,7 @@ def market_signal(symbol, radar_data=None):
                         _cg_data = _r.json()
                         if _cg_id in _cg_data:
                             price = float(_cg_data[_cg_id]["usd"])
+                            price_source = "coingecko"
                             logging.info("market_analyzer: CoinGecko fallback price %s = %s", symbol, price)
             except Exception as _e:
                 logging.warning("market_analyzer: CoinGecko price fallback failed %s: %s", symbol, _e)
@@ -286,6 +321,8 @@ def market_signal(symbol, radar_data=None):
     else:
         chart = get_coin_market_chart(symbol, vs_currency="usd", days=90)
         prices = _get_prices_from_chart(chart)
+        if prices:
+            price_source = "coingecko"
 
     # 3. Resolve final price: Binance -> last known cache -> chart fallback.
     # Ticker tidak ditambahkan ke seri indikator karena bukan candle yang sudah close.
@@ -301,10 +338,12 @@ def market_signal(symbol, radar_data=None):
         _last_known_price[symbol] = price
     else:
         logging.error("Price unavailable for %s", symbol)
+        _record_data_coverage(symbol, closes_4h, closes_1d, price_source, "price_unavailable")
         logger.warning("Invalid data — skipping signal")
         return None
 
     if not prices or len(prices) < MIN_REQUIRED_DATA:
+        _record_data_coverage(symbol, closes_4h, closes_1d, price_source, "insufficient_price_series")
         logger.warning("Invalid data — skipping signal")
         return None
 
@@ -316,6 +355,16 @@ def market_signal(symbol, radar_data=None):
     trend_4h = mtf.get("trend_4h")
     trend_1d = mtf.get("trend_1d")
     alignment = mtf.get("alignment")
+    if alignment == "UNKNOWN":
+        if len(closes_4h) < 30 and len(closes_1d) < 50:
+            coverage_reason = "insufficient_4h_and_1d"
+        elif len(closes_4h) < 30:
+            coverage_reason = "insufficient_4h"
+        else:
+            coverage_reason = "insufficient_1d"
+        coverage = _record_data_coverage(symbol, closes_4h, closes_1d, price_source, coverage_reason, alignment)
+    else:
+        coverage = _record_data_coverage(symbol, closes_4h, closes_1d, price_source, "ok", alignment)
 
     ma20 = _moving_average(prices, 20)
     ma50 = _moving_average(prices, 50)
@@ -333,6 +382,7 @@ def market_signal(symbol, radar_data=None):
     rsi_prices = closes_4h if (closes_4h and len(closes_4h) >= 15) else (closes_1d if (closes_1d and len(closes_1d) >= 15) else prices)
     rsi = _calculate_rsi(rsi_prices)
     if rsi is None:
+        _record_data_coverage(symbol, closes_4h, closes_1d, price_source, "insufficient_rsi_data", alignment)
         logger.warning("Invalid data — skipping signal")
         return None
     try:
@@ -341,6 +391,7 @@ def market_signal(symbol, radar_data=None):
         logger.warning("Invalid data — skipping signal")
         return None
     if rsi < 0 or rsi > 100:
+        _record_data_coverage(symbol, closes_4h, closes_1d, price_source, "invalid_rsi", alignment)
         logger.warning("Invalid data — skipping signal")
         return None
     support, resistance = _support_resistance(prices)
@@ -427,6 +478,7 @@ def market_signal(symbol, radar_data=None):
         "bull_probability": radar.get("bull_probability"),
         "market_risk_score": radar.get("market_risk_score", "UNKNOWN"),
         "trade_setup": trade_setup,
+        "data_coverage": coverage,
         "timestamp": time.time(),
     }
     if symbol == "BTC":
