@@ -5123,6 +5123,9 @@ def _parse_and_record_signals(text: str, market_score: int = 0) -> None:
             record_signal({
                 "coin": coin,
                 "setup": setup,
+                "side": "SHORT" if setup == "SHORT" else "LONG",
+                "source": "llm",
+                "dispatch_status": "SENT",
                 "entry": entry,
                 "sl": sl,
                 "tp": tp,
@@ -5255,15 +5258,19 @@ async def morning_brief_job(context: ContextTypes.DEFAULT_TYPE):
         logging.warning("morning_brief: analisis kosong")
         return
 
+    analysis_sent = False
     try:
-        await safe_dispatch(str(analysis).strip(), chat_id=chat_id, force=True)
+        analysis_sent = bool(
+            await safe_dispatch(str(analysis).strip(), chat_id=chat_id, force=True)
+        )
     except Exception as e:
         logging.error("morning_brief dispatch analysis: %s", e)
-    try:
-        _ms = result.get("total_score", 0) if result else 0
-        _parse_and_record_signals(str(analysis), market_score=_ms)
-    except Exception:
-        pass
+    if analysis_sent:
+        try:
+            _ms = result.get("total_score", 0) if result else 0
+            _parse_and_record_signals(str(analysis), market_score=_ms)
+        except Exception:
+            pass
 
 
 async def morning_brief_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5378,15 +5385,19 @@ async def evening_summary_job(context: ContextTypes.DEFAULT_TYPE):
         logging.warning("evening_summary: analisis kosong")
         return
 
+    analysis_sent = False
     try:
-        await safe_dispatch(str(analysis).strip(), chat_id=chat_id, force=True)
+        analysis_sent = bool(
+            await safe_dispatch(str(analysis).strip(), chat_id=chat_id, force=True)
+        )
     except Exception as e:
         logging.error("evening_summary dispatch analysis: %s", e)
-    try:
-        _ms = result.get("total_score", 0) if result else 0
-        _parse_and_record_signals(str(analysis), market_score=_ms)
-    except Exception:
-        pass
+    if analysis_sent:
+        try:
+            _ms = result.get("total_score", 0) if result else 0
+            _parse_and_record_signals(str(analysis), market_score=_ms)
+        except Exception:
+            pass
 
 
 async def evening_summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6675,6 +6686,7 @@ async def _dispatch_and_record_deterministic_signal(sig: dict, chat_id) -> bool:
             "tp", sig.get("tp") or sig.get("tp1") or sig.get("take_profit")
         )
         sig_to_record["dispatch_status"] = "SENT"
+        sig_to_record["source"] = "deterministic"
         mctx = calculate_market_score()
         sig_to_record["market_score"] = mctx.get("total_score")
         try:

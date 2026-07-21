@@ -178,10 +178,11 @@ def record_signal(signal: dict[str, Any]) -> int | None:
             """
             SELECT id
             FROM signal_tracking
-            WHERE coin = ? AND IFNULL(setup, '') = IFNULL(?, '') AND signal_time = ?
+            WHERE coin = ? AND IFNULL(setup, '') = IFNULL(?, '')
+              AND signal_time = ? AND IFNULL(source, '') = IFNULL(?, '')
             LIMIT 1
             """,
-            (coin, setup, signal_time),
+            (coin, setup, signal_time, source),
         ).fetchone()
         if dup:
             conn.close()
@@ -195,9 +196,10 @@ def record_signal(signal: dict[str, Any]) -> int | None:
             WHERE status = 'OPEN'
               AND coin = ?
               AND IFNULL(setup, '') = IFNULL(?, '')
+              AND IFNULL(source, '') = IFNULL(?, '')
             LIMIT 1
             """,
-            (coin, setup),
+            (coin, setup, source),
         ).fetchone()
         if dup_open:
             conn.close()
@@ -333,100 +335,158 @@ def check_open_signals() -> list[dict[str, Any]]:
     return closed
 
 
-def get_signal_stats() -> dict[str, Any]:
+def _empty_stats() -> dict[str, Any]:
+    return {
+        "source_filter": "deterministic",
+        "total_signals": 0,
+        "win": 0,
+        "loss": 0,
+        "expired": 0,
+        "open": 0,
+        "win_rate": 0.0,
+        "avg_pnl": 0.0,
+        "best_trade": None,
+        "worst_trade": None,
+        "by_coin": [],
+        "by_source": [],
+        "by_side": [],
+        "by_setup": [],
+    }
+
+
+def _stats_breakdown(
+    conn: sqlite3.Connection, column: str
+) -> list[dict[str, Any]]:
+    if column not in {"source", "side", "setup"}:
+        raise ValueError("unsupported breakdown column")
+    rows = conn.execute(
+        f"""
+        SELECT IFNULL({column}, 'UNKNOWN') AS label,
+               COUNT(*) AS total,
+               SUM(CASE WHEN status='WIN' THEN 1 ELSE 0 END) AS win,
+               SUM(CASE WHEN status='LOSS' THEN 1 ELSE 0 END) AS loss,
+               SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END) AS open,
+               SUM(CASE WHEN status='EXPIRED' THEN 1 ELSE 0 END) AS expired
+        FROM signal_tracking
+        GROUP BY IFNULL({column}, 'UNKNOWN')
+        ORDER BY label
+        """
+    ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        win = int(row["win"] or 0)
+        loss = int(row["loss"] or 0)
+        closed = win + loss
+        result.append(
+            {
+                column: row["label"],
+                "total": int(row["total"] or 0),
+                "win": win,
+                "loss": loss,
+                "open": int(row["open"] or 0),
+                "expired": int(row["expired"] or 0),
+                "win_rate": (win / closed * 100.0) if closed else 0.0,
+            }
+        )
+    return result
+
+
+def get_signal_stats(source: str | None = "deterministic") -> dict[str, Any]:
+    """Statistik utama terfilter deterministic; breakdown selalu mencakup semua source."""
+    result = _empty_stats()
+    result["source_filter"] = source
+    conn: sqlite3.Connection | None = None
     try:
         conn = _connect()
-        total = int(conn.execute("SELECT COUNT(*) FROM signal_tracking").fetchone()[0])
-        if total == 0:
-            conn.close()
-            return {
-                "total_signals": 0,
-                "win": 0,
-                "loss": 0,
-                "expired": 0,
-                "open": 0,
-                "win_rate": 0.0,
-                "avg_pnl": 0.0,
-                "best_trade": None,
-                "worst_trade": None,
-                "by_coin": [],
-            }
-
-        win = int(conn.execute("SELECT COUNT(*) FROM signal_tracking WHERE status='WIN'").fetchone()[0])
-        loss = int(conn.execute("SELECT COUNT(*) FROM signal_tracking WHERE status='LOSS'").fetchone()[0])
-        expired = int(conn.execute("SELECT COUNT(*) FROM signal_tracking WHERE status='EXPIRED'").fetchone()[0])
-        open_n = int(conn.execute("SELECT COUNT(*) FROM signal_tracking WHERE status='OPEN'").fetchone()[0])
-
-        closed_base = win + loss
-        win_rate = (win / closed_base * 100.0) if closed_base > 0 else 0.0
-        avg_row = conn.execute(
-            "SELECT AVG(pnl_pct) FROM signal_tracking WHERE status IN ('WIN','LOSS') AND pnl_pct IS NOT NULL"
+        where = "" if source is None else "WHERE source = ?"
+        params: tuple[Any, ...] = () if source is None else (source,)
+        totals = conn.execute(
+            f"""
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN status='WIN' THEN 1 ELSE 0 END) AS win,
+                   SUM(CASE WHEN status='LOSS' THEN 1 ELSE 0 END) AS loss,
+                   SUM(CASE WHEN status='EXPIRED' THEN 1 ELSE 0 END) AS expired,
+                   SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END) AS open,
+                   AVG(CASE WHEN status IN ('WIN','LOSS') THEN pnl_pct END) AS avg_pnl
+            FROM signal_tracking {where}
+            """,
+            params,
         ).fetchone()
-        avg_pnl = float(avg_row[0]) if avg_row and avg_row[0] is not None else 0.0
+        total = int(totals["total"] or 0)
+        win = int(totals["win"] or 0)
+        loss = int(totals["loss"] or 0)
+        closed = win + loss
 
+        closed_where = (
+            "WHERE status IN ('WIN','LOSS') AND pnl_pct IS NOT NULL"
+            if source is None
+            else "WHERE source = ? AND status IN ('WIN','LOSS') "
+                 "AND pnl_pct IS NOT NULL"
+        )
         best = conn.execute(
-            """
-            SELECT coin, setup, pnl_pct
-            FROM signal_tracking
-            WHERE status IN ('WIN','LOSS') AND pnl_pct IS NOT NULL
-            ORDER BY pnl_pct DESC
-            LIMIT 1
-            """
+            f"""
+            SELECT coin, setup, side, source, pnl_pct
+            FROM signal_tracking {closed_where}
+            ORDER BY pnl_pct DESC LIMIT 1
+            """,
+            params,
         ).fetchone()
         worst = conn.execute(
-            """
-            SELECT coin, setup, pnl_pct
-            FROM signal_tracking
-            WHERE status IN ('WIN','LOSS') AND pnl_pct IS NOT NULL
-            ORDER BY pnl_pct ASC
-            LIMIT 1
-            """
+            f"""
+            SELECT coin, setup, side, source, pnl_pct
+            FROM signal_tracking {closed_where}
+            ORDER BY pnl_pct ASC LIMIT 1
+            """,
+            params,
         ).fetchone()
-
-        by_coin_rows = conn.execute(
-            """
-            SELECT
-                coin,
-                SUM(CASE WHEN status='WIN' THEN 1 ELSE 0 END) AS win,
-                SUM(CASE WHEN status='LOSS' THEN 1 ELSE 0 END) AS loss
-            FROM signal_tracking
-            GROUP BY coin
-            ORDER BY coin
-            """
+        by_coin = conn.execute(
+            f"""
+            SELECT coin,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN status='WIN' THEN 1 ELSE 0 END) AS win,
+                   SUM(CASE WHEN status='LOSS' THEN 1 ELSE 0 END) AS loss
+            FROM signal_tracking {where}
+            GROUP BY coin ORDER BY coin
+            """,
+            params,
         ).fetchall()
-        conn.close()
 
-        by_coin = []
-        for r in by_coin_rows:
-            c_win = int(r["win"] or 0)
-            c_loss = int(r["loss"] or 0)
-            base = c_win + c_loss
-            c_wr = (c_win / base * 100.0) if base > 0 else 0.0
-            by_coin.append({"coin": r["coin"], "win": c_win, "loss": c_loss, "win_rate": c_wr})
-
-        return {
-            "total_signals": total,
-            "win": win,
-            "loss": loss,
-            "expired": expired,
-            "open": open_n,
-            "win_rate": win_rate,
-            "avg_pnl": avg_pnl,
-            "best_trade": dict(best) if best else None,
-            "worst_trade": dict(worst) if worst else None,
-            "by_coin": by_coin,
-        }
+        result.update(
+            {
+                "total_signals": total,
+                "win": win,
+                "loss": loss,
+                "expired": int(totals["expired"] or 0),
+                "open": int(totals["open"] or 0),
+                "win_rate": (win / closed * 100.0) if closed else 0.0,
+                "avg_pnl": float(totals["avg_pnl"] or 0.0),
+                "best_trade": dict(best) if best else None,
+                "worst_trade": dict(worst) if worst else None,
+                "by_coin": [
+                    {
+                        "coin": row["coin"],
+                        "total": int(row["total"] or 0),
+                        "win": int(row["win"] or 0),
+                        "loss": int(row["loss"] or 0),
+                        "win_rate": (
+                            int(row["win"] or 0)
+                            / (int(row["win"] or 0) + int(row["loss"] or 0))
+                            * 100.0
+                        )
+                        if (int(row["win"] or 0) + int(row["loss"] or 0))
+                        else 0.0,
+                    }
+                    for row in by_coin
+                ],
+                "by_source": _stats_breakdown(conn, "source"),
+                "by_side": _stats_breakdown(conn, "side"),
+                "by_setup": _stats_breakdown(conn, "setup"),
+            }
+        )
+        return result
     except Exception as e:  # noqa: BLE001
         logger.warning("signal_tracker: get_signal_stats failed: %s", e)
-        return {
-            "total_signals": 0,
-            "win": 0,
-            "loss": 0,
-            "expired": 0,
-            "open": 0,
-            "win_rate": 0.0,
-            "avg_pnl": 0.0,
-            "best_trade": None,
-            "worst_trade": None,
-            "by_coin": [],
-        }
+        return result
+    finally:
+        if conn is not None:
+            conn.close()

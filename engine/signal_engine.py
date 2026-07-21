@@ -248,7 +248,7 @@ def attach_strategy_source(sig: dict) -> dict:
     u["type"] = str(u.get("setup") or "ALERT")
     u["stop_loss"] = u.get("sl")
     u["take_profit"] = u.get("tp1")
-    u["source"] = "strategy"
+    u["source"] = "deterministic"
     u["signal_type"] = SIGNAL_TYPE_TRADE
     return u
 
