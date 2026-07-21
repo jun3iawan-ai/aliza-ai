@@ -135,8 +135,12 @@ class TradingBrain:
         # RSI ekstrem dulu
         if rsi is not None and rsi < 30:
             setup = "OVERSOLD BOUNCE"
-            if support:
-                sl = support * 0.99
+            # SL 1.5% di bawah ENTRY: buffer deterministik, tahan noise wick, tetap di bawah
+            # MAX_RISK_PERCENT=2% (risk_manager). Eksperimen 21 Juli (n=3 JTO stop-out di ~1%).
+            if entry:
+                sl = entry * 0.985
+            elif support:
+                sl = support * 0.985  # fallback bila entry None
             if resistance:
                 tp1 = resistance
                 tp2 = resistance * 1.02
