@@ -2,7 +2,7 @@
 
 Tanggal: 21 Juli 2026  
 Branch: `feat/fase2-backtester`  
-HEAD: `218fb1c6b422d7bf294b016df41e771c388e7396`  
+Merge HEAD: `c5bcab82`; follow-up HEAD: `4f6972e2`  
 Parameter strategi, jalur live, service, dan `.env` tidak diubah.
 
 ## Commit
@@ -11,6 +11,7 @@ Parameter strategi, jalur live, service, dan `.env` tidak diubah.
 - `f418872e` — data loader Binance, costs, simulator, metrics, CLI.
 - `360564de` — test Fase 2.
 - `218fb1c6` — optimasi RSI stream dengan paritas matematis.
+- `4f6972e2` — test anti-lookahead dengan candle masa depan.
 
 ## Perubahan
 
@@ -28,7 +29,7 @@ Parameter strategi, jalur live, service, dan `.env` tidak diubah.
 
 ```
 venv/bin/python -m pytest -q
-126 passed, 3 warnings, 74 subtests passed in 14.75s
+127 passed, 3 warnings, 74 subtests passed in 14.75s
 ```
 
 Test mencakup paritas feature, anti-lookahead, entry next-open, same-bar TP/SL, short outcome, biaya/funding, reproduksibilitas, Wilson interval, dan RSI stream. Smoke CLI tanpa data juga berhasil menghasilkan artefak kosong deterministik.
