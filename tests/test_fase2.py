@@ -124,3 +124,11 @@ def test_metrics_wilson_and_small_sample():
     assert metrics["n"] == 2
     assert metrics["sample_small"] is True
     assert len(metrics["winrate_wilson_95"]) == 2
+
+
+def test_rsi_stream_matches_runtime_formula():
+    from engine.market.features import calculate_rsi, calculate_rsi_series
+
+    prices = [100 + (index % 9) - index * 0.03 for index in range(300)]
+    stream = calculate_rsi_series(prices)
+    assert all(calculate_rsi(prices[:index + 1]) == stream[index] for index in range(len(prices)))

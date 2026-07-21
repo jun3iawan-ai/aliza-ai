@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from engine.brain import trading_brain
 from engine.brain.trading_brain import TradingBrain
 from engine.intelligence.market_regime_detector import detect_market_regime
-from engine.market.features import compute_features
+from engine.market.features import compute_features, calculate_rsi_series
 
 from .costs import calculate_trade_pnl
 
@@ -130,6 +130,8 @@ def simulate_coin(coin, dataset, start_ms, end_ms, setups=None, production_filte
     lower_rows = sorted(lower_rows, key=lambda row: int(row["open_time"]))
     funding = dataset.get("funding") or []
     closes_4h = [float(row["close"]) for row in all_candles]
+    rsi_series = calculate_rsi_series(closes_4h)
+    rsi_series = calculate_rsi_series(closes_4h)
     position = None
     pending = None
     trades = []
@@ -160,9 +162,10 @@ def simulate_coin(coin, dataset, start_ms, end_ms, setups=None, production_filte
             continue
 
         closes_until = [float(row["close"]) for row in all_candles if int(row["close_time"]) <= now]
+        rsi_index = max(0, len(closes_until) - 1)
         one_day_until = [row for row in one_day if int(row["close_time"]) <= now]
         closes_1d = [float(row["close"]) for row in one_day_until]
-        feature = compute_features(closes_until, closes_1d, price=float(candle["close"]))
+        feature = compute_features(closes_until[-200:], closes_1d[-50:], price=float(candle["close"]), rsi_value=rsi_series[rsi_index])
         if not feature.get("valid"):
             continue
 

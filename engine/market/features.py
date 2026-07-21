@@ -32,6 +32,29 @@ def calculate_rsi(prices, period=14):
     return round(100 - (100 / (1 + relative_strength)), 2)
 
 
+def calculate_rsi_series(prices, period=14):
+    """Return RSI at each prefix using the same Wilder recurrence as calculate_rsi."""
+    values = [None] * len(prices or [])
+    if not prices or len(prices) < period + 1:
+        return values
+    gains = []
+    losses = []
+    for index in range(1, len(prices)):
+        change = prices[index] - prices[index - 1]
+        gains.append(max(change, 0.0))
+        losses.append(max(-change, 0.0))
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    values[period] = 100.0 if avg_loss == 0 else round(100 - (100 / (1 + avg_gain / avg_loss)), 2)
+    for index in range(period + 1, len(prices)):
+        gain = gains[index - 1]
+        loss = losses[index - 1]
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
+        values[index] = 100.0 if avg_loss == 0 else round(100 - (100 / (1 + avg_gain / avg_loss)), 2)
+    return values
+
+
 def support_resistance(prices):
     if not prices or len(prices) < 20:
         return None, None
@@ -49,7 +72,7 @@ def trend_from_ma(price, ma_short, ma_long):
     return "SIDEWAYS"
 
 
-def compute_features(closes_4h, closes_1d, price=None, price_series=None):
+def compute_features(closes_4h, closes_1d, price=None, price_series=None, rsi_value=None):
     """Compute exactly the close-based feature contract used by market_signal()."""
     closes_4h = list(closes_4h or [])
     closes_1d = list(closes_1d or [])
@@ -97,7 +120,7 @@ def compute_features(closes_4h, closes_1d, price=None, price_series=None):
         else closes_1d if closes_1d and len(closes_1d) >= 15
         else prices
     )
-    rsi = calculate_rsi(rsi_prices)
+    rsi = rsi_value if rsi_value is not None else calculate_rsi(rsi_prices)
     support, resistance = support_resistance(prices)
     if rsi is None:
         return {
