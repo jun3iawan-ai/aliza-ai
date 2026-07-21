@@ -72,6 +72,7 @@ def scan_opportunities_from_data(market_data_dict):
         opportunities.append({
             "coin": coin,
             "setup": trade.get("setup"),
+            "side": trade.get("side"),
             "entry": trade.get("entry"),
             "sl": trade.get("sl"),
             "tp1": trade.get("tp1"),

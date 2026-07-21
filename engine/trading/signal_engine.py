@@ -218,6 +218,7 @@ def scan_for_signals():
         candidates.append({
             "coin": coin,
             "setup": trade.get("setup"),
+            "side": trade.get("side"),
             "entry": trade.get("entry"),
             "sl": trade.get("sl"),
             "tp1": trade.get("tp1"),

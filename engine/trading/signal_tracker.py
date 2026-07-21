@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -16,6 +17,15 @@ logger = logging.getLogger(__name__)
 
 WIB = timezone(timedelta(hours=7))
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "aliza.db")
+
+SETUP_SIDE = {
+    "OVERSOLD BOUNCE": "LONG",
+    "PULLBACK LONG": "LONG",
+    "LONG": "LONG",
+    "OVERBOUGHT REJECTION": "SHORT",
+    "PULLBACK SHORT": "SHORT",
+    "SHORT": "SHORT",
+}
 
 
 def _now_wib() -> datetime:
@@ -35,6 +45,13 @@ def _safe_float(v: Any) -> float | None:
         return None
 
 
+def _normalize_side(side: Any, setup: Any = None) -> str | None:
+    normalized = str(side or "").strip().upper()
+    if normalized in {"LONG", "SHORT"}:
+        return normalized
+    return SETUP_SIDE.get(str(setup or "").strip().upper())
+
+
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -50,6 +67,10 @@ def init_signal_tracking_db() -> bool:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 coin TEXT NOT NULL,
                 setup TEXT,
+                side TEXT,
+                source TEXT DEFAULT 'deterministic',
+                signal_id TEXT,
+                dispatch_status TEXT DEFAULT 'UNKNOWN',
                 entry_price REAL,
                 sl_price REAL,
                 tp_price REAL,
@@ -68,8 +89,55 @@ def init_signal_tracking_db() -> bool:
         )
         cur = conn.execute("PRAGMA table_info(signal_tracking)")
         _cols = [r[1] for r in cur.fetchall()]
-        if "regime" not in _cols:
-            conn.execute("ALTER TABLE signal_tracking ADD COLUMN regime TEXT")
+        migrations = {
+            "regime": "TEXT",
+            "side": "TEXT",
+            "source": "TEXT",
+            "signal_id": "TEXT",
+            "dispatch_status": "TEXT",
+        }
+        for column, definition in migrations.items():
+            if column not in _cols:
+                conn.execute(
+                    f"ALTER TABLE signal_tracking ADD COLUMN {column} {definition}"
+                )
+
+        conn.execute(
+            """
+            UPDATE signal_tracking
+            SET side = CASE UPPER(TRIM(IFNULL(setup, '')))
+                WHEN 'OVERSOLD BOUNCE' THEN 'LONG'
+                WHEN 'PULLBACK LONG' THEN 'LONG'
+                WHEN 'LONG' THEN 'LONG'
+                WHEN 'OVERBOUGHT REJECTION' THEN 'SHORT'
+                WHEN 'PULLBACK SHORT' THEN 'SHORT'
+                WHEN 'SHORT' THEN 'SHORT'
+                ELSE side
+            END
+            WHERE side IS NULL OR TRIM(side) = ''
+            """
+        )
+        conn.execute(
+            "UPDATE signal_tracking SET source='legacy' "
+            "WHERE source IS NULL OR TRIM(source)=''"
+        )
+        conn.execute(
+            "UPDATE signal_tracking SET dispatch_status='UNKNOWN' "
+            "WHERE dispatch_status IS NULL OR TRIM(dispatch_status)=''"
+        )
+        missing_ids = conn.execute(
+            "SELECT id FROM signal_tracking "
+            "WHERE signal_id IS NULL OR TRIM(signal_id)=''"
+        ).fetchall()
+        for row in missing_ids:
+            conn.execute(
+                "UPDATE signal_tracking SET signal_id=? WHERE id=?",
+                (str(uuid.uuid4()), int(row[0])),
+            )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "idx_signal_tracking_signal_id ON signal_tracking(signal_id)"
+        )
         conn.commit()
         conn.close()
         return True
@@ -86,6 +154,10 @@ def record_signal(signal: dict[str, Any]) -> int | None:
         return None
 
     setup = str(signal.get("setup") or "").strip()
+    side = _normalize_side(signal.get("side"), setup)
+    source = str(signal.get("source") or "deterministic").strip().lower()
+    signal_uuid = str(signal.get("signal_id") or uuid.uuid4())
+    dispatch_status = str(signal.get("dispatch_status") or "UNKNOWN").strip().upper()
     entry = _safe_float(signal.get("entry"))
     sl = _safe_float(signal.get("sl") or signal.get("stop_loss"))
     tp = _safe_float(signal.get("tp") or signal.get("take_profit") or signal.get("tp1"))
@@ -134,10 +206,16 @@ def record_signal(signal: dict[str, Any]) -> int | None:
         cur = conn.execute(
             """
             INSERT INTO signal_tracking
-            (coin, setup, entry_price, sl_price, tp_price, confidence, rr, signal_time, status, market_score, regime)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
+            (coin, setup, side, source, signal_id, dispatch_status,
+             entry_price, sl_price, tp_price, confidence, rr, signal_time,
+             status, market_score, regime)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
             """,
-            (coin, setup, entry, sl, tp, confidence, rr, signal_time, market_score_i, regime),
+            (
+                coin, setup, side, source, signal_uuid, dispatch_status,
+                entry, sl, tp, confidence, rr, signal_time,
+                market_score_i, regime,
+            ),
         )
         conn.commit()
         new_id = int(cur.lastrowid)
@@ -167,7 +245,7 @@ def check_open_signals() -> list[dict[str, Any]]:
         conn = _connect()
         rows = conn.execute(
             """
-            SELECT id, coin, setup, entry_price, sl_price, tp_price, signal_time
+            SELECT id, coin, setup, side, entry_price, sl_price, tp_price, signal_time
             FROM signal_tracking
             WHERE status = 'OPEN'
             """
@@ -185,6 +263,7 @@ def check_open_signals() -> list[dict[str, Any]]:
             signal_id = int(r["id"])
             coin = str(r["coin"] or "").upper()
             setup = str(r["setup"] or "")
+            side = _normalize_side(r["side"], setup)
             entry = _safe_float(r["entry_price"])
             sl = _safe_float(r["sl_price"])
             tp = _safe_float(r["tp_price"])
@@ -204,7 +283,7 @@ def check_open_signals() -> list[dict[str, Any]]:
                 if price is None or entry is None or entry == 0:
                     continue
                 close_price = price
-                is_short = (setup or "").strip().upper() == "SHORT"
+                is_short = side == "SHORT"
                 if is_short:
                     if tp is not None and price <= tp:
                         status = "WIN"
@@ -236,6 +315,7 @@ def check_open_signals() -> list[dict[str, Any]]:
                     "id": signal_id,
                     "coin": coin,
                     "setup": setup,
+                    "side": side,
                     "entry_price": entry,
                     "close_price": close_price,
                     "status": status,
