@@ -23,6 +23,9 @@ import pytest
 
 from engine.market import institutional_data as idata
 
+with patch("dotenv.load_dotenv", return_value=False):
+    from interfaces import telegram_bot as tb
+
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
@@ -358,3 +361,70 @@ class TestFarsideEtfFlow:
         assert err is None
         assert today_m == 39.3
         assert cum_7d_m == 341.6
+
+
+# ---------------------------------------------------------------------------
+# 7. Messaging fix: not_configured messages must not imply CoinGlass is the
+#    available fix (it's a paid plan that was deliberately not chosen), and
+#    the INSTITUTIONAL footer must distinguish "not configured" from "actual
+#    fetch failure" -- see INSTITUTIONAL_DATA_REPORT.md revision section.
+# ---------------------------------------------------------------------------
+
+
+class TestNotConfiguredMessagesDontMentionCoinGlass:
+    def test_btc_netflow_message_has_no_coinglass_mention(self, monkeypatch):
+        monkeypatch.delenv("BTC_NETFLOW_SCRAPE_ENABLED", raising=False)
+        result = idata.get_btc_exchange_netflow()
+        assert result["status"] == "not_configured"
+        assert "coinglass" not in result["message"].lower()
+        assert "COINGLASS_API_KEY" not in result["message"]
+
+    def test_liquidation_message_has_no_coinglass_mention(self, monkeypatch):
+        monkeypatch.delenv("COINGLASS_API_KEY", raising=False)
+        result = idata.get_liquidation_volume_24h()
+        assert result["status"] == "not_configured"
+        assert "coinglass" not in result["message"].lower()
+        assert "COINGLASS_API_KEY" not in result["message"]
+
+
+class TestInstitutionalFooter:
+    """_institutional_footer() (interfaces/telegram_bot.py) decides the
+    INSTITUTIONAL section's closing line. It must say "gagal fetch" only
+    when something actually errored out (status "fetch_failed"), never just
+    because a metric is "not_configured" (not yet set up, not broken) --
+    and ETF Flow being "ok" must not be drowned out by the other two being
+    unconfigured."""
+
+    def _inst(self, etf_status, netflow_status, liq_status, data_quality):
+        return {
+            "etf_status": etf_status,
+            "netflow_status": netflow_status,
+            "liq_status": liq_status,
+            "data_quality": data_quality,
+        }
+
+    def test_etf_ok_others_not_configured_footer_has_no_gagal(self):
+        """Exact real-world case from the 22 Jul 2026 08:47 WIB morning brief:
+        ETF Flow succeeded via Farside, Netflow/Liquidation are simply not
+        set up yet -- footer must not say anything failed."""
+        inst = self._inst("ok", "not_configured", "not_configured", "partial")
+        footer = tb._institutional_footer(inst)
+        assert "gagal" not in footer.lower()
+        assert "BTC Netflow" in footer
+        assert "Liquidation 24h" in footer
+
+    def test_any_fetch_failed_footer_still_says_gagal(self):
+        inst = self._inst("ok", "fetch_failed", "not_configured", "unavailable")
+        footer = tb._institutional_footer(inst)
+        assert "gagal" in footer.lower()
+
+    def test_all_not_configured_uses_setup_message_not_gagal(self):
+        inst = self._inst("not_configured", "not_configured", "not_configured", "not_configured")
+        footer = tb._institutional_footer(inst)
+        assert "gagal" not in footer.lower()
+
+    def test_all_ok_uses_source_message(self):
+        inst = self._inst("ok", "ok", "ok", "live")
+        footer = tb._institutional_footer(inst)
+        assert "gagal" not in footer.lower()
+        assert "Sumber" in footer

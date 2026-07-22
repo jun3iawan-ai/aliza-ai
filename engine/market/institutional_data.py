@@ -443,7 +443,12 @@ def get_liquidation_volume_24h(now: float | None = None) -> dict[str, Any]:
             "long_usd_m": None,
             "short_usd_m": None,
             "source": None,
-            "message": "Liquidation 24h: data belum aktif -- COINGLASS_API_KEY belum dikonfigurasi di .env",
+            "message": (
+                "Liquidation 24h: belum ada sumber gratis yang diimplementasikan -- "
+                "endpoint publik Binance untuk data ini sudah dimatikan, dan "
+                "satu-satunya API alternatif yang diriset butuh langganan berbayar "
+                "yang tidak dipilih -- lihat INSTITUTIONAL_DATA_REPORT.md"
+            ),
         }
         _liq_cache["ts"] = now
         _liq_cache["data"] = result
@@ -534,7 +539,7 @@ def get_btc_exchange_netflow(now: float | None = None) -> dict[str, Any]:
       message: str | None
 
     "not_configured" di sini berarti dua hal sekaligus (lihat message): CoinGlass
-    free tier tidak mencakup endpoint spot netflow, DAN scraping fallback
+    butuh langganan berbayar yang tidak dipilih, DAN scraping fallback
     dinonaktifkan default (BTC_NETFLOW_SCRAPE_ENABLED=false) karena kandidat
     situs yang diriset butuh render JS (lihat INSTITUTIONAL_DATA_REPORT.md).
     """
@@ -548,9 +553,10 @@ def get_btc_exchange_netflow(now: float | None = None) -> dict[str, Any]:
             "netflow_btc": None,
             "source": None,
             "message": (
-                "BTC Netflow: data belum aktif -- CoinGlass free tier tidak mencakup "
-                "endpoint ini (butuh plan Startup+), dan scraping fallback nonaktif "
-                "default (BTC_NETFLOW_SCRAPE_ENABLED=false, lihat INSTITUTIONAL_DATA_REPORT.md)"
+                "BTC Netflow: belum ada sumber gratis yang stabil -- API berbayar "
+                "yang diriset tidak dipilih, dan scraping alternatif "
+                "(BTC_NETFLOW_SCRAPE_ENABLED) butuh render JavaScript yang berisiko "
+                "menambah beban resource VPS -- lihat INSTITUTIONAL_DATA_REPORT.md"
             ),
         }
         _netflow_cache["ts"] = now
