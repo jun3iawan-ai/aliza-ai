@@ -70,6 +70,7 @@ from engine.market.economic_calendar import (
     get_events_tomorrow,
     get_events_next_hour,
 )
+from engine.market import institutional_data as inst_data
 from engine.market.market_context_engine import calculate_market_score, format_context_for_brief
 import engine.market.market_snapshot_engine as snapshot_state
 from engine.market.market_intelligence import analyze_market_environment
@@ -4664,210 +4665,6 @@ def _get_coinbase_premium() -> dict[str, Any]:
         return out
 
 
-def _serper_search_snippet(query: str, search_type: str = "search") -> str:
-    """Fetch snippet dari Serper untuk query tertentu. Return string kosong jika gagal."""
-    try:
-        import httpx as _httpx
-        import os as _os
-
-        serper_key = _os.getenv("SERPER_API_KEY", "")
-        if not serper_key:
-            return ""
-        endpoint = (
-            "https://google.serper.dev/news"
-            if search_type == "news"
-            else "https://google.serper.dev/search"
-        )
-        r = _httpx.post(
-            endpoint,
-            headers={"X-API-KEY": serper_key, "Content-Type": "application/json"},
-            json={"q": query, "num": 3},
-            timeout=8,
-        )
-        if r.status_code == 200:
-            body = r.json()
-            key = "organic" if search_type == "search" else "news"
-            for item in body.get(key, []) or []:
-                if not isinstance(item, dict):
-                    continue
-                snippet = item.get("snippet", "")
-                if snippet and len(snippet) > 20:
-                    return snippet
-    except Exception:
-        pass
-    return ""
-
-
-def _inst_parse_million_flow(snippet: str) -> float | None:
-    """Ekstrak satu angka aliran ETF dalam juta USD (signed) dari snippet Serper."""
-    import re
-
-    if not snippet or len(snippet) < 15:
-        return None
-    best: float | None = None
-    for m in re.finditer(
-        r"(?i)([\d,.]+)\s*(?:million|\bM\b)(?![a-z])",
-        snippet,
-    ):
-        try:
-            raw = float(m.group(1).replace(",", ""))
-        except (TypeError, ValueError):
-            continue
-        if not (0.01 <= abs(raw) <= 1_000_000):
-            continue
-        a, b = m.span()
-        ctx = snippet[max(0, a - 160) : min(len(snippet), b + 100)].lower()
-        if not re.search(
-            r"(etf|exchange[\s\-]traded|spot\s*etf|net\s*flow|inflow|outflow|flow)",
-            ctx,
-        ):
-            continue
-        neg = bool(
-            re.search(
-                r"(outflow|net\s*outflow|net\s+out|withdrawal|negative\s+net|sold\s+off)",
-                ctx,
-            )
-        )
-        pos = bool(
-            re.search(
-                r"(inflow|net\s*inflow|net\s+in|positive|accumulat)",
-                ctx,
-            )
-        )
-        val = abs(raw)
-        if neg and not pos:
-            val = -val
-        elif pos and not neg:
-            val = val
-        elif neg and pos:
-            if re.search(r"net[^.]{0,40}out", ctx) or re.search(
-                r"net\s*outflow", ctx
-            ):
-                val = -abs(raw)
-            else:
-                val = abs(raw)
-        else:
-            val = abs(raw)
-        best = val
-        break
-    if best is None:
-        m2 = re.search(
-            r"(?i)(?:inflow|outflow|net\s*flow)[^.]{0,100}?\$\s*([\d,.]+)\s*(?:million|m\b)",
-            snippet,
-        )
-        if m2:
-            try:
-                v = float(m2.group(1).replace(",", ""))
-                if 0.01 <= v <= 1_000_000:
-                    span = m2.group(0).lower()
-                    if "out" in span and "inflow" not in span[:20]:
-                        return -v
-                    return v
-            except (TypeError, ValueError):
-                pass
-
-    # Handle "$325 million" format dengan konteks outflow/inflow
-    if best is None:
-        m3 = re.search(
-            r"(?i)\$\s*([\d,.]+)\s*(billion|million|[bm])\b[^.]{0,150}?(outflow|inflow|net flow)",
-            snippet,
-        )
-        if not m3:
-            m3 = re.search(
-                r"(?i)(outflow|inflow|net flow)[^.]{0,150}?\$\s*([\d,.]+)\s*(billion|million|[bm])\b",
-                snippet,
-            )
-        if m3:
-            try:
-                groups = m3.groups()
-                # Cari angka dan unit
-                for i, g in enumerate(groups):
-                    if g and re.match(r"[\d,.]+", g):
-                        num = float(g.replace(",", ""))
-                        unit = groups[i+1].lower() if i+1 < len(groups) else "m"
-                        if "billion" in unit or unit == "b":
-                            num *= 1000  # convert to million
-                        ctx2 = m3.group(0).lower()
-                        neg = "outflow" in ctx2 and "inflow" not in ctx2[:ctx2.find("outflow")]
-                        best = -num if neg else num
-                        break
-            except Exception:
-                pass
-
-    # Handle "1.27 billion" format
-    if best is None:
-        m4 = re.search(
-            r"(?i)([\d,.]+)\s*billion[^.]{0,100}?(inflow|outflow|etf)",
-            snippet,
-        )
-        if m4:
-            try:
-                num = float(m4.group(1).replace(",", "")) * 1000
-                ctx3 = m4.group(0).lower()
-                neg = "outflow" in ctx3
-                best = -num if neg else num
-            except Exception:
-                pass
-
-    return best
-
-
-def _inst_parse_btc_netflow(snippet: str) -> float | None:
-    """Ekstrak netflow BTC (positif = inflow ke exchange) dari snippet."""
-    import re
-
-    if not snippet or len(snippet) < 15:
-        return None
-    for m in re.finditer(
-        r"(?i)([+\-−])?\s*([\d,.]+)\s*btc",
-        snippet,
-    ):
-        sign_s = m.group(1) or ""
-        try:
-            raw = float(m.group(2).replace(",", ""))
-        except (TypeError, ValueError):
-            continue
-        if not (0.01 <= abs(raw) <= 5_000_000):
-            continue
-        a, b = m.span()
-        ctx = snippet[max(0, a - 140) : min(len(snippet), b + 40)].lower()
-        if not re.search(
-            r"(netflow|net\s*flow|exchange|cryptoquant|glassnode|on[\s\-]?chain)",
-            ctx,
-        ):
-            continue
-        sign = -1.0 if sign_s in ("-", "−") else 1.0
-        if "outflow" in ctx and "inflow" not in ctx[max(0, ctx.find("outflow") - 5) :]:
-            sign = -1.0
-        elif re.search(r"\binflow\b", ctx) and "outflow" not in ctx:
-            sign = 1.0
-        return sign * abs(raw)
-    return None
-
-
-def _inst_parse_liquidation_prices(snippet: str) -> tuple[float | None, float | None]:
-    """Dua level harga likuidasi (atas / bawah) dari teks."""
-    import re
-
-    if not snippet:
-        return None, None
-    prices: list[float] = []
-    for m in re.finditer(
-        r"(?i)(?:\$|\b)([\d]{1,3}(?:,\d{3})+(?:\.\d+)?|[\d]{5,6}(?:\.\d+)?)\b",
-        snippet,
-    ):
-        try:
-            p = float(m.group(1).replace(",", ""))
-        except (TypeError, ValueError):
-            continue
-        if 8000 <= p <= 600_000:
-            prices.append(p)
-    uniq = sorted(set(prices))
-    if len(uniq) >= 2:
-        return uniq[-1], uniq[0]
-    return None, None
-
-
 def _etf_flow_sentiment(flow_m: float | None) -> str:
     if flow_m is None:
         return "Data ETF flow tidak tersedia hari ini"
@@ -4892,127 +4689,48 @@ def _btc_netflow_sentiment(nf: float | None) -> str:
     return "Inflow besar ke exchange → distribusi 🔴"
 
 
-_INSTITUTIONAL_SERPER_CACHE_TTL_SEC = 30.0
-_institutional_serper_cache_ts: float = 0.0
-_institutional_serper_cache_payload: dict[str, Any] | None = None
-
-
 def _get_institutional_data() -> dict[str, Any]:
-    """Proxy data institusional via Serper (ETF flow, netflow BTC, zona likuidasi). Maks 3 panggilan API."""
-    global _institutional_serper_cache_ts, _institutional_serper_cache_payload
-    import time
-
-    now = time.monotonic()
-    if (
-        _institutional_serper_cache_payload is not None
-        and (now - _institutional_serper_cache_ts) < _INSTITUTIONAL_SERPER_CACHE_TTL_SEC
-    ):
-        return dict(_institutional_serper_cache_payload)
+    """Data institusional (ETF flow, BTC exchange netflow, liquidation volume 24h)
+    via engine.market.institutional_data (SoSoValue/Farside untuk ETF flow,
+    CoinGlass berbayar-opsional untuk liquidation -- bukan lagi proxy
+    Serper-news-snippet-parsing seperti sebelumnya -- lihat
+    INSTITUTIONAL_DATA_REPORT.md)."""
+    etf = inst_data.get_etf_flow_data()
+    liq = inst_data.get_liquidation_volume_24h()
+    nf = inst_data.get_btc_exchange_netflow()
 
     out: dict[str, Any] = {
-        "etf_flow_usd_m": None,
-        "etf_flow_7d_usd_m": None,
-        "etf_sentiment": "Data ETF flow tidak tersedia hari ini",
-        "netflow_btc": None,
-        "netflow_sentiment": "Data netflow tidak tersedia",
+        "etf_flow_usd_m": etf.get("flow_usd_today_m"),
+        "etf_flow_7d_usd_m": etf.get("flow_usd_7d_m"),
+        "etf_status": etf.get("status"),
+        "etf_message": etf.get("message"),
+        "netflow_btc": nf.get("netflow_btc"),
+        "netflow_status": nf.get("status"),
+        "netflow_message": nf.get("message"),
+        "liq_long_usd_m": liq.get("long_usd_m"),
+        "liq_short_usd_m": liq.get("short_usd_m"),
+        "liq_status": liq.get("status"),
+        "liq_message": liq.get("message"),
+        # Dipertahankan None -- lihat INSTITUTIONAL_DATA_REPORT.md: price-level
+        # liquidation zones (bukan volume agregat) butuh CoinGlass Professional+
+        # (di atas plan Hobbyist berbayar $29/bln yang dipakai untuk volume
+        # agregat), jadi tidak pernah diisi dari sumber manapun saat ini.
         "liq_above": None,
         "liq_below": None,
-        "liq_note": "",
-        "data_quality": "unavailable",
     }
-    try:
-        sn_etf = _serper_search_snippet(
-            "bitcoin ETF inflow outflow today million April 2026", "news"
-        )
-        if not sn_etf or len(sn_etf) < 20:
-            sn_etf = _serper_search_snippet(
-                "spot bitcoin ETF net flow today 2026", "search"
-            )
-        sn_etf7 = _serper_search_snippet(
-            "bitcoin ETF weekly net flow total million 2026", "news"
-        )
-        if not sn_etf7 or len(sn_etf7) < 20:
-            sn_etf7 = _serper_search_snippet(
-                "bitcoin ETF cumulative flow this week 2026", "search"
-            )
-        sn_nf = _serper_search_snippet(
-            "bitcoin exchange netflow BTC outflow inflow today 2026", "news"
-        )
-        if not sn_nf or len(sn_nf) < 20:
-            sn_nf = _serper_search_snippet(
-                "BTC exchange netflow cryptoquant on-chain 2026", "search"
-            )
-        sn_liq = _serper_search_snippet(
-            "bitcoin liquidation level heatmap BTC long short 2026", "news"
-        )
-        if not sn_liq or len(sn_liq) < 20:
-            sn_liq = _serper_search_snippet(
-                "bitcoin liquidation cluster coinglass BTC price level", "search"
-            )
-        etf_d = _inst_parse_million_flow(sn_etf)
-        etf_7 = _inst_parse_million_flow(sn_etf7)
-        nf = _inst_parse_btc_netflow(sn_nf)
-        la, lb = _inst_parse_liquidation_prices(sn_liq)
-        if la is None or lb is None:
-            la2, lb2 = _inst_parse_liquidation_prices(sn_nf + " " + sn_etf + " " + sn_etf7)
-            if la is None:
-                la = la2
-            if lb is None:
-                lb = lb2
+    out["etf_sentiment"] = _etf_flow_sentiment(out["etf_flow_usd_m"])
+    out["netflow_sentiment"] = _btc_netflow_sentiment(out["netflow_btc"])
 
-        out["etf_flow_usd_m"] = round(etf_d, 2) if etf_d is not None else None
-        out["etf_flow_7d_usd_m"] = round(etf_7, 2) if etf_7 is not None else None
-        out["etf_sentiment"] = _etf_flow_sentiment(out["etf_flow_usd_m"])
-        out["netflow_btc"] = round(nf, 2) if nf is not None else None
-        out["netflow_sentiment"] = _btc_netflow_sentiment(out["netflow_btc"])
-
-        if la is not None and lb is not None:
-            out["liq_above"] = float(la)
-            out["liq_below"] = float(lb)
-            out["liq_note"] = (
-                f"Short squeeze zone jika BTC naik ke ${la:,.0f}; "
-                f"Long liquidation zone jika BTC turun ke ${lb:,.0f}"
-            )
-        elif la is not None:
-            out["liq_above"] = float(la)
-            out["liq_note"] = f"Short squeeze zone jika BTC naik ke ${la:,.0f}"
-        elif lb is not None:
-            out["liq_below"] = float(lb)
-            out["liq_note"] = (
-                f"Long liquidation zone jika BTC turun ke ${lb:,.0f}"
-            )
-        else:
-            out["liq_note"] = "Level likuidasi tidak terdeteksi dari ringkasan berita"
-
-        has_any = any(
-            [
-                out["etf_flow_usd_m"] is not None,
-                out["etf_flow_7d_usd_m"] is not None,
-                out["netflow_btc"] is not None,
-                out["liq_above"] is not None,
-                out["liq_below"] is not None,
-            ]
-        )
-        has_full = (
-            out["etf_flow_usd_m"] is not None
-            and out["etf_flow_7d_usd_m"] is not None
-            and out["netflow_btc"] is not None
-            and out["liq_above"] is not None
-            and out["liq_below"] is not None
-        )
-        if has_full:
-            out["data_quality"] = "live"
-        elif has_any:
-            out["data_quality"] = "estimated"
-        else:
-            out["data_quality"] = "unavailable"
-        _institutional_serper_cache_ts = now
-        _institutional_serper_cache_payload = dict(out)
-        return out
-    except Exception as e:  # noqa: BLE001
-        logging.warning("_get_institutional_data: %s", e)
+    statuses = (out["etf_status"], out["netflow_status"], out["liq_status"])
+    if all(s == "ok" for s in statuses):
+        out["data_quality"] = "live"
+    elif any(s == "ok" for s in statuses):
+        out["data_quality"] = "partial"
+    elif all(s == "not_configured" for s in statuses):
+        out["data_quality"] = "not_configured"
+    else:
         out["data_quality"] = "unavailable"
-        return out
+    return out
 
 
 def _brief_cache_attempt() -> dict[str, bool]:
@@ -5181,45 +4899,70 @@ def _format_market_intelligence_section() -> str:
             ef7 = inst.get("etf_flow_7d_usd_m")
             etf_today_s = f"{float(ef):+.0f}M" if ef is not None else "N/A"
             etf_7d_s = f"{float(ef7):+.0f}M" if ef7 is not None else "N/A"
-            etf_snt = str(inst.get("etf_sentiment") or "—")
+            etf_snt = (
+                str(inst.get("etf_sentiment") or "—")
+                if ef is not None
+                else str(inst.get("etf_message") or "Data ETF flow tidak tersedia")
+            )
+
             nf_btc = inst.get("netflow_btc")
             nf_s = f"{float(nf_btc):+,.0f} BTC" if nf_btc is not None else "N/A"
-            nf_snt = str(inst.get("netflow_sentiment") or "—")
-            la = inst.get("liq_above")
-            lb = inst.get("liq_below")
-            up_s = f"${la:,.0f}" if la is not None else "N/A"
-            dn_s = f"${lb:,.0f}" if lb is not None else "N/A"
-            inst_all_na = (
-                ef is None
-                and ef7 is None
-                and nf_btc is None
-                and la is None
-                and lb is None
+            nf_snt = (
+                str(inst.get("netflow_sentiment") or "—")
+                if nf_btc is not None
+                else str(inst.get("netflow_message") or "Data netflow tidak tersedia")
             )
-            inst_footer = (
-                "N/A — cek manual di sosovalue.com / coinglass.com"
-                if inst_all_na
-                else "⚠️ Data estimasi dari berita — verifikasi di Coinglass/Glassnode"
-            )
+
+            # Liquidation 24h agregat long/short (BUKAN price-level "zones" --
+            # itu butuh CoinGlass Professional+, di atas plan Hobbyist berbayar
+            # yang dipakai di sini. Lihat INSTITUTIONAL_DATA_REPORT.md.)
+            ll = inst.get("liq_long_usd_m")
+            ls = inst.get("liq_short_usd_m")
+            if ll is not None and ls is not None:
+                liq_s = f"Long ${ll:,.0f}M | Short ${ls:,.0f}M"
+                if ll > ls:
+                    liq_note = "Long dominan → tekanan jual dari likuidasi long lebih besar"
+                elif ls > ll:
+                    liq_note = "Short dominan → tekanan beli dari short squeeze lebih besar"
+                else:
+                    liq_note = "Long/short seimbang"
+            else:
+                liq_s = "N/A"
+                liq_note = str(inst.get("liq_message") or "Data liquidation tidak tersedia")
+
+            if inst.get("data_quality") == "not_configured":
+                inst_footer = (
+                    "🔧 Belum aktif — daftar akun gratis di sosovalue.com/developer "
+                    "untuk ETF Flow (isi SOSOVALUE_API_KEY di .env). Liquidation 24h "
+                    "butuh CoinGlass berbayar (opsional, mulai $29/bln) — lihat "
+                    "INSTITUTIONAL_DATA_REPORT.md"
+                )
+            elif inst.get("data_quality") in ("unavailable", "partial"):
+                inst_footer = "⚠️ Sebagian sumber gagal fetch — lihat pesan per baris di atas"
+            else:
+                inst_footer = "Sumber: SoSoValue (ETF flow, fallback Farside), CoinGlass (Liquidation)"
             inst_block = (
-                "\n\n🏦 INSTITUTIONAL (proxy via berita)\n"
-                f"ETF Flow   : {etf_today_s} hari ini | {etf_7d_s} 7 hari\n"
-                f"             {etf_snt}\n"
-                f"BTC Netflow: {nf_s}\n"
-                f"             {nf_snt}\n"
-                f"Liq Zones  : ↑ {up_s} (short squeeze) | ↓ {dn_s} (long liq)\n"
+                "\n\n🏦 INSTITUTIONAL\n"
+                f"ETF Flow      : {etf_today_s} hari ini | {etf_7d_s} 7 hari\n"
+                f"                {etf_snt}\n"
+                f"BTC Netflow   : {nf_s}\n"
+                f"                {nf_snt}\n"
+                f"Liquidation 24h: {liq_s}\n"
+                f"                {liq_note}\n"
                 f"{inst_footer}"
             )
         except Exception as e:  # noqa: BLE001
             logging.warning("_format_market_intelligence_section institutional: %s", e)
             inst_block = (
-                "\n\n🏦 INSTITUTIONAL (proxy via berita)\n"
-                "ETF Flow   : N/A hari ini | N/A 7 hari\n"
-                "             Data ETF flow tidak tersedia hari ini\n"
-                "BTC Netflow: N/A\n"
-                "             Data netflow tidak tersedia\n"
-                "Liq Zones  : ↑ N/A (short squeeze) | ↓ N/A (long liq)\n"
-                "N/A — cek manual di sosovalue.com / coinglass.com"
+                "\n\n🏦 INSTITUTIONAL\n"
+                "ETF Flow      : N/A hari ini | N/A 7 hari\n"
+                "                Data ETF flow tidak tersedia\n"
+                "BTC Netflow   : N/A\n"
+                "                Data netflow tidak tersedia\n"
+                "Liquidation 24h: N/A\n"
+                "                Data liquidation tidak tersedia\n"
+                "🔧 Cek konfigurasi SOSOVALUE_API_KEY (ETF flow, gratis) / "
+                "COINGLASS_API_KEY (Liquidation, berbayar) di .env"
             )
         return (
             f"🧠 MARKET INTELLIGENCE{staleness}\n"
