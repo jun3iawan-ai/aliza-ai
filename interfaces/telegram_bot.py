@@ -4689,6 +4689,36 @@ def _btc_netflow_sentiment(nf: float | None) -> str:
     return "Inflow besar ke exchange → distribusi 🔴"
 
 
+def _institutional_footer(inst: dict[str, Any]) -> str:
+    """Footer section INSTITUTIONAL -- membedakan "beberapa metrik memang
+    belum dikonfigurasi" (bukan kegagalan apa pun) dari "ada fetch yang
+    benar-benar gagal" (network/API error saat fetch), lihat
+    INSTITUTIONAL_DATA_REPORT.md. Dihitung dari status per-metrik langsung
+    (bukan cuma bucket `data_quality` kasar) supaya ETF Flow yang statusnya
+    "ok" tidak ikut membuat footer terkesan "ada yang gagal" padahal
+    Netflow/Liquidation cuma belum diaktifkan."""
+    statuses = (inst.get("etf_status"), inst.get("netflow_status"), inst.get("liq_status"))
+    if any(s == "fetch_failed" for s in statuses):
+        return "⚠️ Sebagian sumber gagal fetch — lihat pesan per baris di atas"
+    if inst.get("data_quality") == "not_configured":
+        return (
+            "🔧 Belum aktif — daftar akun gratis di sosovalue.com/developer "
+            "untuk ETF Flow (isi SOSOVALUE_API_KEY di .env). Liquidation 24h "
+            "butuh CoinGlass berbayar (opsional, mulai $29/bln) — lihat "
+            "INSTITUTIONAL_DATA_REPORT.md"
+        )
+    if all(s == "ok" for s in statuses):
+        return "Sumber: SoSoValue (ETF flow, fallback Farside), CoinGlass (Liquidation)"
+    labels = []
+    if inst.get("etf_status") == "not_configured":
+        labels.append("ETF Flow")
+    if inst.get("netflow_status") == "not_configured":
+        labels.append("BTC Netflow")
+    if inst.get("liq_status") == "not_configured":
+        labels.append("Liquidation 24h")
+    return f"{' & '.join(labels)} belum aktif — lihat pesan di atas"
+
+
 def _get_institutional_data() -> dict[str, Any]:
     """Data institusional (ETF flow, BTC exchange netflow, liquidation volume 24h)
     via engine.market.institutional_data (SoSoValue/Farside untuk ETF flow,
@@ -4930,17 +4960,7 @@ def _format_market_intelligence_section() -> str:
                 liq_s = "N/A"
                 liq_note = str(inst.get("liq_message") or "Data liquidation tidak tersedia")
 
-            if inst.get("data_quality") == "not_configured":
-                inst_footer = (
-                    "🔧 Belum aktif — daftar akun gratis di sosovalue.com/developer "
-                    "untuk ETF Flow (isi SOSOVALUE_API_KEY di .env). Liquidation 24h "
-                    "butuh CoinGlass berbayar (opsional, mulai $29/bln) — lihat "
-                    "INSTITUTIONAL_DATA_REPORT.md"
-                )
-            elif inst.get("data_quality") in ("unavailable", "partial"):
-                inst_footer = "⚠️ Sebagian sumber gagal fetch — lihat pesan per baris di atas"
-            else:
-                inst_footer = "Sumber: SoSoValue (ETF flow, fallback Farside), CoinGlass (Liquidation)"
+            inst_footer = _institutional_footer(inst)
             inst_block = (
                 "\n\n🏦 INSTITUTIONAL\n"
                 f"ETF Flow      : {etf_today_s} hari ini | {etf_7d_s} 7 hari\n"

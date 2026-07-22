@@ -1,6 +1,86 @@
 # Integrasi Data Institutional — ETF Flow, Liquidation Volume, BTC Netflow
 
-Repo: `/opt/aliza-ai`. **Status: MERGED ke `main` dan DEPLOYED** (lihat bagian DEPLOY di bawah). Branch `feat/institutional-data-sources` sudah dihapus setelah merge.
+Repo: `/opt/aliza-ai`. **Status: MERGED ke `main` dan DEPLOYED** (lihat bagian DEPLOY di bawah). Branch `feat/institutional-data-sources` sudah dihapus setelah merge. Perbaikan pesan stale terbaru ada di branch `fix/institutional-data-messaging` (lihat bagian PERBAIKAN PESAN di bawah, belum di-merge).
+
+---
+
+## PERBAIKAN PESAN — hapus referensi CoinGlass yang stale, footer lebih presisi (sesi keempat)
+
+### Konteks
+
+Morning Brief nyata (22 Juli 2026, 08:47 WIB) menunjukkan ETF Flow sudah benar (data asli via Farside fallback), tapi dua pesan `not_configured` lain dan footer masih menyisakan kalimat dari sebelum keputusan "tidak pakai CoinGlass" diambil -- BTC Netflow & Liquidation menyebut CoinGlass seolah itu solusi yang tinggal diaktifkan (padahal justru sengaja tidak dipilih karena berbayar), dan footer bilang "Sebagian sumber gagal fetch" padahal tidak ada yang benar-benar gagal -- ETF Flow sukses, dua lainnya cuma belum diimplementasikan.
+
+### Perubahan
+
+**1. Pesan BTC Netflow** (`engine/market/institutional_data.py::get_btc_exchange_netflow`)
+
+| Sebelum | Sesudah |
+|---|---|
+| "BTC Netflow: data belum aktif -- CoinGlass free tier tidak mencakup endpoint ini (butuh plan Startup+), dan scraping fallback nonaktif default (BTC_NETFLOW_SCRAPE_ENABLED=false, lihat INSTITUTIONAL_DATA_REPORT.md)" | "BTC Netflow: belum ada sumber gratis yang stabil -- API berbayar yang diriset tidak dipilih, dan scraping alternatif (BTC_NETFLOW_SCRAPE_ENABLED) butuh render JavaScript yang berisiko menambah beban resource VPS -- lihat INSTITUTIONAL_DATA_REPORT.md" |
+
+**2. Pesan Liquidation 24h** (`engine/market/institutional_data.py::get_liquidation_volume_24h`)
+
+| Sebelum | Sesudah |
+|---|---|
+| "Liquidation 24h: data belum aktif -- COINGLASS_API_KEY belum dikonfigurasi di .env" | "Liquidation 24h: belum ada sumber gratis yang diimplementasikan -- endpoint publik Binance untuk data ini sudah dimatikan, dan satu-satunya API alternatif yang diriset butuh langganan berbayar yang tidak dipilih -- lihat INSTITUTIONAL_DATA_REPORT.md" |
+
+Catatan: prompt tugas ini memberi contoh kalimat "kira-kira" yang masih menyebut kata "CoinGlass" secara eksplisit, TAPI bagian Test di prompt yang sama secara eksplisit mensyaratkan pesan-pesan ini TIDAK BOLEH mengandung string "CoinGlass"/"COINGLASS_API_KEY" sama sekali. Kedua instruksi ini saling bertentangan secara literal -- diselesaikan dengan mengikuti syarat test yang bisa diverifikasi (lebih konkret/terukur) daripada contoh kalimat ilustratif ("kira-kira"), sehingga kata "CoinGlass" dihapus total dari kedua pesan ini. Nama "CoinGlass" tetap disebut di tempat lain yang memang tepat: (a) pesan `fetch_failed` internal saat user SUDAH mengisi `COINGLASS_API_KEY` tapi request-nya gagal (nama sumber yang gagal itu sendiri, bukan solusi generik), dan (b) footer bagian "not_configured penuh" yang menawarkan upgrade opsional berbayar secara eksplisit (lihat poin 3).
+
+**3. Footer INSTITUTIONAL** -- diekstrak ke fungsi baru `_institutional_footer(inst)` di `interfaces/telegram_bot.py` (murni ekstraksi logika yang sudah ada supaya bisa di-unit-test langsung tanpa perlu mocking seluruh pipeline brief -- bukan perubahan perilaku selain perbaikan bug yang diminta):
+
+| Kondisi | Sebelum | Sesudah |
+|---|---|---|
+| ETF `ok`, Netflow & Liq `not_configured` (kasus nyata 22 Jul) | ⚠️ "Sebagian sumber gagal fetch — lihat pesan per baris di atas" (SALAH -- tidak ada yang gagal) | "BTC Netflow & Liquidation 24h belum aktif — lihat pesan di atas" (tanpa kata "gagal") |
+| Semua `not_configured` | 🔧 "Belum aktif — daftar akun gratis..." | (tidak berubah -- sudah benar) |
+| Salah satu `fetch_failed` (network/API benar-benar error) | ⚠️ "Sebagian sumber gagal fetch..." | (tidak berubah -- footer ini sekarang HANYA muncul untuk kasus ini) |
+| Semua `ok` | "Sumber: SoSoValue..." | (tidak berubah) |
+
+Logika baru mengecek status per-metrik (`etf_status`/`netflow_status`/`liq_status`) langsung, bukan cuma bucket `data_quality` kasar ("partial"/"unavailable") yang sebelumnya menggabungkan "ada yang belum dikonfigurasi" dengan "ada yang benar-benar gagal fetch" jadi satu pesan yang sama.
+
+### Hasil render nyata (sebelum vs sesudah, kondisi produksi identik -- `.env` tidak diubah)
+
+Sebelum (dari sesi deploy sebelumnya):
+```
+BTC Netflow   : N/A
+                BTC Netflow: data belum aktif -- CoinGlass free tier tidak mencakup endpoint ini (butuh plan Startup+), dan scraping fallback nonaktif default (BTC_NETFLOW_SCRAPE_ENABLED=false, lihat INSTITUTIONAL_DATA_REPORT.md)
+Liquidation 24h: N/A
+                Liquidation 24h: data belum aktif -- COINGLASS_API_KEY belum dikonfigurasi di .env
+⚠️ Sebagian sumber gagal fetch — lihat pesan per baris di atas
+```
+
+Sesudah (dipanggil langsung `_format_market_intelligence_section()` di sesi ini, `.env` produksi sama persis, belum ada `SOSOVALUE_API_KEY`/`COINGLASS_API_KEY`):
+```
+ETF Flow      : +39M hari ini | +342M 7 hari
+                Inflow moderat → institusi beli bertahap 🟡
+BTC Netflow   : N/A
+                BTC Netflow: belum ada sumber gratis yang stabil -- API berbayar yang diriset tidak dipilih, dan scraping alternatif (BTC_NETFLOW_SCRAPE_ENABLED) butuh render JavaScript yang berisiko menambah beban resource VPS -- lihat INSTITUTIONAL_DATA_REPORT.md
+Liquidation 24h: N/A
+                Liquidation 24h: belum ada sumber gratis yang diimplementasikan -- endpoint publik Binance untuk data ini sudah dimatikan, dan satu-satunya API alternatif yang diriset butuh langganan berbayar yang tidak dipilih -- lihat INSTITUTIONAL_DATA_REPORT.md
+BTC Netflow & Liquidation 24h belum aktif — lihat pesan di atas
+```
+ETF Flow tetap menampilkan data live sungguhan via Farside (tidak disentuh sama sekali, sesuai batasan "murni perubahan teks/pesan").
+
+### Test
+
+6 test baru ditambahkan ke `tests/test_institutional_data.py`:
+- `TestNotConfiguredMessagesDontMentionCoinGlass` (2 test): pesan BTC Netflow & Liquidation `not_configured` dipastikan tidak mengandung "CoinGlass"/"COINGLASS_API_KEY" (case-insensitive untuk "coinglass").
+- `TestInstitutionalFooter` (4 test, terhadap `tb._institutional_footer()` yang baru diekstrak): kombinasi ETF `ok` + Netflow/Liq `not_configured` -> footer tanpa kata "gagal" (mengunci persis kasus nyata 22 Jul); ada `fetch_failed` -> footer tetap mengandung "gagal"; semua `not_configured` -> pakai pesan setup, bukan "gagal"; semua `ok` -> pesan sumber normal.
+
+```
+$ venv/bin/python -m pytest tests/test_institutional_data.py -v
+32 passed in 8.90s
+```
+
+Full regresi:
+```
+$ venv/bin/python -m pytest tests/ test_telegram_authorization.py test_dashboard_*.py -q
+215 passed, 3 warnings, 74 subtests passed in 17.33s
+```
+215 = 209 (baseline sebelum perbaikan ini) + 6 test baru. Hijau penuh, tidak ada regresi.
+
+### Status branch
+
+Branch `fix/institutional-data-messaging` dibuat dari `main` (setelah `feat/institutional-data-sources` di-merge & deploy). **Belum di-commit/merge/deploy** -- prompt tugas ini hanya meminta implementasi + laporan, bukan langkah git (beda dari prompt deploy sebelumnya yang eksplisit meminta commit/merge/push). Menunggu instruksi lanjutan untuk commit/merge/deploy kalau diperlukan.
 
 ---
 
