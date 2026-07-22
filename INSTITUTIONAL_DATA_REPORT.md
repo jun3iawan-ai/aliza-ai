@@ -1,6 +1,87 @@
 # Integrasi Data Institutional — ETF Flow, Liquidation Volume, BTC Netflow
 
-Repo: `/opt/aliza-ai`, branch `feat/institutional-data-sources` (dari `main`, belum di-merge/deploy).
+Repo: `/opt/aliza-ai`. **Status: MERGED ke `main` dan DEPLOYED** (lihat bagian DEPLOY di bawah). Branch `feat/institutional-data-sources` sudah dihapus setelah merge.
+
+---
+
+## DEPLOY — commit, merge, restart, push (sesi ketiga)
+
+### Langkah 1 — Commit & full test scope
+
+Commit di branch `feat/institutional-data-sources` (hash `5a71f25`), hanya file yang relevan dengan fitur ini (`institutional_data.py`, perubahan `telegram_bot.py`, `.env.example`, test + fixture, dua salinan laporan) -- file laporan sisa dari prompt-prompt lain (`AUDIT_FITUR_BERITA_REPORT.md`, `BERITA_DEPLOY_VERIFIKASI_REPORT.md`, dst.) sengaja TIDAK ikut di-stage karena tidak terkait revisi ini.
+
+```
+$ venv/bin/python -m pytest tests/ test_telegram_authorization.py test_dashboard_*.py -q
+209 passed, 3 warnings, 74 subtests passed in 16.05s
+```
+Cocok persis dengan klaim "209/209" sesi sebelumnya -- tidak ada selisih yang perlu diinvestigasi.
+
+### Langkah 2 — Merge
+
+```
+$ git checkout main && git merge --no-ff feat/institutional-data-sources
+```
+Merge commit: **`be90905`** ("Merge branch 'feat/institutional-data-sources'").
+
+`git diff --stat` (`fdf195e..be90905`) dikonfirmasi cakupannya sesuai laporan ini: `.env.example`, `engine/market/institutional_data.py` (baru), `interfaces/telegram_bot.py`, `tests/test_institutional_data.py` (baru), 7 file fixture HTML di `tests/fixtures/`, dan dua salinan `INSTITUTIONAL_DATA_REPORT.md` -- 13 file, 3159 insertions, 348 deletions. Tidak ada file checker/strategi trading lain yang ikut berubah.
+
+Full test scope diulang pasca-merge di `main`: **209 passed**, sama seperti sebelum merge.
+
+### Langkah 3 — Deploy
+
+```
+$ sudo systemctl restart aliza-telegram.service
+```
+Ditunggu ~65 detik, lalu `journalctl -u aliza-telegram -n 150 --no-pager` dicek penuh: startup bersih, model embedding termuat normal, snapshot job jalan (17 koin), scheduler job lain (near_resistance_checker, rsi_extreme_checker, big_move_checker, watchdog_job, breakout_checker) semua "executed successfully". **Tidak ada traceback/exception/ImportError apa pun terkait `institutional_data.py`** (dicek eksplisit lewat grep di seluruh 150 baris, nihil).
+
+`systemctl status`: `active (running)`, memory ~586MB, tidak ada crash-loop.
+
+**Verifikasi produksi langsung** (brief terjadwal tidak realistis ditunggu dalam sesi ini, jadi dipanggil langsung fungsi produksinya, pola sama seperti verifikasi-verifikasi sebelumnya):
+
+```python
+>>> idata.get_etf_flow_data()
+{'status': 'ok', 'source': 'farside', 'flow_usd_today_m': 39.3, 'flow_usd_7d_m': 341.6, ...}
+>>> idata.get_liquidation_volume_24h()
+{'status': 'not_configured', 'message': 'Liquidation 24h: data belum aktif -- COINGLASS_API_KEY belum dikonfigurasi di .env', ...}
+>>> idata.get_btc_exchange_netflow()
+{'status': 'not_configured', 'message': 'BTC Netflow: data belum aktif -- ...', ...}
+```
+
+**Temuan bagus tak terduga**: `.env` produksi VPS ini belum punya `SOSOVALUE_API_KEY` sama sekali, TAPI ETF Flow tetap tampil **data live sungguhan** (+39M hari ini, +342M 7 hari) karena fallback Farside jalan otomatis tanpa perlu key apa pun -- persis seperti yang divalidasi di sesi revisi sebelumnya, sekarang terbukti juga di lingkungan produksi nyata, bukan cuma test.
+
+Section `INSTITUTIONAL` hasil render nyata dari `_format_market_intelligence_section()` di proses produksi:
+
+```
+🏦 INSTITUTIONAL
+ETF Flow      : +39M hari ini | +342M 7 hari
+                Inflow moderat → institusi beli bertahap 🟡
+BTC Netflow   : N/A
+                BTC Netflow: data belum aktif -- CoinGlass free tier tidak mencakup endpoint ini (butuh plan Startup+), dan scraping fallback nonaktif default (BTC_NETFLOW_SCRAPE_ENABLED=false, lihat INSTITUTIONAL_DATA_REPORT.md)
+Liquidation 24h: N/A
+                Liquidation 24h: data belum aktif -- COINGLASS_API_KEY belum dikonfigurasi di .env
+⚠️ Sebagian sumber gagal fetch — lihat pesan per baris di atas
+```
+
+Tidak crash, tidak ada N/A generik tanpa alasan -- setiap baris yang belum aktif punya pesan spesifik kenapa. Satu catatan kecil (bukan bug, cukup dicatat): footer "Sebagian sumber gagal fetch" sedikit kurang presisi untuk kasus ini -- ETF Flow sebenarnya OK, dan Netflow/Liquidation lebih tepat disebut "belum dikonfigurasi" daripada "gagal fetch". Ini logika klasifikasi `data_quality` yang sudah ada dari sesi-sesi sebelumnya (bukan perubahan sesi ini), tidak melebar dari scope task ini untuk diperbaiki sekarang -- tapi dicatat di sini kalau ingin dirapikan nanti.
+
+### Langkah 4 — Push & cleanup
+
+```
+$ git push origin main
+   fdf195e..be90905  main -> main
+```
+Berhasil tanpa terblokir guardrail eksekusi (sempat terjadi di PR-PR awal, konsisten dengan catatan prompt bahwa ini "tidak lagi terjadi di PR-PR terakhir").
+
+```
+$ git branch -d feat/institutional-data-sources
+Deleted branch feat/institutional-data-sources (was 5a71f25).
+```
+
+### Reminder untuk user (bukan tugas Codex)
+
+ETF Flow SUDAH tampil data nyata sekarang lewat fallback Farside (gratis, tanpa setup apa pun). Untuk mengaktifkan SoSoValue sebagai sumber utama yang lebih stabil (Farside tetap fallback kalau SoSoValue gagal/rate-limited): (1) daftar akun gratis di `sosovalue.com/developer`, (2) isi `SOSOVALUE_API_KEY` di `.env` VPS secara manual, (3) `sudo systemctl restart aliza-telegram.service`. Liquidation 24h tetap N/A sampai user memutuskan mau bayar plan CoinGlass (mulai $29/bln) atau tidak -- tidak ada aksi wajib untuk fitur lain manapun.
+
+---
 
 ---
 
