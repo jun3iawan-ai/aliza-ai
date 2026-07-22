@@ -1,6 +1,6 @@
 # Integrasi Data Institutional — ETF Flow, Liquidation Volume, BTC Netflow
 
-Repo: `/opt/aliza-ai`. **Status: MERGED ke `main` dan DEPLOYED** (lihat bagian DEPLOY di bawah). Branch `feat/institutional-data-sources` sudah dihapus setelah merge. Perbaikan pesan stale terbaru ada di branch `fix/institutional-data-messaging` (lihat bagian PERBAIKAN PESAN di bawah, belum di-merge).
+Repo: `/opt/aliza-ai`. **Status: MERGED ke `main` dan DEPLOYED** (lihat bagian DEPLOY di bawah). Perbaikan pesan stale (bagian PERBAIKAN PESAN) **juga sudah di-merge & di-deploy** (lihat bagian DEPLOY PERBAIKAN PESAN). Kedua branch fitur (`feat/institutional-data-sources`, `fix/institutional-data-messaging`) sudah dihapus setelah merge masing-masing.
 
 ---
 
@@ -80,7 +80,82 @@ $ venv/bin/python -m pytest tests/ test_telegram_authorization.py test_dashboard
 
 ### Status branch
 
-Branch `fix/institutional-data-messaging` dibuat dari `main` (setelah `feat/institutional-data-sources` di-merge & deploy). **Belum di-commit/merge/deploy** -- prompt tugas ini hanya meminta implementasi + laporan, bukan langkah git (beda dari prompt deploy sebelumnya yang eksplisit meminta commit/merge/push). Menunggu instruksi lanjutan untuk commit/merge/deploy kalau diperlukan.
+**MERGED ke `main` dan DEPLOYED** -- lihat bagian DEPLOY PERBAIKAN PESAN tepat di bawah untuk detail commit/merge/restart/push.
+
+---
+
+## DEPLOY PERBAIKAN PESAN — commit, merge, restart, push (sesi kelima)
+
+### Langkah 1 — Commit & full test scope
+
+Commit di branch `fix/institutional-data-messaging` (hash `102a2ae`), tepat 5 file yang disebut laporan (`institutional_data.py`, `telegram_bot.py`, `tests/test_institutional_data.py`, dua salinan `INSTITUTIONAL_DATA_REPORT.md`) -- file laporan sisa prompt lain tetap tidak ikut di-stage.
+
+```
+$ venv/bin/python -m pytest tests/ test_telegram_authorization.py test_dashboard_*.py -q
+215 passed, 3 warnings, 74 subtests passed in 15.99s
+```
+Cocok persis dengan klaim "215/215" sesi sebelumnya -- itu memang sudah cakupan lengkap, tidak ada selisih untuk diinvestigasi.
+
+### Langkah 2 — Merge
+
+```
+$ git checkout main && git merge --no-ff fix/institutional-data-messaging
+```
+Merge commit: **`069a56f`**.
+
+`git diff --stat` dikonfirmasi cakupannya cuma 5 file yang disebut laporan ini -- 274 insertions, 18 deletions. Tidak ada file checker/strategi trading lain yang ikut berubah.
+
+Full test scope diulang pasca-merge di `main`: **215 passed**, sama seperti sebelum merge.
+
+### Langkah 3 — Deploy & verifikasi
+
+```
+$ sudo systemctl restart aliza-telegram.service
+```
+Ditunggu 60 detik, `journalctl -u aliza-telegram -n 150 --no-pager` dicek penuh: `active (running)`, tidak ada traceback/exception/ImportError apa pun (grep eksplisit di 150 baris, nihil).
+
+**Verifikasi pesan baru langsung di produksi** (fungsi produksi dipanggil langsung, `.env` tidak diubah, kondisi persis meniru 22 Juli: ETF `ok` via Farside, Netflow & Liquidation `not_configured`):
+
+```python
+>>> idata.get_btc_exchange_netflow()["message"]
+"BTC Netflow: belum ada sumber gratis yang stabil -- API berbayar yang diriset tidak dipilih, dan scraping alternatif (BTC_NETFLOW_SCRAPE_ENABLED) butuh render JavaScript yang berisiko menambah beban resource VPS -- lihat INSTITUTIONAL_DATA_REPORT.md"
+>>> idata.get_liquidation_volume_24h()["message"]
+"Liquidation 24h: belum ada sumber gratis yang diimplementasikan -- endpoint publik Binance untuk data ini sudah dimatikan, dan satu-satunya API alternatif yang diriset butuh langganan berbayar yang tidak dipilih -- lihat INSTITUTIONAL_DATA_REPORT.md"
+>>> "coinglass" in netflow_message.lower()   # False
+>>> "coinglass" in liquidation_message.lower()  # False
+
+>>> tb._institutional_footer({"etf_status": "ok", "netflow_status": "not_configured", "liq_status": "not_configured", "data_quality": "partial"})
+"BTC Netflow & Liquidation 24h belum aktif — lihat pesan di atas"
+>>> "gagal" in footer.lower()   # False
+```
+
+Render penuh `_format_market_intelligence_section()` di proses produksi (data live sungguhan, bukan mock):
+
+```
+🏦 INSTITUTIONAL
+ETF Flow      : +39M hari ini | +342M 7 hari
+                Inflow moderat → institusi beli bertahap 🟡
+BTC Netflow   : N/A
+                BTC Netflow: belum ada sumber gratis yang stabil -- API berbayar yang diriset tidak dipilih, dan scraping alternatif (BTC_NETFLOW_SCRAPE_ENABLED) butuh render JavaScript yang berisiko menambah beban resource VPS -- lihat INSTITUTIONAL_DATA_REPORT.md
+Liquidation 24h: N/A
+                Liquidation 24h: belum ada sumber gratis yang diimplementasikan -- endpoint publik Binance untuk data ini sudah dimatikan, dan satu-satunya API alternatif yang diriset butuh langganan berbayar yang tidak dipilih -- lihat INSTITUTIONAL_DATA_REPORT.md
+BTC Netflow & Liquidation 24h belum aktif — lihat pesan di atas
+```
+
+Dikonfirmasi: tidak ada lagi kata "CoinGlass"/"COINGLASS_API_KEY" di baris Netflow/Liquidation, footer tidak lagi bilang "gagal" untuk kondisi ini, ETF Flow tetap menampilkan data live via Farside tanpa perubahan (fetch logic tidak disentuh sesuai batasan tugas).
+
+### Langkah 4 — Push & cleanup
+
+```
+$ git push origin main
+   37cccbf..069a56f  main -> main
+```
+Berhasil tanpa terblokir guardrail eksekusi.
+
+```
+$ git branch -d fix/institutional-data-messaging
+Deleted branch fix/institutional-data-messaging (was 102a2ae).
+```
 
 ---
 
