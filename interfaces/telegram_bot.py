@@ -6734,6 +6734,165 @@ async def shadow_stats_command(update: Update, context: ContextTypes.DEFAULT_TYP
         logging.warning("shadow_stats_command: %s", exc)
         await msg.reply_text("Gagal membaca statistik shadow.")
 
+
+# ========== WEEKLY WINRATE SUMMARY (proaktif, tanpa perlu /signal_stats manual) ==========
+
+# Ambang "cukup data untuk winrate bermakna" -- sengaja disamakan dengan
+# LEARNING_MIN_SAMPLES (default 10, engine/learning/confidence_adjuster.py) supaya
+# konsisten: angka yang sama dipakai baik untuk menahan penyesuaian confidence
+# maupun untuk memutuskan kapan menampilkan winrate tanpa disclaimer di ringkasan
+# ini. Dibaca independen (bukan impor fungsi privat lintas modul) supaya modul
+# statistik yang sudah ada tidak perlu diubah sama sekali.
+WEEKLY_SUMMARY_MIN_SAMPLES_DEFAULT = 10
+
+
+def _weekly_summary_min_samples() -> int:
+    try:
+        value = int(os.environ.get("LEARNING_MIN_SAMPLES", str(WEEKLY_SUMMARY_MIN_SAMPLES_DEFAULT)))
+        return value if value > 0 else WEEKLY_SUMMARY_MIN_SAMPLES_DEFAULT
+    except (TypeError, ValueError):
+        return WEEKLY_SUMMARY_MIN_SAMPLES_DEFAULT
+
+
+def _format_source_block(label: str, emoji: str, source: str) -> str:
+    """Satu blok ringkasan (total/WIN/LOSS/OPEN, winrate + disclaimer bila perlu,
+    avg RR/profit factor bila ada closed trade) untuk satu source."""
+    stats = get_signal_stats(source=source)
+    total = int(stats.get("total_signals", 0) or 0)
+    win = int(stats.get("win", 0) or 0)
+    loss = int(stats.get("loss", 0) or 0)
+    open_n = int(stats.get("open", 0) or 0)
+    expired = int(stats.get("expired", 0) or 0)
+    closed = win + loss
+    win_rate = float(stats.get("win_rate", 0.0) or 0.0)
+
+    lines = [
+        f"{emoji} {label}",
+        f"Total sinyal: {total} | WIN: {win} | LOSS: {loss} | OPEN: {open_n} | EXPIRED: {expired}",
+    ]
+
+    if total == 0:
+        lines.append("Belum ada sinyal tercatat untuk source ini.")
+        return "\n".join(lines)
+
+    min_samples = _weekly_summary_min_samples()
+    if closed < min_samples:
+        lines.append(
+            f"Winrate: {win_rate:.1f}% (N={closed} closed) — ⚠️ BELUM CUKUP DATA "
+            f"untuk kesimpulan bermakna (ambang {min_samples} closed outcome)."
+        )
+    else:
+        lines.append(f"Winrate: {win_rate:.1f}% (N={closed} closed)")
+
+    if get_closed_history is not None and analyze_performance is not None:
+        try:
+            closed_history = get_closed_history(source=source)
+            perf = analyze_performance(closed_history)
+            if perf.get("total_trades", 0) > 0:
+                lines.append(
+                    f"Avg RR: {float(perf.get('avg_rr', 0.0)):.2f} | "
+                    f"Profit Factor: {float(perf.get('profit_factor', 0.0)):.2f}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            logging.debug("weekly_winrate_summary avg_rr/profit_factor (%s): %s", source, exc)
+
+    return "\n".join(lines)
+
+
+def _weekly_summary_new_signal_note(source: str, current_total: int) -> str:
+    """Bandingkan total_signals sekarang dengan yang tersimpan saat ringkasan
+    terakhir dikirim (persisted via notification_governor, tahan restart).
+    Tidak pernah men-skip pengiriman -- hanya menambah satu baris status."""
+    key = f"last_total_{source}"
+    last_total = ngov.get_value("weekly_winrate_summary", key, 0)
+    try:
+        last_total = int(last_total)
+    except (TypeError, ValueError):
+        last_total = 0
+    new_count = max(0, current_total - last_total)
+    if new_count == 0:
+        return "Tidak ada sinyal baru minggu ini."
+    return f"+{new_count} sinyal baru sejak ringkasan minggu lalu."
+
+
+def _weekly_summary_save_totals(deterministic_total: int, shadow_total: int) -> None:
+    ngov.set_value("weekly_winrate_summary", "last_total_deterministic", deterministic_total)
+    ngov.set_value("weekly_winrate_summary", "last_total_shadow_e3", shadow_total)
+
+
+def format_weekly_winrate_summary() -> str:
+    """Bangun teks ringkasan winrate mingguan lengkap: produksi (deterministic)
+    + riset (shadow_e3), status breaker, dan catatan sinyal baru sejak ringkasan
+    terakhir. Angka lifetime sejak Fase 1 deploy (bukan direset per minggu) --
+    winrate makin bermakna makin banyak data terkumpul."""
+    det_stats = get_signal_stats(source="deterministic")
+    shadow_stats = get_signal_stats(source="shadow_e3")
+    det_total = int(det_stats.get("total_signals", 0) or 0)
+    shadow_total = int(shadow_stats.get("total_signals", 0) or 0)
+
+    lines = ["📅 RINGKASAN WINRATE MINGGUAN", ""]
+    lines.append(_format_source_block("PRODUKSI (deterministic)", "🟢", "deterministic"))
+    lines.append(_weekly_summary_new_signal_note("deterministic", det_total))
+    lines.append("")
+    lines.append(_format_source_block("RISET (shadow_e3 — BUKAN sinyal produksi)", "🧪", "shadow_e3"))
+    lines.append(_weekly_summary_new_signal_note("shadow_e3", shadow_total))
+    lines.append("")
+
+    breaker_line = "⚙️ Circuit breaker: status tidak tersedia."
+    if check_drawdown is not None:
+        try:
+            dd = check_drawdown()
+            if dd.get("trading_allowed", True):
+                breaker_line = "⚙️ Circuit breaker: tidak aktif (sinyal produksi berjalan normal)."
+            else:
+                breaker_line = (
+                    f"⚙️ Circuit breaker: AKTIF — loss streak {dd.get('loss_streak')} "
+                    "(pengiriman [TRADE SIGNAL] baru sedang dijeda)."
+                )
+        except Exception as exc:  # noqa: BLE001
+            logging.debug("weekly_winrate_summary check_drawdown: %s", exc)
+    lines.append(breaker_line)
+
+    lines.append("")
+    lines.append(f"⏰ {_wib_now_label()}")
+
+    _weekly_summary_save_totals(det_total, shadow_total)
+    return "\n".join(lines)
+
+
+async def weekly_winrate_summary_job(context: ContextTypes.DEFAULT_TYPE):
+    """Kirim ringkasan winrate mingguan proaktif (Senin 08:00 WIB) -- lihat
+    WEEKLY_WINRATE_SUMMARY_REPORT.md. Satu pesan per minggu, tidak pernah di-skip
+    walau tidak ada sinyal baru (hanya menyatakan itu secara eksplisit)."""
+    chat_id = None
+    try:
+        if context and getattr(context, "bot_data", None):
+            chat_id = context.bot_data.get("chat_id")
+    except Exception:
+        chat_id = None
+    if not chat_id:
+        chat_id = DEFAULT_CHAT_ID
+    if not chat_id:
+        logging.warning("weekly_winrate_summary_job: no chat_id (set TELEGRAM_CHAT_ID or /start)")
+        return
+
+    try:
+        message = format_weekly_winrate_summary()
+    except Exception as exc:  # noqa: BLE001
+        logging.error("weekly_winrate_summary_job: failed to build message: %s", exc)
+        return
+
+    try:
+        await safe_dispatch(message, chat_id=chat_id, force=True)
+    except Exception as exc:  # noqa: BLE001
+        logging.error("weekly_winrate_summary_job: dispatch failed: %s", exc)
+
+
+async def weekly_winrate_summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("COMMAND RECEIVED: /weekly_winrate")
+    await weekly_winrate_summary_job(context)
+
+
 # ========== SNAPSHOT JOB (background, every 60s) ==========
 
 DRAWDOWN_BREAKER_ACTIVATED_MSG = (
@@ -7157,6 +7316,7 @@ def main():
     app.add_handler(CommandHandler("signal_stats", signal_stats_command))
     app.add_handler(CommandHandler("stats", signal_stats_command))
     app.add_handler(CommandHandler("shadow_stats", shadow_stats_command))
+    app.add_handler(CommandHandler("weekly_winrate", weekly_winrate_summary_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_button_handler))
 
     app.add_error_handler(_error_handler)
@@ -7207,6 +7367,16 @@ def main():
             name="morning_brief",
         )
         logging.info("Morning brief job scheduled (daily 01:00 UTC = 08:00 WIB).")
+        app.job_queue.run_daily(
+            weekly_winrate_summary_job,
+            time=time(hour=1, minute=10, second=0, tzinfo=timezone.utc),
+            days=(0,),
+            name="weekly_winrate_summary",
+        )
+        logging.info(
+            "Weekly winrate summary job scheduled (Monday 01:10 UTC = 08:10 WIB, "
+            "10 minutes after morning brief to avoid dispatch overlap)."
+        )
         app.job_queue.run_daily(
             evening_summary_job,
             time=time(hour=13, minute=0, second=0, tzinfo=timezone.utc),
