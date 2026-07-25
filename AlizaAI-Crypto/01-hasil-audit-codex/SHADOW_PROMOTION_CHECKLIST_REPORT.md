@@ -2,7 +2,7 @@
 
 **Tanggal:** 25 Juli 2026
 **Branch:** `feat/shadow-promotion-checklist` (dibuat dari `main` terkini)
-**Status:** **BELUM di-merge/deploy** — implementasi + test saja, menunggu review sebelum merge.
+**Status:** **SUDAH di-merge ke `main` dan di-deploy** (25 Juli 2026, lanjutan sesi, Gap 3 dari 3 — terakhir) — lihat bagian "Commit, Merge & Deploy" di akhir laporan.
 
 Konteks: `FASE4_REPORT.md` mendefinisikan kriteria promosi shadow_e3 → produksi (expectancy >+0,3%/trade, PF >1,2, batas bawah bootstrap CI >−0,1%, tidak ada coin >50% kontribusi profit, ≥60 outcome closed ATAU ≥6 minggu observasi). Audit sebelumnya menemukan kriteria ini hanya didokumentasikan, tidak ada kode yang mengevaluasinya. Gap ini menambahkan command Telegram read-only yang menghitung status kriteria ini dari data live — **bukan auto-promote**, keputusan tetap manual.
 
@@ -265,3 +265,137 @@ Keputusan promosi tetap manual — command ini tidak mengubah apa pun.
 1. Review ambang `BOOTSTRAP_MIN_N=10` — kalau user ingin lebih konservatif (mis. 20-30, mendekati ambang "sampel kecil" `backtest/metrics.py::aggregate_metrics()` yang pakai N<30), mudah diubah (satu konstanta).
 2. Definisi "kontribusi profit per coin" (Langkah 0.2) adalah interpretasi baru penulis laporan ini karena tidak ada rumus resmi sebelumnya — worth dikonfirmasi ke user apakah definisi ini (share dari total PnL positif) sesuai maksud aslinya, atau user punya definisi lain di pikiran.
 3. Command ini akan sering melaporkan "BELUM MEMENUHI" untuk beberapa minggu ke depan (sesuai perkiraan `FASE4_REPORT.md`: observasi ≥6 minggu berakhir sekitar 1 September 2026) — ini perilaku yang diharapkan, bukan bug.
+
+---
+
+## Commit, Merge & Deploy (2026-07-25, lanjutan — Gap 3 dari 3, terakhir)
+
+Dikerjakan setelah Gap 1 (`2a020f9`/`8a0a723`) dan Gap 2 (`77f8854`/`a81e0e3`) selesai di-merge & deploy.
+
+### Commit (pra-rebase) & rebase ke `main` terbaru
+
+**Commit awal (pra-rebase):** `5f24db3` — "feat: add read-only shadow_e3 promotion criteria checklist"
+
+```
+git rebase main
+```
+**Konflik sungguhan terjadi kali ini** (berbeda dari Gap 2 yang duplikasinya lolos tanpa conflict marker) — git menghentikan rebase di `interfaces/telegram_bot.py`:
+```
+CONFLICT (content): Merge conflict in interfaces/telegram_bot.py
+```
+
+**Detail & resolusi (2 lokasi konflik, keduanya murni "dua fitur menyisip di titik yang sama", bukan logika yang tumpang tindih):**
+
+1. **Baris ±6742-6918**: Gap 2 (`weekly_winrate_summary_*`, dari sisi `HEAD`/`main`) dan Gap 3 (`shadow_promotion_check_command`, dari commit yang di-rebase) sama-sama disisipkan tepat setelah `shadow_stats_command`, sebelum komentar `# ========== SNAPSHOT JOB ==========`. Diresolusi dengan **mempertahankan kedua blok**, blok Gap 2 lebih dulu (karena sudah di `main`), diikuti blok Gap 3 — tidak ada baris yang dibuang, cuma urutan penyisipan yang perlu ditentukan manual.
+2. **Baris ±7343-7347**: registrasi `CommandHandler` — Gap 2 menambahkan baris `weekly_winrate` dan Gap 3 menambahkan baris `shadow_promotion_check` tepat di lokasi yang sama (setelah `shadow_stats`). Diresolusi sama: **kedua baris dipertahankan**, urutan weekly_winrate lalu shadow_promotion_check.
+
+Setelah edit manual, dikonfirmasi tidak ada conflict marker tersisa (`grep -n "^<<<<<<<\|^=======\|^>>>>>>>"` → kosong), import `evaluate_promotion_criteria`/`format_promotion_check_message` masih utuh, tidak ada duplikasi `check_drawdown` (hanya 1 baris import, beda dari insiden Gap 2), dan sintaks valid (`ast.parse`). `git add interfaces/telegram_bot.py && git rebase --continue` menyelesaikan rebase.
+
+**Commit final (pasca-rebase):** `c4bc614` — "feat: add read-only shadow_e3 promotion criteria checklist" (isi tidak berubah dari commit asal, hanya posisi dasarnya yang berubah lewat rebase; resolusi konflik tergabung otomatis ke commit ini oleh `rebase --continue`).
+
+### Full test scope (pra-merge, sudah termasuk Gap 1+2)
+
+```
+venv/bin/python -m pytest tests/ test_telegram_authorization.py test_dashboard_*.py -q
+273 passed, 3 warnings, 74 subtests passed in 36.88s
+```
+Angka aktual **273** (260 dari Gap 1+2 + 13 test baru gap ini).
+
+### Merge
+
+```
+git checkout main && git merge --no-ff feat/shadow-promotion-checklist
+```
+**Merge commit:** `f54072a`
+
+`git diff --stat a81e0e3 HEAD` (dibandingkan tip `main` sebelum merge Gap 3 ini) — persis 5 file, sesuai laporan asal:
+```
+ AlizaAI-Crypto/01-hasil-audit-codex/SHADOW_PROMOTION_CHECKLIST_REPORT.md | 267 ++
+ SHADOW_PROMOTION_CHECKLIST_REPORT.md                                    | 267 ++
+ engine/shadow/promotion_criteria.py                                     | 268 ++
+ interfaces/telegram_bot.py                                              |  25 ++
+ tests/test_shadow_promotion_criteria.py                                 | 272 ++
+ 5 files changed, 1099 insertions(+)
+```
+Sesuai laporan asal — `engine/shadow/e3_shadow.py` tidak ikut berubah.
+
+### Full test scope pasca-merge
+
+```
+273 passed, 3 warnings, 74 subtests passed in 34.53s
+```
+
+### Deploy & verifikasi
+
+`sudo systemctl restart aliza-telegram.service` → `active (running)` setelah 60 detik. `journalctl -u aliza-telegram -n 200 --no-pager | grep -iE "error|traceback|exception"`: **kosong**. Baris startup mengonfirmasi `"AlizaAI Telegram Bot aktif (polling). Semua command terdaftar."` — termasuk `/shadow_promotion_check` yang baru.
+
+**Verifikasi live** (memanggil `evaluate_promotion_criteria`/`format_promotion_check_message` langsung terhadap `data/aliza.db` produksi, read-only):
+```
+🔍 SHADOW E3 → PRODUKSI: CEK KRITERIA PROMOSI
+(read-only, TIDAK mengubah SHADOW_E3_ENABLED/SHADOW_E3_DISPATCH apa pun)
+
+N closed outcome: 1
+
+❌ Expectancy: -2.4525% (ambang >+0.3%)
+❌ Profit Factor: 0.00 (ambang >1.2)
+❌ Batas bawah bootstrap CI95: belum bisa dihitung (N=1 < 10 closed outcome minimum untuk bootstrap bermakna)
+✅ Konsentrasi profit: belum ada trade profit untuk dihitung
+❌ Observasi: N=1 closed (ambang ≥60) ATAU 0.1 minggu sejak sinyal pertama (ambang ≥6 minggu)
+
+❌ BELUM MEMENUHI — kriteria yang belum: expectancy, profit factor, batas bawah bootstrap CI, observasi (N/minggu).
+
+Keputusan promosi tetap manual — command ini tidak mengubah apa pun.
+```
+Identik dengan hasil verifikasi read-only sebelum deploy (N belum bertambah dalam rentang waktu ini) — **"BELUM MEMENUHI" sesuai ekspektasi**, bukan kegagalan. Dikonfirmasi juga `SHADOW_E3_ENABLED`/`SHADOW_E3_DISPATCH` di `.env` produksi tetap `true`/`true`, tidak berubah setelah command dijalankan.
+
+### Push & cleanup
+
+```
+git push origin main
+→ a81e0e3..f54072a  main -> main   (berhasil)
+
+git branch -d feat/shadow-promotion-checklist
+→ Deleted branch feat/shadow-promotion-checklist (was c4bc614).
+```
+
+### Ringkasan hash
+
+| Tahap | Hash |
+|---|---|
+| Commit awal (pra-rebase) | `5f24db3` |
+| Commit final (pasca-rebase, konflik diresolusi manual) | `c4bc614` |
+| Merge commit di `main` | `f54072a` |
+| Tip `main` sebelum merge | `a81e0e3` |
+| Status push | berhasil (`a81e0e3..f54072a`) |
+| Branch fitur | dihapus lokal setelah push sukses |
+
+---
+
+## Verifikasi Akhir Gabungan (ketiga gap, dari `main` final)
+
+```
+git log --oneline -10
+f54072a Merge branch 'feat/shadow-promotion-checklist'
+c4bc614 feat: add read-only shadow_e3 promotion criteria checklist
+a81e0e3 docs: add commit/merge/deploy verification section to weekly summary report
+77f8854 Merge branch 'feat/weekly-winrate-summary'
+0ab5ae0 feat: add proactive weekly winrate summary job
+8a0a723 docs: add commit/merge/deploy verification section to drawdown gate report
+2a020f9 Merge branch 'feat/drawdown-gate-broadcast'
+684d0bb feat: suppress TRADE SIGNAL broadcast during drawdown streak
+d40ccea docs: add commit/merge/deploy verification section to learning loop report
+db0d4e0 Merge branch 'feat/learning-loop-live-data'
+```
+
+```
+git status
+→ bersih di jalur kode/test (hanya file laporan lama tak terkait dari sesi
+  terpisah yang tetap untracked, tidak disentuh proses ini)
+```
+
+Full test scope sekali lagi dari `main` final:
+```
+venv/bin/python -m pytest tests/ test_telegram_authorization.py test_dashboard_*.py -q
+273 passed, 3 warnings, 74 subtests passed
+```
+Ketiga fitur (drawdown broadcast gate, weekly winrate summary, shadow promotion checklist) hidup berdampingan di `main` tanpa saling mengganggu — dikonfirmasi lewat satu run test terakhir yang mencakup ketiganya sekaligus.
