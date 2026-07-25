@@ -6,6 +6,20 @@ Rule: winrate > 0.65 → +5; winrate < 0.40 → -10; clamp 0–100.
 """
 
 import logging
+import os
+
+DEFAULT_MIN_SAMPLES = 10
+
+
+def _min_samples():
+    """Ambang minimum total_trades per setup sebelum penyesuaian diterapkan.
+    Sample sekecil 1-2 outcome per setup terlalu noisy untuk dipakai menggeser
+    confidence produksi (lihat STATUS_WINRATE_REPORT.md: N=1 pada 2026-07-25)."""
+    try:
+        value = int(os.environ.get("LEARNING_MIN_SAMPLES", str(DEFAULT_MIN_SAMPLES)))
+        return value if value > 0 else DEFAULT_MIN_SAMPLES
+    except (TypeError, ValueError):
+        return DEFAULT_MIN_SAMPLES
 
 
 def adjust_confidence(setup, base_confidence, strategy_stats):
@@ -16,6 +30,8 @@ def adjust_confidence(setup, base_confidence, strategy_stats):
     Rule:
       - if winrate > 0.65 → confidence +5
       - if winrate < 0.40 → confidence -10
+    Tidak diterapkan jika total_trades untuk setup tsb < LEARNING_MIN_SAMPLES
+    (default 10) -- di bawah itu, confidence dikembalikan apa adanya.
     Clamp: 0–100.
 
     Return: int confidence (0–100).
@@ -25,7 +41,7 @@ def adjust_confidence(setup, base_confidence, strategy_stats):
             return _clamp(base_confidence)
         setup_name = (setup or "").strip() or "UNKNOWN"
         stats = strategy_stats.get(setup_name)
-        if not stats or stats.get("total_trades", 0) < 1:
+        if not stats or stats.get("total_trades", 0) < _min_samples():
             return _clamp(base_confidence)
 
         winrate = stats.get("winrate")
