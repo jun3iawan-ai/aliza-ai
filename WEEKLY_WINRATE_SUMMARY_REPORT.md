@@ -2,7 +2,7 @@
 
 **Tanggal:** 25 Juli 2026
 **Branch:** `feat/weekly-winrate-summary` (dibuat dari `main` terkini)
-**Status:** **BELUM di-merge/deploy** — implementasi + test saja, menunggu review sebelum merge.
+**Status:** **SUDAH di-merge ke `main` dan di-deploy** (25 Juli 2026, lanjutan sesi, Gap 2 dari 3) — lihat bagian "Commit, Merge & Deploy" di akhir laporan.
 
 Konteks: audit sebelumnya menemukan statistik sinyal (`get_signal_stats()`, `/shadow_stats`) hanya bisa dilihat lewat command Telegram manual — tidak ada yang proaktif memberi tahu user soal performa. Gap ini menambahkan job terjadwal yang mengirim ringkasan winrate ke Telegram setiap minggu, tanpa perlu diketik manual.
 
@@ -240,3 +240,114 @@ Berdasarkan data produksi riil saat ini (per `STATUS_WINRATE_REPORT.md`, 25 Juli
 1. Review nada/bahasa pesan — bisa disesuaikan sebelum deploy.
 2. Perhatikan potensi tumpang tindih import `check_drawdown` dengan Gap 1 (`feat/drawdown-gate-broadcast`) saat kedua branch di-merge berurutan ke `main` — tidak konflik logika, tapi worth diperhatikan saat review gabungan (lihat catatan di Langkah 0.2).
 3. Pertimbangkan apakah jadwal Senin 08:10 WIB sudah pas dengan kebiasaan user membuka Telegram, atau ada hari/jam lain yang lebih disukai — mudah diubah (`days=`/`time=` di satu tempat).
+
+---
+
+## Commit, Merge & Deploy (2026-07-25, lanjutan — Gap 2 dari 3)
+
+Dikerjakan setelah Gap 1 (`feat/drawdown-gate-broadcast`) selesai di-merge & deploy (`2a020f9`, lalu `8a0a723` untuk update laporan).
+
+### Commit (pra-rebase) & rebase ke `main` terbaru
+
+Branch ini dibuat sebelum Gap 1 di-merge, jadi belum berisi perubahannya. Commit dulu di atas base lama, baru rebase:
+
+**Commit awal (pra-rebase):** `832869e` — "feat: add proactive weekly winrate summary job"
+
+```
+git rebase main
+→ Successfully rebased and updated refs/heads/feat/weekly-winrate-summary.
+```
+
+**Konflik yang diprediksi memang terjadi — tapi tidak dalam bentuk conflict marker.** Rebase selesai TANPA git menghentikan proses untuk resolusi manual (kedua insersi mendarat di konteks diff yang berbeda sehingga tidak dianggap "hunk yang sama"). Namun duplikasinya tetap ada secara mekanis: dicek langsung setelah rebase —
+```
+grep -n "from engine.portfolio.drawdown_protector import check_drawdown" interfaces/telegram_bot.py
+→ baris 127 (dari Gap 1) DAN baris 139 (dari Gap 2) -- blok try/except identik muncul dua kali.
+```
+Sesuai instruksi ("pertahankan HANYA SATU salinan"), blok kedua (baris 138-141, milik commit Gap 2) dihapus manual, menyisakan satu impor bersama yang dipakai kedua fitur (`_dispatch_and_record_deterministic_signal`/`_notify_drawdown_breaker_transition` dari Gap 1, `format_weekly_winrate_summary` dari Gap 2). Dikonfirmasi tidak ada duplikasi lain (`grep -c "check_drawdown"` = 9 kemunculan total, semuanya penggunaan wajar, bukan definisi ganda). Sintaks dicek ulang (`ast.parse`) — valid. Perbaikan ini di-fold ke commit yang sama lewat `git commit --amend` (bukan commit terpisah, karena ini murni konsekuensi teknis dari rebase, bukan perubahan fitur baru).
+
+**Commit final (pasca-rebase, ter-amend):** `0ab5ae0` — "feat: add proactive weekly winrate summary job" (pesan diperbarui menyebutkan resolusi dedup di atas)
+
+### Full test scope (pra-merge, sudah termasuk Gap 1)
+
+```
+venv/bin/python -m pytest tests/ test_telegram_authorization.py test_dashboard_*.py -q
+260 passed, 3 warnings, 74 subtests passed in 28.88s
+```
+Angka aktual **260** (bukan 249 seperti di laporan asal) — sudah mencakup 245 dari Gap 1 + 15 test baru gap ini, sesuai ekspektasi setelah rebase.
+
+### Merge
+
+```
+git checkout main && git merge --no-ff feat/weekly-winrate-summary
+```
+**Merge commit:** `77f8854`
+
+`git diff --stat 8a0a723 HEAD` (dibandingkan tip `main` sebelum merge Gap 2 ini) — persis 4 file:
+```
+ AlizaAI-Crypto/01-hasil-audit-codex/WEEKLY_WINRATE_SUMMARY_REPORT.md | 242 ++
+ WEEKLY_WINRATE_SUMMARY_REPORT.md                                     | 242 ++
+ interfaces/telegram_bot.py                                           | 170 ++
+ tests/test_weekly_winrate_summary.py                                 | 256 ++
+ 4 files changed, 910 insertions(+)
+```
+Tidak ada file lain yang ikut berubah (dedup import sudah ter-fold ke commit fitur ini sebelum merge, sehingga tidak muncul sebagai baris terpisah di diff).
+
+### Full test scope pasca-merge
+
+```
+260 passed, 3 warnings, 74 subtests passed in 27.16s
+```
+
+### Deploy & verifikasi
+
+`sudo systemctl restart aliza-telegram.service` → `active (running)` setelah 60 detik. `journalctl -u aliza-telegram -n 200 --no-pager | grep -iE "error|traceback|exception|weekly"`:
+```
+Weekly winrate summary job scheduled (Monday 01:10 UTC = 08:10 WIB, 10 minutes after morning brief to avoid dispatch overlap).
+Added job "weekly_winrate_summary" to job store "default"
+```
+Tidak ada error/traceback/exception — hanya baris registrasi job normal.
+
+**Verifikasi live** (memanggil `format_weekly_winrate_summary()` langsung terhadap `data/aliza.db` produksi):
+```
+📅 RINGKASAN WINRATE MINGGUAN
+
+🟢 PRODUKSI (deterministic)
+Total sinyal: 3 | WIN: 0 | LOSS: 1 | OPEN: 2 | EXPIRED: 0
+Winrate: 0.0% (N=1 closed) — ⚠️ BELUM CUKUP DATA untuk kesimpulan bermakna (ambang 10 closed outcome).
+Avg RR: 5.33 | Profit Factor: 5.33
++3 sinyal baru sejak ringkasan minggu lalu.
+
+🧪 RISET (shadow_e3 — BUKAN sinyal produksi)
+Total sinyal: 3 | WIN: 0 | LOSS: 1 | OPEN: 2 | EXPIRED: 0
+Winrate: 0.0% (N=1 closed) — ⚠️ BELUM CUKUP DATA untuk kesimpulan bermakna (ambang 10 closed outcome).
+Avg RR: 0.00 | Profit Factor: 0.00
++3 sinyal baru sejak ringkasan minggu lalu.
+
+⚙️ Circuit breaker: tidak aktif (sinyal produksi berjalan normal).
+
+⏰ 2026-07-25 12:58:57 WIB
+```
+Konsisten dengan data produksi saat ini (3 sinyal deterministic: 1 LOSS + 2 OPEN; 3 shadow_e3 serupa) dan dengan verifikasi Gap 1 (`check_drawdown()` → `trading_allowed: True` → "tidak aktif").
+
+**Catatan efek samping verifikasi (transparan, disengaja):** `format_weekly_winrate_summary()` menyimpan `last_total_deterministic`/`last_total_shadow_e3` ke `data/alert_cooldown_state.json` setiap kali dipanggil (by design — ini persis perilaku yang akan dilakukan job Senin nanti). Karena verifikasi ini memanggil fungsi yang sama, `last_total` produksi kini ter-update ke angka saat verifikasi (3/3) — job mingguan pertama yang benar-benar berjalan (Senin berikutnya) akan melaporkan sinyal baru **sejak verifikasi ini**, bukan sejak awal. Ini bukan bug; efek ini melekat pada desain fungsinya sendiri (dijelaskan di Langkah 0 laporan ini) dan tidak memengaruhi kebenaran data lifetime yang ditampilkan.
+
+### Push & cleanup
+
+```
+git push origin main
+→ 8a0a723..77f8854  main -> main   (berhasil)
+
+git branch -d feat/weekly-winrate-summary
+→ Deleted branch feat/weekly-winrate-summary (was 0ab5ae0).
+```
+
+### Ringkasan hash
+
+| Tahap | Hash |
+|---|---|
+| Commit awal (pra-rebase) | `832869e` |
+| Commit final (pasca-rebase + dedup fix) | `0ab5ae0` |
+| Merge commit di `main` | `77f8854` |
+| Tip `main` sebelum merge | `8a0a723` |
+| Status push | berhasil (`8a0a723..77f8854`) |
+| Branch fitur | dihapus lokal setelah push sukses |
