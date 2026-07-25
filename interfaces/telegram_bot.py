@@ -99,6 +99,7 @@ from engine.trading.signal_tracker import (
 from engine.shadow.e3_shadow import (
     collect_shadow_signals,
     dispatch_enabled as shadow_dispatch_enabled,
+    dispatch_cooldown_sec as shadow_dispatch_cooldown_sec,
     format_shadow_message,
 )
 from engine.signal_engine import (
@@ -6771,20 +6772,41 @@ async def _dispatch_and_record_deterministic_signal(sig: dict, chat_id) -> bool:
     return True
 
 
+def _shadow_signal_allowed(coin: str, setup: str, side: str, now_ts: float | None = None) -> bool:
+    """Persisted cooldown gate per (coin, setup, side) — survives process restart,
+    same mechanism as near_support/near_resistance/whale (see notification_governor).
+    Prevents re-firing every ~60s snapshot cycle while a setup stays satisfied."""
+    key = f"{coin}:{setup}:{side}"
+    return ngov.is_cooldown_allowed("shadow_e3", key, shadow_dispatch_cooldown_sec(), now=now_ts)
+
+
+def _record_shadow_cooldown(coin: str, setup: str, side: str, now_ts: float | None = None) -> None:
+    key = f"{coin}:{setup}:{side}"
+    ngov.record_cooldown("shadow_e3", key, now=now_ts)
+
+
 async def _run_shadow_e3(snapshot: dict, chat_id) -> int:
     """Jalankan E3 riset secara terpisah; tidak pernah memanggil process_signal."""
     try:
         candidates = collect_shadow_signals(snapshot)
         dispatched = shadow_dispatch_enabled()
+        now_ts = time_module.time()
         recorded = 0
         for candidate in candidates:
             shadow = dict(candidate)
+            coin = str(shadow.get("coin") or "")
+            setup = str(shadow.get("setup") or "")
+            side = str(shadow.get("side") or "")
             if dispatched:
-                sent = await safe_dispatch(format_shadow_message(shadow), chat_id=chat_id)
-                if not sent:
-                    logging.warning("shadow_e3 dispatch failed coin=%s", shadow.get("coin"))
-                    continue
-                shadow["dispatch_status"] = "SENT"
+                if not _shadow_signal_allowed(coin, setup, side, now_ts):
+                    shadow["dispatch_status"] = "COOLDOWN"
+                else:
+                    sent = await safe_dispatch(format_shadow_message(shadow), chat_id=chat_id)
+                    if not sent:
+                        logging.warning("shadow_e3 dispatch failed coin=%s", shadow.get("coin"))
+                        continue
+                    _record_shadow_cooldown(coin, setup, side, now_ts)
+                    shadow["dispatch_status"] = "SENT"
             else:
                 shadow["dispatch_status"] = "RECORDED"
             if record_signal(shadow):

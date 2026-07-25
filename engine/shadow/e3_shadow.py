@@ -36,6 +36,17 @@ def dispatch_enabled() -> bool:
     return os.getenv("SHADOW_E3_DISPATCH", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def dispatch_cooldown_sec() -> int:
+    """Cooldown antar dispatch Telegram untuk kombinasi (coin, setup, side) yang
+    sama, agar setup yang tetap terpenuhi lintas siklus snapshot (~60s) tidak
+    re-fire tiap menit. Default 4 jam, selaras dengan cooldown checker riset
+    lain (mis. near_support/near_resistance)."""
+    try:
+        return int(os.getenv("SHADOW_SIGNAL_COOLDOWN_SEC", "14400"))
+    except ValueError:
+        return 14400
+
+
 def _closed_4h_klines(symbol: str) -> list[dict[str, float | int]]:
     coin = str(symbol or "").upper().replace("USDT", "")
     if not coin:
