@@ -2,7 +2,7 @@
 
 **Tanggal:** 25 Juli 2026
 **Branch:** `feat/drawdown-gate-broadcast` (dibuat dari `main`, sudah termasuk `db0d4e0` — learning loop live data)
-**Status:** **BELUM di-merge/deploy** — implementasi + test saja, menunggu review sebelum merge (perubahan ini memengaruhi perilaku sinyal produksi yang benar-benar dikirim ke user).
+**Status:** **SUDAH di-merge ke `main` dan di-deploy** (25 Juli 2026, lanjutan sesi) — lihat bagian "Commit, Merge & Deploy" di akhir laporan.
 
 Konteks: audit sebelumnya menemukan `drawdown_protector.check_drawdown()` (ambang `LOSS_STREAK_THRESHOLD=3`) sudah membaca data live sejak fix `db0d4e0`, tapi hanya menggerbangi perintah manual `/entry` — tidak menyentuh broadcast `[TRADE SIGNAL]` otomatis. Tujuan gap ini: begitu 3 LOSS beruntun untuk `source='deterministic'`, jeda pengiriman `[TRADE SIGNAL]` baru sampai streak-nya reset oleh WIN berikutnya.
 
@@ -214,3 +214,78 @@ dan sinyal `[TRADE SIGNAL]` berikutnya (mis. ADA) kembali ter-dispatch ke Telegr
 1. Review pesan notifikasi (bahasa/nada) — teks saat ini mengikuti persis draft di prompt, bisa disesuaikan.
 2. Pertimbangkan apakah `dispatch_status='SUPPRESSED'` perlu tampil di `/signal_stats` (saat ini tidak dibedakan di ringkasan — breakdown `by_source`/`by_setup` tetap menghitungnya sebagai bagian dari `deterministic`, hanya kolom mentah `dispatch_status` di DB yang membedakan). Kalau user ingin visibilitas eksplisit ("N sinyal ditekan breaker minggu ini"), itu perlu perubahan tambahan di luar scope prompt ini.
 3. Setelah merge, disarankan pantau log `[TRADE SIGNAL] SUPPRESSED` dan pesan transisi selama beberapa siklus loss-streak pertama di produksi untuk memastikan perilaku sesuai ekspektasi sebelum dianggap final.
+
+---
+
+## Commit, Merge & Deploy (2026-07-25, lanjutan — Gap 1 dari 3)
+
+Dikerjakan sebagai gap pertama dari urutan wajib Gap 1 → Gap 2 → Gap 3 (Gap 2/3 menunggu giliran, masing-masing perlu rebase ke hasil Gap 1 ini).
+
+### Commit & full test scope (pra-merge)
+
+**Commit di branch fitur:** `684d0bb` — "feat: suppress TRADE SIGNAL broadcast during drawdown streak"
+
+```
+venv/bin/python -m pytest tests/ test_telegram_authorization.py test_dashboard_*.py -q
+245 passed, 3 warnings, 74 subtests passed in 25.37s
+```
+
+### Merge
+
+```
+git checkout main && git merge --no-ff feat/drawdown-gate-broadcast
+```
+**Merge commit:** `2a020f9`
+
+`git diff --stat d40ccea HEAD` (dibandingkan tip `main` sebelum merge) — persis 5 file, sesuai laporan asal:
+```
+ AlizaAI-Crypto/01-hasil-audit-codex/DRAWDOWN_BROADCAST_GATE_REPORT.md | 216 +++
+ DRAWDOWN_BROADCAST_GATE_REPORT.md                                    | 216 +++
+ engine/signal_engine.py                                              |  11 +
+ interfaces/telegram_bot.py                                           |  74 ++-
+ tests/test_drawdown_broadcast_gate.py                                | 326 +++
+ 5 files changed, 841 insertions(+), 2 deletions(-)
+```
+**Dikonfirmasi:** `engine/portfolio/drawdown_protector.py` **tidak ada di diff** — sesuai rencana, ia tidak diubah sama sekali.
+
+### Full test scope pasca-merge
+
+```
+245 passed, 3 warnings, 74 subtests passed in 26.10s
+```
+
+### Deploy & verifikasi
+
+`sudo systemctl restart aliza-telegram.service` → `Active: active (running)` setelah 60 detik. `journalctl -u aliza-telegram -n 200 --no-pager`: seluruh job (termasuk `signal_checker`, `snapshot_job`) terdaftar bersih, scheduler start normal. `grep -iE "error|traceback|exception|drawdown|suppress"` atas log startup: **kosong** — tidak ada error dari `check_drawdown`/`_notify_drawdown_breaker_transition`, dan belum ada sinyal yang benar-benar men-trigger suppress/notifikasi di window ini (wajar, breaker belum aktif).
+
+Verifikasi live (read-only, terhadap `data/aliza.db` produksi):
+```python
+>>> from engine.portfolio.drawdown_protector import check_drawdown
+>>> check_drawdown()
+{'trading_allowed': True}
+
+>>> from engine.trading.signal_tracker import get_signal_stats
+>>> get_signal_stats(source='deterministic')
+# total=3 win=0 loss=1 open=2
+```
+**Konsisten**: `/signal_stats` produksi menunjukkan 1 LOSS (bukan 3 beruntun), dan `check_drawdown()` benar melaporkan `trading_allowed: True` — belum ada streak yang cukup untuk memicu breaker, sesuai kondisi data saat ini.
+
+### Push & cleanup
+
+```
+git push origin main
+→ d40ccea..2a020f9  main -> main   (berhasil)
+
+git branch -d feat/drawdown-gate-broadcast
+→ Deleted branch feat/drawdown-gate-broadcast (was 684d0bb).
+```
+
+### Ringkasan hash
+
+| Tahap | Hash |
+|---|---|
+| Commit di branch fitur | `684d0bb` |
+| Merge commit di `main` | `2a020f9` |
+| Tip `main` sebelum merge | `d40ccea` |
+| Status push | berhasil (`d40ccea..2a020f9`) |
+| Branch fitur | dihapus lokal setelah push sukses |
