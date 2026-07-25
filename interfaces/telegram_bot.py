@@ -102,6 +102,10 @@ from engine.shadow.e3_shadow import (
     dispatch_cooldown_sec as shadow_dispatch_cooldown_sec,
     format_shadow_message,
 )
+from engine.shadow.promotion_criteria import (
+    evaluate_promotion_criteria,
+    format_promotion_check_message,
+)
 from engine.signal_engine import (
     SIGNAL_TYPE_INFORMATIONAL,
     attach_strategy_source,
@@ -6893,6 +6897,26 @@ async def weekly_winrate_summary_command(update: Update, context: ContextTypes.D
     await weekly_winrate_summary_job(context)
 
 
+async def shadow_promotion_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Read-only: hitung status kriteria promosi shadow_e3 -> produksi
+    (FASE4_REPORT.md) dari data live. Tidak pernah mengubah SHADOW_E3_ENABLED/
+    SHADOW_E3_DISPATCH atau state apa pun -- keputusan promosi tetap manual.
+    Command terpisah dari /shadow_stats (bukan perluasan) -- lihat
+    SHADOW_PROMOTION_CHECKLIST_REPORT.md untuk alasannya."""
+    msg = update.effective_message
+    if not msg:
+        return
+    if not _authorized_chat(update):
+        await msg.reply_text("⛔ Unauthorized.")
+        return
+    try:
+        result = evaluate_promotion_criteria(source="shadow_e3")
+        await msg.reply_text(format_promotion_check_message(result))
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("shadow_promotion_check_command: %s", exc)
+        await msg.reply_text("Gagal menghitung kriteria promosi shadow.")
+
+
 # ========== SNAPSHOT JOB (background, every 60s) ==========
 
 DRAWDOWN_BREAKER_ACTIVATED_MSG = (
@@ -7317,6 +7341,7 @@ def main():
     app.add_handler(CommandHandler("stats", signal_stats_command))
     app.add_handler(CommandHandler("shadow_stats", shadow_stats_command))
     app.add_handler(CommandHandler("weekly_winrate", weekly_winrate_summary_command))
+    app.add_handler(CommandHandler("shadow_promotion_check", shadow_promotion_check_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_button_handler))
 
     app.add_error_handler(_error_handler)
