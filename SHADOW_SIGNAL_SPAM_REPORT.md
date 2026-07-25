@@ -101,6 +101,80 @@ $ ./venv/bin/python -m pytest tests/ test_telegram_authorization.py test_dashboa
 
 ---
 
-## Deploy
+## Deploy & Verifikasi
 
-Belum di-deploy ke VPS (kode saat ini masih berjalan versi lama tanpa cooldown — proses `aliza-telegram.service` masih mengirim pesan shadow SUI tiap menit selama audit ini berlangsung). **Perlu restart service setelah merge** (`sudo systemctl restart aliza-telegram.service`) supaya perbaikan berlaku — sampai saat itu, spam masih akan berlanjut karena proses yang sedang berjalan memuat kode lama di memori.
+**Status: sudah di-deploy ke VPS dan diverifikasi live, spam sudah berhenti.**
+
+### Commit & merge
+
+- Commit fix di branch `fix/shadow-signal-spam`: `bff3128` — "fix: add persisted cooldown to shadow_e3 dispatch, stop SUI spam" (6 file: `.env.example`, `engine/shadow/e3_shadow.py`, `interfaces/telegram_bot.py`, `tests/test_fase4.py`, `SHADOW_SIGNAL_SPAM_REPORT.md`, `AlizaAI-Crypto/01-hasil-audit-codex/SHADOW_SIGNAL_SPAM_REPORT.md`).
+- Merge ke `main`: fast-forward `3e87ad2..bff3128` (tidak perlu merge commit — branch dibuat dari `main` terbaru dan tidak ada commit lain masuk ke `main` di antaranya).
+- `git diff --stat 3e87ad2 bff3128` dikonfirmasi hanya 6 file di atas yang berubah — **tidak ada** logika strategi shadow_e3 (ATR multiplier/RR/threshold) atau checker `ngov` lain (near_support, near_resistance, whale, dll.) yang tersentuh.
+- Push ke `origin/main`: `3e87ad2..bff3128 main -> main` — berhasil.
+- Branch lokal `fix/shadow-signal-spam` dihapus (`git branch -d`) setelah dipastikan fully merged & pushed.
+
+### Full test scope (dijalankan 2×: sebelum merge di branch, dan lagi setelah merge di `main`)
+
+```
+$ ./venv/bin/python -m pytest tests/ test_telegram_authorization.py test_dashboard_binding.py \
+    test_dashboard_docs.py test_dashboard_dotenv_isolation.py test_dashboard_endpoint_auth.py \
+    test_dashboard_execution_limit.py test_dashboard_passwords.py test_dashboard_rate_limit.py \
+    test_dashboard_security.py -q
+218 passed, 3 warnings, 74 subtests passed in 22.52s
+```
+
+Hasil identik (218 passed) di kedua run — tidak ada regresi dari merge.
+
+### Restart & startup bersih
+
+`sudo systemctl restart aliza-telegram.service` pada **2026-07-25 07:37:48 WIB**. `journalctl -u aliza-telegram -n 150` pasca-restart: startup normal (snapshot job, alert_digest_flush, TradingBrain per coin berjalan seperti biasa), **tidak ada error/exception/traceback baru**.
+
+### Bukti cooldown menekan dispatch berulang (real production log, bukan test)
+
+Sebelum fix, tiap siklus snapshot (~60s) dengan kandidat shadow selalu mengirim pesan Telegram sungguhan (jeda `candidates=N` → `recorded=` berkisar 600–1300ms, sesuai waktu tempuh network call `bot.send_message`). Setelah restart dengan fix:
+
+```
+2026-07-25 07:38:52,726 - shadow_e3 candidates=2
+2026-07-25 07:38:53,957 - shadow_e3 recorded=0 dispatch=True     ← jeda 1231ms: DIKIRIM (siklus pertama, cooldown kosong — wajar, ini kali pertama kombinasi coin+setup+side ini pernah tercatat sejak fitur cooldown aktif)
+
+2026-07-25 07:39:43,810 - shadow_e3 candidates=2
+2026-07-25 07:39:43,812 - shadow_e3 recorded=0 dispatch=True     ← jeda 2ms: DITEKAN cooldown, tidak ada network call
+2026-07-25 07:40:43,637 → 07:40:43,638   (jeda 1ms — ditekan)
+2026-07-25 07:41:43,530 → 07:41:43,531   (jeda 1ms — ditekan)
+2026-07-25 07:42:43,658 → 07:42:43,664   (jeda 6ms — ditekan)
+2026-07-25 07:43:47,465 → 07:43:47,466   (jeda 1ms — ditekan)
+2026-07-25 07:44:43,638 → 07:44:43,639   (jeda 1ms — ditekan)
+2026-07-25 07:45:43,944 → 07:45:43,945   (jeda 1ms — ditekan)
+2026-07-25 07:46:43,553 → 07:46:43,554   (jeda 1ms — ditekan)
+2026-07-25 07:47:43,582 → 07:47:43,583   (jeda 1ms — ditekan)
+2026-07-25 07:48:47,608 → 07:48:47,608   (jeda 0ms — ditekan)
+2026-07-25 07:49:45,842 → 07:49:45,843   (jeda 1ms — ditekan)
+2026-07-25 07:50:43,786 → 07:50:43,787   (jeda 1ms — ditekan)
+2026-07-25 07:51:43,628 → 07:51:43,629   (jeda 1ms — ditekan)
+2026-07-25 07:52:44,019 → 07:52:44,020   (jeda 1ms — ditekan)
+2026-07-25 07:53:44,969 → 07:53:44,971   (jeda 2ms — ditekan)
+```
+
+15 siklus berturut-turut (07:39–07:53 WIB, ~15 menit, SUI & ARB tetap match "OVERSOLD BOUNCE" tiap kali) — **hanya siklus pertama yang benar-benar mengirim ke Telegram**, sisanya ditekan cooldown dalam hitungan milidetik (bukan network call). Dikonfirmasi juga lewat `data/alert_cooldown_state.json`:
+
+```json
+"cooldown:shadow_e3": {
+    "SUI:OVERSOLD BOUNCE:LONG": 1784939932.7273958,
+    "ARB:OVERSOLD BOUNCE:LONG": 1784939932.7273958
+}
+```
+
+(`1784939932.727` = `2026-07-25 07:38:52.727 WIB`, persis siklus pertama pasca-restart). Cooldown 4 jam berarti pesan shadow SUI berikutnya — jika setup-nya masih match saat itu — baru boleh terkirim lagi sekitar **11:38 WIB**, bukan lagi tiap menit.
+
+### Ringkasan status
+
+| Tahap | Status |
+|---|---|
+| Commit fix | `bff3128` |
+| Merge ke `main` | fast-forward `3e87ad2..bff3128` |
+| Full test (branch) | 218 passed |
+| Full test (main pasca-merge) | 218 passed |
+| Restart service | 2026-07-25 07:37:48 WIB, startup bersih |
+| Spam berhenti (bukti log) | dikonfirmasi — 15/15 siklus pasca-siklus-pertama ditekan cooldown |
+| Push ke `origin/main` | berhasil |
+| Cleanup branch lokal | `fix/shadow-signal-spam` dihapus |
