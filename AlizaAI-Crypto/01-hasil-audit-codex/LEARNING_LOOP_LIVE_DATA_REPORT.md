@@ -1,7 +1,7 @@
 # Laporan — Sambungkan Learning Loop ke Data Live
 
 **Tanggal:** 25 Juli 2026
-**Branch:** `feat/learning-loop-live-data` (dibuat dari `main`)
+**Branch:** `feat/learning-loop-live-data` (dibuat dari `main`) — **sudah di-merge ke `main` dan di-deploy**, lihat bagian "Commit, Merge & Deploy" di bawah.
 **Scope:** `/opt/aliza-ai` — sambungkan `confidence_adjuster` + `drawdown_protector` ke hasil sinyal live, tanpa mekanisme baru, tanpa memperluas cakupan drawdown ke broadcast otomatis, tanpa mengubah `.env` produksi.
 
 Konteks: audit read-only sebelumnya (`AUDIT_MEKANISME_EVALUASI_REPORT.md`) menemukan `engine/learning/confidence_adjuster.py` dan `engine/portfolio/drawdown_protector.py` sudah terpasang di jalur produksi (`TradingBrain.analyze()`, perintah `/entry`), tapi mati secara fungsional karena sumber datanya, `data/trade_history.json`, beku sejak 13 Maret 2025 (2 baris seed) dan tidak pernah ditulis oleh kode live manapun.
@@ -172,3 +172,104 @@ Learning loop **sekarang benar-benar membaca** outcome ARB (LOSS) — beda signi
 - Setelah merge & deploy, `confidence_adjuster` dan `drawdown_protector` akan **otomatis aktif** memakai data live tanpa perlu ubah `.env` — perilakunya tidak berubah sampai suatu setup mengumpulkan ≥10 outcome closed (`WIN`/`LOSS`) dari sinyal `deterministic`.
 - Berdasarkan volume sinyal saat ini (N=1 untuk `OVERSOLD BOUNCE`, N=0 untuk setup lain), butuh waktu sebelum ambang 10 tercapai untuk setup manapun — ini alasan defaultnya dipilih tidak terlalu tinggi.
 - `drawdown_protector` akan mulai benar-benar bisa memblokir `/entry` begitu ada 3 LOSS live berturut-turut untuk `source='deterministic'` — sebelumnya (dengan data beku) ini **tidak pernah mungkin terjadi** apa pun kondisi live-nya.
+
+---
+
+## Commit, Merge & Deploy (2026-07-25, lanjutan)
+
+### Langkah 1 — Commit & full test scope
+
+Hanya file milik task ini yang di-stage (repo punya beberapa file laporan lain yang untracked dari sesi terpisah sebelumnya — sengaja tidak diikutsertakan):
+```
+.env.example
+engine/learning/confidence_adjuster.py
+engine/learning/trade_history_tracker.py
+tests/test_learning_loop_live_data.py
+LEARNING_LOOP_LIVE_DATA_REPORT.md
+AlizaAI-Crypto/01-hasil-audit-codex/LEARNING_LOOP_LIVE_DATA_REPORT.md
+```
+
+**Commit di branch fitur:** `41b55b8` — "feat: connect confidence_adjuster/drawdown_protector to live signal_tracking data"
+
+**Full test scope** (`tests/ test_telegram_authorization.py test_dashboard_*.py`):
+```
+234 passed, 3 warnings, 74 subtests passed in 27.44s
+```
+Sama seperti yang dilaporkan sebelumnya (234 passed) — tidak ada regresi baru yang muncul di cakupan lebih luas.
+
+### Langkah 2 — Merge
+
+```
+git checkout main && git merge --no-ff feat/learning-loop-live-data
+```
+**Merge commit:** `db0d4e0` — "Merge branch 'feat/learning-loop-live-data'"
+
+`git diff --stat ac371d2 HEAD` (dibandingkan tip `main` sebelum merge) mengonfirmasi **hanya 6 file** yang berubah, persis seperti yang dilaporkan sebelumnya:
+```
+ .env.example                                                       |   6 +
+ AlizaAI-Crypto/01-hasil-audit-codex/LEARNING_LOOP_LIVE_DATA_REPORT.md | 174 ++++++++++++
+ LEARNING_LOOP_LIVE_DATA_REPORT.md                                  | 174 ++++++++++++
+ engine/learning/confidence_adjuster.py                             |  18 +-
+ engine/learning/trade_history_tracker.py                           |  56 +++-
+ tests/test_learning_loop_live_data.py                              | 188 +++++++++++
+ 6 files changed, 610 insertions(+), 6 deletions(-)
+```
+**Dikonfirmasi**: `engine/portfolio/drawdown_protector.py` itu sendiri **tidak ada di diff** — persis seperti yang direncanakan, ia mendapat data live murni lewat pemanggilan fungsi yang implementasinya berubah di tempat lain, tanpa satu baris pun diubah di filenya sendiri. Tidak ada logika strategi/sinyal trading (`engine/brain/`, `engine/strategy/`, dll.) yang tersentuh.
+
+**Full test scope pasca-merge:**
+```
+234 passed, 3 warnings, 74 subtests passed in 20.56s
+```
+
+### Langkah 3 — Deploy & verifikasi
+
+**Restart service:**
+```
+sudo systemctl restart aliza-telegram.service
+```
+Status setelah 60 detik: `Active: active (running)`, PID baru, tidak ada crash-loop.
+
+**Review `journalctl -u aliza-telegram -n 150 --no-pager`:** startup bersih — scheduler menambahkan seluruh job (termasuk `signal_checker`, `snapshot_job`), snapshot pertama berhasil memproses 17 coin, `TradingBrain` jalan normal untuk tiap coin (kombinasi `NO SETUP reason=...` dan satu `SIGNAL TYPE` untuk SUI/OVERSOLD BOUNCE yang ke-block sebagai duplicate — perilaku dedup normal, bukan error). **Tidak ada satu pun traceback/exception** yang menyinggung `engine.learning`, `confidence_adjuster`, `trade_history_tracker`, atau `drawdown_protector` di seluruh window log.
+
+**Verifikasi live (read-only, langsung terhadap `data/aliza.db` produksi, dijalankan setelah restart):**
+```python
+>>> from engine.learning import learning_engine, confidence_adjuster, trade_history_tracker
+>>> from engine.portfolio import drawdown_protector
+>>> from engine.analytics import performance_analyzer
+
+>>> trade_history_tracker.get_closed_history()
+[{'coin': 'ARB', 'setup': 'OVERSOLD BOUNCE', 'side': 'LONG', 'result': 'LOSS',
+  'rr': 5.33, 'confidence': 75.0, 'timestamp': '2026-07-25T07:41:04.669114+07:00'}]
+
+>>> learning_engine.get_strategy_stats()
+{'OVERSOLD BOUNCE': {'winrate': 0.0, 'avg_rr': 5.33, 'total_trades': 1}}
+
+>>> drawdown_protector.check_drawdown()
+{'trading_allowed': True}
+
+>>> performance_analyzer.analyze_performance(trade_history_tracker.get_closed_history())
+{'total_trades': 1, 'wins': 0, 'losses': 1, 'winrate': 0.0, 'avg_rr': 5.33, 'profit_factor': 5.33}
+```
+**Konfirmasi:** ketiga fungsi kini membaca outcome ARB (LOSS) yang sungguhan dari `signal_tracking` produksi — bukan lagi baris seed BTC/ETH dari Maret 2025. `check_drawdown()` benar mengembalikan `trading_allowed: True` (baru 1 LOSS, belum mencapai ambang 3).
+
+**Verifikasi `/performance` (bonus fix):** `performance_analyzer.analyze_performance()` — persis fungsi yang dipanggil `performance_command` di `interfaces/telegram_bot.py:1619-1644` — dipanggil langsung di atas dengan output dari `get_closed_history()` yang sama; hasilnya identik dengan yang akan ditampilkan command tersebut. Tidak perlu akses Telegram interaktif untuk mengonfirmasi ini karena `performance_command` tidak melakukan transformasi tambahan di luar memformat angka yang sama menjadi teks.
+
+### Langkah 4 — Push & cleanup
+
+```
+git push origin main
+→ ac371d2..db0d4e0  main -> main   (berhasil)
+
+git branch -d feat/learning-loop-live-data
+→ Deleted branch feat/learning-loop-live-data (was 41b55b8).
+```
+
+### Ringkasan hash
+
+| Tahap | Hash |
+|---|---|
+| Commit di branch fitur | `41b55b8` |
+| Merge commit di `main` | `db0d4e0` |
+| Tip `main` sebelum merge | `ac371d2` |
+| Status push | berhasil (`ac371d2..db0d4e0`) |
+| Branch fitur | dihapus lokal setelah push sukses |
