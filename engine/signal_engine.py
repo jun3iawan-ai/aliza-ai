@@ -260,10 +260,17 @@ async def process_signal(
     *,
     chat_id=None,
     force: bool = False,
+    suppress_dispatch: bool = False,
 ) -> bool:
     """
     Unified signal entry point: klasifikasi signal_type → risk (trade saja) → dedup → dispatch.
     source system/watchdog: hanya dispatch (tanpa risk/dedup/record).
+
+    suppress_dispatch: jalankan seluruh validasi/dedup/macro-gateway seperti biasa,
+    tapi JANGAN benar-benar kirim ke Telegram (dipakai drawdown breaker untuk sinyal
+    trade produksi saat loss-streak aktif -- lihat DRAWDOWN_BROADCAST_GATE_REPORT.md).
+    Return tetap True supaya pemanggil tahu sinyal ini "lolos" seluruh gate dan boleh
+    dicatat, walau tidak benar-benar terkirim ke user.
     """
     try:
         if signal is None:
@@ -328,6 +335,10 @@ async def process_signal(
             if signal_type == SIGNAL_TYPE_TRADE:
                 out_msg = _enrich_trade_message_with_macro(out_msg, signal)
                 out_msg = _enrich_trade_message_with_position(out_msg, signal)
+
+        if suppress_dispatch:
+            logger.info(f"[TRADE SIGNAL] SUPPRESSED (dispatch withheld) {key} from {src}")
+            return True
 
         from interfaces.telegram_bot import safe_dispatch
 

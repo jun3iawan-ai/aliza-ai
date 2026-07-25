@@ -124,6 +124,11 @@ except ImportError:
     portfolio_evaluate_trade = None
 
 try:
+    from engine.portfolio.drawdown_protector import check_drawdown
+except ImportError:
+    check_drawdown = None
+
+try:
     from engine.learning.trade_history_tracker import get_closed_history
     from engine.analytics.performance_analyzer import analyze_performance
 except ImportError:
@@ -6731,18 +6736,75 @@ async def shadow_stats_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # ========== SNAPSHOT JOB (background, every 60s) ==========
 
+DRAWDOWN_BREAKER_ACTIVATED_MSG = (
+    "⚠️ Circuit breaker aktif — 3 sinyal produksi beruntun rugi. Pengiriman sinyal "
+    "[TRADE SIGNAL] dijeda sampai ada sinyal yang profit lagi. (Ini bukan berarti "
+    "trading dihentikan permanen — cuma jeda otomatis untuk mencegah kerugian beruntun.)"
+)
+DRAWDOWN_BREAKER_RESET_MSG = (
+    "✅ Circuit breaker nonaktif — sinyal [TRADE SIGNAL] kembali dikirim normal."
+)
+
+
+async def _notify_drawdown_breaker_transition(chat_id) -> None:
+    """Kirim SATU notifikasi saat status drawdown breaker berubah (aktif pertama
+    kali / reset), tanpa spam tiap siklus snapshot (~60s). Status terakhir yang
+    sudah dinotifikasi disimpan lewat notification_governor (persisted ke
+    data/alert_cooldown_state.json, tahan restart proses) -- pola yang sama dipakai
+    shadow_e3 cooldown. Lihat DRAWDOWN_BROADCAST_GATE_REPORT.md."""
+    if check_drawdown is None:
+        return
+    try:
+        dd = check_drawdown()
+    except Exception as exc:
+        logging.debug("drawdown breaker transition check failed: %s", exc)
+        return
+    active_now = not dd.get("trading_allowed", True)
+    was_active = bool(ngov.get_value("drawdown_breaker", "active", False))
+    if active_now == was_active:
+        return
+    ngov.set_value("drawdown_breaker", "active", active_now)
+    msg = DRAWDOWN_BREAKER_ACTIVATED_MSG if active_now else DRAWDOWN_BREAKER_RESET_MSG
+    try:
+        await safe_dispatch(msg, chat_id=chat_id, force=True)
+    except Exception as exc:
+        logging.warning("drawdown breaker transition notify failed: %s", exc)
+
+
 async def _dispatch_and_record_deterministic_signal(sig: dict, chat_id) -> bool:
-    """Dispatch lewat gateway; persist tracking hanya setelah pengiriman sukses."""
+    """Dispatch lewat gateway; persist tracking hanya setelah pengiriman sukses (atau
+    setelah lolos seluruh gate tapi ditekan oleh drawdown breaker -- lihat
+    DRAWDOWN_BROADCAST_GATE_REPORT.md). Breaker hanya menahan dispatch Telegram;
+    sinyal tetap dicatat ke signal_tracking (dispatch_status='SUPPRESSED') supaya
+    statistik/winrate tidak bolong."""
     key = f"{sig.get('coin', '')}|{sig.get('setup', '')}"
     uni = attach_strategy_source(sig)
+
+    breaker_active = False
+    loss_streak = None
+    if check_drawdown is not None:
+        try:
+            dd = check_drawdown()
+            breaker_active = not dd.get("trading_allowed", True)
+            loss_streak = dd.get("loss_streak")
+        except Exception as dd_err:
+            logging.debug("drawdown check failed, defaulting to allowed: %s", dd_err)
+
     sent = await process_signal(
         key,
         uni,
         format_signal_message(uni),
         chat_id=chat_id,
+        suppress_dispatch=breaker_active,
     )
     if not sent:
         return False
+
+    if breaker_active:
+        logging.info(
+            "[TRADE SIGNAL] SUPPRESSED — drawdown breaker active, loss_streak=%s coin=%s setup=%s",
+            loss_streak, sig.get("coin"), sig.get("setup"),
+        )
 
     try:
         sig_to_record = dict(sig)
@@ -6753,7 +6815,7 @@ async def _dispatch_and_record_deterministic_signal(sig: dict, chat_id) -> bool:
         sig_to_record.setdefault(
             "tp", sig.get("tp") or sig.get("tp1") or sig.get("take_profit")
         )
-        sig_to_record["dispatch_status"] = "SENT"
+        sig_to_record["dispatch_status"] = "SUPPRESSED" if breaker_active else "SENT"
         sig_to_record["source"] = "deterministic"
         mctx = calculate_market_score()
         sig_to_record["market_score"] = mctx.get("total_score")
@@ -6901,6 +6963,14 @@ async def snapshot_job(context: ContextTypes.DEFAULT_TYPE):
                             logging.warning("Auto alert send failed for %s: %s", a.get("coin"), send_err)
             except Exception as alert_err:
                 logging.debug("Auto alert process error: %s", alert_err)
+
+        # Drawdown breaker transition notice: checked every cycle (not only when a
+        # new signal is detected) so a streak that closes via signal_check_job
+        # between detections still gets a timely transition message.
+        try:
+            await _notify_drawdown_breaker_transition(context.bot_data.get("chat_id"))
+        except Exception as dd_notify_err:
+            logging.debug("Drawdown breaker transition notice error: %s", dd_notify_err)
 
         # High probability trade (strategy): unified gateway (risk + dedup + state)
         try:
