@@ -151,16 +151,63 @@ def init_signal_tracking_db() -> bool:
         return False
 
 
+def _episode_parts(coin: Any, setup: Any, side: Any, source: Any) -> tuple[str, str, str, str]:
+    normalized_coin = str(coin or "").upper().replace("USDT", "").strip()
+    normalized_setup = str(setup or "").upper().strip()
+    normalized_side = _normalize_side(side, normalized_setup) or ""
+    normalized_source = str(source or "deterministic").lower().strip()
+    return normalized_coin, normalized_setup, normalized_side, normalized_source
+
+
+def has_open_episode(*, coin: Any, setup: Any, side: Any, source: Any = "deterministic") -> bool:
+    """Whether the exact production episode identity still has an OPEN row."""
+    coin_n, setup_n, side_n, source_n = _episode_parts(coin, setup, side, source)
+    if not coin_n or not setup_n or not side_n or not source_n:
+        return False
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _connect()
+        row = conn.execute(
+            """
+            SELECT id FROM signal_tracking
+            WHERE status = 'OPEN'
+              AND UPPER(TRIM(coin)) = ?
+              AND UPPER(TRIM(IFNULL(setup, ''))) = ?
+              AND UPPER(TRIM(IFNULL(side, ''))) = ?
+              AND LOWER(TRIM(IFNULL(source, ''))) = ?
+            LIMIT 1
+            """,
+            (coin_n, setup_n, side_n, source_n),
+        ).fetchone()
+        return row is not None
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _sync_edge_episode(signal: dict[str, Any], active: bool) -> None:
+    """Avoid a module-import cycle while keeping tracker transitions synchronous."""
+    if str(signal.get("source") or "").lower() != "deterministic":
+        return
+    try:
+        from engine.trading import signal_engine
+        if active:
+            signal_engine.mark_tracking_episode_open(signal)
+        else:
+            signal_engine.mark_tracking_episode_closed(signal)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("signal_tracker: edge episode sync failed: %s", exc)
+
+
 def record_signal(signal: dict[str, Any]) -> int | None:
     if not signal or not isinstance(signal, dict):
         return None
-    coin = str(signal.get("coin") or "").upper().strip()
+    coin, setup, side, source = _episode_parts(
+        signal.get("coin"), signal.get("setup"), signal.get("side"),
+        signal.get("source") or "deterministic",
+    )
     if not coin:
         return None
-
-    setup = str(signal.get("setup") or "").strip()
-    side = _normalize_side(signal.get("side"), setup)
-    source = str(signal.get("source") or "deterministic").strip().lower()
     signal_uuid = str(signal.get("signal_id") or uuid.uuid4())
     dispatch_status = str(signal.get("dispatch_status") or "UNKNOWN").strip().upper()
     entry = _safe_float(signal.get("entry"))
@@ -183,28 +230,32 @@ def record_signal(signal: dict[str, Any]) -> int | None:
             """
             SELECT id
             FROM signal_tracking
-            WHERE coin = ? AND IFNULL(setup, '') = IFNULL(?, '')
-              AND signal_time = ? AND IFNULL(source, '') = IFNULL(?, '')
+            WHERE UPPER(TRIM(coin)) = ?
+              AND UPPER(TRIM(IFNULL(setup, ''))) = ?
+              AND UPPER(TRIM(IFNULL(side, ''))) = ?
+              AND signal_time = ?
+              AND LOWER(TRIM(IFNULL(source, ''))) = ?
             LIMIT 1
             """,
-            (coin, setup, signal_time, source),
+            (coin, setup, side, signal_time, source),
         ).fetchone()
         if dup:
             conn.close()
             return None
 
-        # Secondary guard for repeated polling: same coin/setup still open.
+        # Secondary guard for repeated polling: exact episode identity still OPEN.
         dup_open = conn.execute(
             """
             SELECT id
             FROM signal_tracking
             WHERE status = 'OPEN'
-              AND coin = ?
-              AND IFNULL(setup, '') = IFNULL(?, '')
-              AND IFNULL(source, '') = IFNULL(?, '')
+              AND UPPER(TRIM(coin)) = ?
+              AND UPPER(TRIM(IFNULL(setup, ''))) = ?
+              AND UPPER(TRIM(IFNULL(side, ''))) = ?
+              AND LOWER(TRIM(IFNULL(source, ''))) = ?
             LIMIT 1
             """,
-            (coin, setup, source),
+            (coin, setup, side, source),
         ).fetchone()
         if dup_open:
             conn.close()
@@ -227,6 +278,10 @@ def record_signal(signal: dict[str, Any]) -> int | None:
         conn.commit()
         new_id = int(cur.lastrowid)
         conn.close()
+        _sync_edge_episode(
+            {"coin": coin, "setup": setup, "side": side, "source": source},
+            True,
+        )
         return new_id
     except Exception as e:  # noqa: BLE001
         logger.warning("signal_tracker: record_signal failed: %s", e)
@@ -371,7 +426,7 @@ def check_open_signals() -> list[dict[str, Any]]:
         conn = _connect()
         rows = conn.execute(
             """
-            SELECT id, coin, setup, side, entry_price, sl_price, tp_price,
+            SELECT id, coin, setup, side, source, entry_price, sl_price, tp_price,
                    signal_time, created_at
             FROM signal_tracking
             WHERE status = 'OPEN'
@@ -428,6 +483,7 @@ def check_open_signals() -> list[dict[str, Any]]:
                     "coin": coin,
                     "setup": setup,
                     "side": side,
+                    "source": row["source"],
                     "entry_price": entry,
                     "close_price": close_price,
                     "status": status,
@@ -438,6 +494,8 @@ def check_open_signals() -> list[dict[str, Any]]:
             )
 
         conn.commit()
+        for item in closed:
+            _sync_edge_episode(item, False)
         return closed
     except Exception as exc:  # noqa: BLE001
         logger.warning("signal_tracker: check_open_signals failed: %s", exc)
