@@ -6,6 +6,7 @@ for the design decisions this exercises.
 from __future__ import annotations
 
 import asyncio
+import copy
 import sqlite3
 from unittest.mock import AsyncMock
 
@@ -34,10 +35,21 @@ def isolated_governor_state(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _clear_signal_dedup_cache():
-    """Reset floor-cooldown and edge episode caches between gateway tests."""
+def _clear_signal_dedup_cache(monkeypatch):
+    """Isolate floor/edge state so gateway tests never write production state."""
     from engine.trading import signal_engine as trading_se
 
+    persisted = {}
+    monkeypatch.setattr(
+        trading_se,
+        "save_state",
+        lambda state: persisted.update({"state": copy.deepcopy(state)}),
+    )
+    monkeypatch.setattr(
+        trading_se,
+        "load_state",
+        lambda: copy.deepcopy(persisted.get("state", {})),
+    )
     trading_se.LAST_SIGNALS = {}
     trading_se.EDGE_SIGNAL_STATE = {}
     yield

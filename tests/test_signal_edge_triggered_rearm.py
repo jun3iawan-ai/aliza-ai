@@ -8,6 +8,7 @@ import logging
 import pytest
 
 from engine.trading import signal_engine as signal_se
+from engine.trading import signal_tracker
 
 
 @pytest.fixture(autouse=True)
@@ -170,3 +171,72 @@ def test_shadow_and_notification_governor_cooldowns_are_untouched(monkeypatch):
     monkeypatch.delenv("SHADOW_SIGNAL_COOLDOWN_SEC", raising=False)
     assert e3_shadow.dispatch_cooldown_sec() == 14_400
     assert telegram_bot._SNAPSHOT_ALERT_COOLDOWN_SEC == 4 * 3600
+
+def test_first_bootstrap_uses_open_deterministic_tracking_rows(tmp_path, monkeypatch, clock, caplog):
+    db_path = tmp_path / "signals.db"
+    monkeypatch.setattr(signal_tracker, "DB_PATH", str(db_path))
+    assert signal_tracker.init_signal_tracking_db()
+    assert signal_tracker.record_signal({
+        "coin": "ETH",
+        "setup": "OVERBOUGHT REJECTION",
+        "side": "SHORT",
+        "source": "deterministic",
+        "dispatch_status": "SENT",
+        "entry": 1950,
+        "sl": 1975,
+        "tp": 1855,
+    })
+
+    legacy_state = {"last_signals": {}, "edge_signal_state": {}}
+    persisted = {}
+    monkeypatch.setattr(signal_se, "load_state", lambda: copy.deepcopy(legacy_state))
+    monkeypatch.setattr(
+        signal_se,
+        "save_state",
+        lambda state: persisted.update({"state": copy.deepcopy(state)}),
+    )
+    signal_se.LAST_SIGNALS = {}
+    signal_se.EDGE_SIGNAL_STATE = {}
+    caplog.set_level(logging.INFO, logger="engine.trading.signal_engine")
+
+    signal_se._init_last_signals_from_disk()
+    eth = _signal("ETH", "OVERBOUGHT REJECTION", "SHORT")
+    _observe_valid(eth)
+
+    assert signal_se.EDGE_SIGNAL_STATE["ETH|OVERBOUGHT REJECTION|SHORT"] == {
+        "active": True,
+        "inactive_scans": 0,
+    }
+    assert persisted["state"]["edge_signal_state_bootstrapped"] is True
+    assert _attempt(eth) is False
+    assert "bootstrap source=signal_tracking open=1 added=1" in caplog.text
+    assert "suppressed_same_episode key=ETH|OVERBOUGHT REJECTION|SHORT" in caplog.text
+
+
+def test_bootstrap_marker_prevents_reseeding_on_later_restart(tmp_path, monkeypatch):
+    db_path = tmp_path / "signals.db"
+    monkeypatch.setattr(signal_tracker, "DB_PATH", str(db_path))
+    assert signal_tracker.init_signal_tracking_db()
+    assert signal_tracker.record_signal({
+        "coin": "ETH",
+        "setup": "OVERBOUGHT REJECTION",
+        "side": "SHORT",
+        "source": "deterministic",
+        "dispatch_status": "SENT",
+        "entry": 1950,
+        "sl": 1975,
+        "tp": 1855,
+    })
+
+    initialized_state = {
+        "last_signals": {},
+        "edge_signal_state": {},
+        "edge_signal_state_bootstrapped": True,
+    }
+    monkeypatch.setattr(signal_se, "load_state", lambda: copy.deepcopy(initialized_state))
+    monkeypatch.setattr(signal_se, "save_state", lambda _state: None)
+    signal_se.LAST_SIGNALS = {}
+    signal_se.EDGE_SIGNAL_STATE = {}
+
+    signal_se._init_last_signals_from_disk()
+    assert signal_se.EDGE_SIGNAL_STATE == {}

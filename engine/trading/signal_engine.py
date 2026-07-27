@@ -97,10 +97,11 @@ def _edge_state_for(signal: dict) -> tuple[str, dict]:
 
 
 def _save_signal_state() -> None:
-    """Persist both floor-cooldown and episode state in one backward-compatible file."""
+    """Persist floor-cooldown and episode state after one-time migration."""
     save_state({
         "last_signals": LAST_SIGNALS,
         "edge_signal_state": EDGE_SIGNAL_STATE,
+        "edge_signal_state_bootstrapped": True,
     })
 
 
@@ -215,13 +216,51 @@ def record_signal_sent(key: str, signal: dict):
     _save_signal_state()
 
 
+def _bootstrap_edge_state_from_open_tracking() -> int:
+    """Seed active episodes from the durable production outcome tracker.
+
+    ``signal_tracking`` rows that are still OPEN are the durable definition of a
+    deterministic trade episode. The old TTL cache is intentionally not used:
+    it is only a short-lived dispatch cache and may be incomplete.
+    """
+    try:
+        from engine.trading import signal_tracker
+
+        conn = signal_tracker._connect()
+        rows = conn.execute(
+            """
+            SELECT coin, setup, side
+            FROM signal_tracking
+            WHERE status = 'OPEN' AND source = 'deterministic'
+            """
+        ).fetchall()
+        conn.close()
+    except Exception as exc:
+        logger.warning("[TRADE SIGNAL EDGE] bootstrap tracking query failed: %s", exc)
+        return 0
+
+    added = 0
+    for row in rows:
+        payload = {"coin": row["coin"], "setup": row["setup"], "side": row["side"]}
+        key = _edge_key(payload)
+        if key not in EDGE_SIGNAL_STATE:
+            EDGE_SIGNAL_STATE[key] = {"active": True, "inactive_scans": 0}
+            added += 1
+    logger.info(
+        "[TRADE SIGNAL EDGE] bootstrap source=signal_tracking open=%d added=%d",
+        len(rows), added,
+    )
+    return added
+
+
 def _init_last_signals_from_disk():
     global LAST_SIGNALS, EDGE_SIGNAL_STATE
     raw = load_state()
     if not isinstance(raw, dict):
         raw = {}
-    # Pre-edge versions stored LAST_SIGNALS directly. Keep reading that shape and
-    # bootstrap its recent keys as active episodes on the first upgrade.
+    # Versions before edge-triggered re-arm stored LAST_SIGNALS directly. The
+    # explicit marker makes DB bootstrap one-time even when the edge map is empty.
+    bootstrap_required = not bool(raw.get("edge_signal_state_bootstrapped"))
     if isinstance(raw.get("last_signals"), dict):
         raw_last = raw.get("last_signals") or {}
         raw_edge = raw.get("edge_signal_state") or {}
@@ -237,13 +276,9 @@ def _init_last_signals_from_disk():
         for k, v in raw_edge.items()
         if isinstance(v, dict)
     }
-    for last in LAST_SIGNALS.values():
-        signal = last.get("signal")
-        if isinstance(signal, dict) and str(signal.get("source") or "").lower() == "deterministic":
-            EDGE_SIGNAL_STATE.setdefault(
-                _edge_key(signal),
-                {"active": True, "inactive_scans": 0},
-            )
+    if bootstrap_required:
+        _bootstrap_edge_state_from_open_tracking()
+        _save_signal_state()
     cleanup_signals()
 
 
