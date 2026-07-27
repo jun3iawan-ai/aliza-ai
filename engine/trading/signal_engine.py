@@ -7,6 +7,7 @@ Macro: skip scan jika ada event high-impact US dalam window blok (swing safety).
 """
 
 import logging
+import os
 import time
 
 from engine.state_store import load_state, save_state
@@ -54,13 +55,105 @@ MACRO_BLOCK_WINDOW_HOURS = 4
 # Konteks pesan: event high-impact dalam N jam ke depan (peringatan, bukan blok jika scan lolos)
 MACRO_WARN_WINDOW_HOURS = 24
 
-# Dedup: hindari signal identik dikirim berulang dalam window TTL
+# Dedup: floor waktu untuk melindungi dispatch ganda meski edge state rusak.
 LAST_SIGNALS = {}
 SIGNAL_TTL_SECONDS = 900  # 15 menit
 
+# Edge-triggered re-arm: satu episode setup hanya boleh mengirim sekali.
+# Setup harus absen dari evaluasi snapshot yang valid selama N scan berturut-turut
+# sebelum dianggap reset dan boleh menjadi episode baru.
+EDGE_SIGNAL_STATE = {}
+DEFAULT_SIGNAL_REARM_DEBOUNCE_SCANS = 3
+
+
+def signal_rearm_debounce_scans() -> int:
+    """Jumlah scan tidak-valid berturut-turut sebelum episode boleh re-arm."""
+    try:
+        return max(1, int(os.getenv(
+            "SIGNAL_REARM_DEBOUNCE_SCANS",
+            str(DEFAULT_SIGNAL_REARM_DEBOUNCE_SCANS),
+        )))
+    except (TypeError, ValueError):
+        return DEFAULT_SIGNAL_REARM_DEBOUNCE_SCANS
+
+
+def _edge_key(signal: dict | None) -> str:
+    """Identity episode deterministic: coin + setup + side."""
+    payload = signal if isinstance(signal, dict) else {}
+    coin = str(payload.get("coin") or payload.get("symbol") or "").upper()
+    coin = coin.replace("USDT", "").strip()
+    setup = str(payload.get("setup") or "").strip().upper()
+    side = str(payload.get("side") or "UNKNOWN").strip().upper()
+    return f"{coin}|{setup}|{side}"
+
+
+def _edge_state_for(signal: dict) -> tuple[str, dict]:
+    key = _edge_key(signal)
+    state = EDGE_SIGNAL_STATE.setdefault(
+        key,
+        {"active": False, "inactive_scans": 0},
+    )
+    return key, state
+
+
+def _save_signal_state() -> None:
+    """Persist floor-cooldown and episode state after one-time migration."""
+    save_state({
+        "last_signals": LAST_SIGNALS,
+        "edge_signal_state": EDGE_SIGNAL_STATE,
+        "edge_signal_state_bootstrapped": True,
+    })
+
+
+def observe_signal_validity(
+    valid_signals: list[dict],
+    observed_coins: set[str] | None = None,
+) -> None:
+    """Advance re-arm debounce once for this completed market evaluation.
+
+    ``valid_signals`` contains every coin that passed the production setup, RR and
+    confidence filters in the current snapshot. Coins absent because data was
+    unavailable are not counted as invalid, preventing an outage from re-arming
+    a still-active setup.
+    """
+    valid_keys = {_edge_key(signal) for signal in valid_signals}
+    observed = None if observed_coins is None else {
+        str(coin or "").upper().replace("USDT", "").strip()
+        for coin in observed_coins
+    }
+    debounce = signal_rearm_debounce_scans()
+    changed = False
+
+    for key, raw_state in EDGE_SIGNAL_STATE.items():
+        state = raw_state if isinstance(raw_state, dict) else {}
+        if state is not raw_state:
+            EDGE_SIGNAL_STATE[key] = state
+            changed = True
+        coin = key.split("|", 1)[0]
+        if observed is not None and coin not in observed:
+            continue
+        if key in valid_keys:
+            if state.get("inactive_scans", 0) != 0:
+                state["inactive_scans"] = 0
+                changed = True
+            continue
+
+        inactive_scans = int(state.get("inactive_scans", 0) or 0) + 1
+        state["inactive_scans"] = inactive_scans
+        changed = True
+        if state.get("active") and inactive_scans >= debounce:
+            state["active"] = False
+            logger.info(
+                "[TRADE SIGNAL EDGE] reset key=%s invalid_scans=%d debounce=%d",
+                key, inactive_scans, debounce,
+            )
+
+    if changed:
+        _save_signal_state()
+
 
 def cleanup_signals():
-    """Hapus entri cache yang sudah lewat TTL agar memori tidak tumbuh tanpa batas."""
+    """Hapus entri floor cooldown lewat TTL agar memori tidak tumbuh tanpa batas."""
     now = time.time()
     keys_to_delete = [
         k for k, v in LAST_SIGNALS.items()
@@ -69,7 +162,7 @@ def cleanup_signals():
     for k in keys_to_delete:
         del LAST_SIGNALS[k]
     if keys_to_delete:
-        save_state(LAST_SIGNALS)
+        _save_signal_state()
 
 
 def _signal_body_for_dedup(signal: dict) -> dict:
@@ -82,14 +175,32 @@ def _signal_body_for_dedup(signal: dict) -> dict:
 
 
 def can_send_signal(key: str, signal: dict) -> bool:
-    """Return False jika signal sama dengan terakhir untuk key ini dan masih dalam TTL."""
+    """Gate deterministic dengan edge episode lalu floor cooldown 15 menit.
+
+    Source selain deterministic mempertahankan perilaku TTL lama agar checker/LLM
+    yang berbagi gateway tidak ikut berubah.
+    """
     now = time.time()
+    is_deterministic = str((signal or {}).get("source") or "").lower() == "deterministic"
+
+    if is_deterministic:
+        edge_key, state = _edge_state_for(signal)
+        if state.get("active"):
+            logger.info("[TRADE SIGNAL EDGE] suppressed_same_episode key=%s", edge_key)
+            return False
 
     if key in LAST_SIGNALS:
         last = LAST_SIGNALS[key]
         if now - last["time"] < SIGNAL_TTL_SECONDS:
+            if is_deterministic:
+                logger.info(
+                    "[TRADE SIGNAL EDGE] suppressed_floor_cooldown key=%s",
+                    _edge_key(signal),
+                )
             return False
 
+    if is_deterministic:
+        logger.info("[TRADE SIGNAL EDGE] new key=%s", _edge_key(signal))
     return True
 
 
@@ -98,18 +209,76 @@ def record_signal_sent(key: str, signal: dict):
         "signal": signal,
         "time": time.time()
     }
-    save_state(LAST_SIGNALS)
+    if str((signal or {}).get("source") or "").lower() == "deterministic":
+        _, state = _edge_state_for(signal)
+        state["active"] = True
+        state["inactive_scans"] = 0
+    _save_signal_state()
+
+
+def _bootstrap_edge_state_from_open_tracking() -> int:
+    """Seed active episodes from the durable production outcome tracker.
+
+    ``signal_tracking`` rows that are still OPEN are the durable definition of a
+    deterministic trade episode. The old TTL cache is intentionally not used:
+    it is only a short-lived dispatch cache and may be incomplete.
+    """
+    try:
+        from engine.trading import signal_tracker
+
+        conn = signal_tracker._connect()
+        rows = conn.execute(
+            """
+            SELECT coin, setup, side
+            FROM signal_tracking
+            WHERE status = 'OPEN' AND source = 'deterministic'
+            """
+        ).fetchall()
+        conn.close()
+    except Exception as exc:
+        logger.warning("[TRADE SIGNAL EDGE] bootstrap tracking query failed: %s", exc)
+        return 0
+
+    added = 0
+    for row in rows:
+        payload = {"coin": row["coin"], "setup": row["setup"], "side": row["side"]}
+        key = _edge_key(payload)
+        if key not in EDGE_SIGNAL_STATE:
+            EDGE_SIGNAL_STATE[key] = {"active": True, "inactive_scans": 0}
+            added += 1
+    logger.info(
+        "[TRADE SIGNAL EDGE] bootstrap source=signal_tracking open=%d added=%d",
+        len(rows), added,
+    )
+    return added
 
 
 def _init_last_signals_from_disk():
-    global LAST_SIGNALS
+    global LAST_SIGNALS, EDGE_SIGNAL_STATE
     raw = load_state()
     if not isinstance(raw, dict):
         raw = {}
+    # Versions before edge-triggered re-arm stored LAST_SIGNALS directly. The
+    # explicit marker makes DB bootstrap one-time even when the edge map is empty.
+    bootstrap_required = not bool(raw.get("edge_signal_state_bootstrapped"))
+    if isinstance(raw.get("last_signals"), dict):
+        raw_last = raw.get("last_signals") or {}
+        raw_edge = raw.get("edge_signal_state") or {}
+    else:
+        raw_last = raw
+        raw_edge = {}
     LAST_SIGNALS = {}
-    for k, v in raw.items():
+    for k, v in raw_last.items():
         if isinstance(v, dict) and "signal" in v and "time" in v:
             LAST_SIGNALS[k] = v
+    EDGE_SIGNAL_STATE = {
+        str(k): dict(v)
+        for k, v in raw_edge.items()
+        if isinstance(v, dict)
+    }
+    if bootstrap_required:
+        _bootstrap_edge_state_from_open_tracking()
+        _save_signal_state()
     cleanup_signals()
 
 
@@ -173,6 +342,10 @@ def scan_for_signals():
             logger.warning("macro context fetch failed (degraded): %s", e)
 
     candidates = []
+    # A coin with a usable market row was evaluated this snapshot. Missing/error
+    # rows are intentionally excluded from debounce so a data outage cannot reset
+    # an episode.
+    observed_coins: set[str] = set()
     no_data = 0
     no_setup = 0
     no_valid_setup = 0
@@ -184,6 +357,7 @@ def scan_for_signals():
         if not data or data.get("error"):
             no_data += 1
             continue
+        observed_coins.add(str(coin or "").upper().replace("USDT", "").strip())
         trade = data.get("trade_setup")
         if not trade:
             no_setup += 1
@@ -242,6 +416,10 @@ def scan_for_signals():
         round(max(rejected_rr_values), 2) if rejected_rr_values else None,
         round(sum(rejected_rr_values) / len(rejected_rr_values), 2) if rejected_rr_values else None,
     )
+
+    # This is the one per-snapshot truth point for whether each production setup
+    # remains valid. Observe all candidates, not just the highest-RR one.
+    observe_signal_validity(candidates, observed_coins)
 
     if not candidates:
         return None
