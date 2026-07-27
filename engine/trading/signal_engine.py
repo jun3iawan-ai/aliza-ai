@@ -7,7 +7,6 @@ Macro: skip scan jika ada event high-impact US dalam window blok (swing safety).
 """
 
 import logging
-import os
 import time
 
 from engine.state_store import load_state, save_state
@@ -59,23 +58,11 @@ MACRO_WARN_WINDOW_HOURS = 24
 LAST_SIGNALS = {}
 SIGNAL_TTL_SECONDS = 900  # 15 menit
 
-# Edge-triggered re-arm: satu episode setup hanya boleh mengirim sekali.
-# Setup harus absen dari evaluasi snapshot yang valid selama N scan berturut-turut
-# sebelum dianggap reset dan boleh menjadi episode baru.
+# Edge-triggered re-arm: a deterministic episode is authoritative while its
+# corresponding signal_tracking row remains OPEN. The outcome tracker, rather
+# than transient RR/confidence filtering, is the only component allowed to
+# re-arm a completed episode.
 EDGE_SIGNAL_STATE = {}
-DEFAULT_SIGNAL_REARM_DEBOUNCE_SCANS = 3
-
-
-def signal_rearm_debounce_scans() -> int:
-    """Jumlah scan tidak-valid berturut-turut sebelum episode boleh re-arm."""
-    try:
-        return max(1, int(os.getenv(
-            "SIGNAL_REARM_DEBOUNCE_SCANS",
-            str(DEFAULT_SIGNAL_REARM_DEBOUNCE_SCANS),
-        )))
-    except (TypeError, ValueError):
-        return DEFAULT_SIGNAL_REARM_DEBOUNCE_SCANS
-
 
 def _edge_key(signal: dict | None) -> str:
     """Identity episode deterministic: coin + setup + side."""
@@ -109,48 +96,38 @@ def observe_signal_validity(
     valid_signals: list[dict],
     observed_coins: set[str] | None = None,
 ) -> None:
-    """Advance re-arm debounce once for this completed market evaluation.
+    """Compatibility hook; scan validity never re-arms a tracked trade.
 
-    ``valid_signals`` contains every coin that passed the production setup, RR and
-    confidence filters in the current snapshot. Coins absent because data was
-    unavailable are not counted as invalid, preventing an outage from re-arming
-    a still-active setup.
+    RR/confidence are eligibility gates for a *new* dispatch only. They are not
+    evidence that an already-recorded trade episode has finished. Completion is
+    synchronized synchronously from ``signal_tracker.check_open_signals``.
     """
-    valid_keys = {_edge_key(signal) for signal in valid_signals}
-    observed = None if observed_coins is None else {
-        str(coin or "").upper().replace("USDT", "").strip()
-        for coin in observed_coins
-    }
-    debounce = signal_rearm_debounce_scans()
-    changed = False
+    return None
 
-    for key, raw_state in EDGE_SIGNAL_STATE.items():
-        state = raw_state if isinstance(raw_state, dict) else {}
-        if state is not raw_state:
-            EDGE_SIGNAL_STATE[key] = state
-            changed = True
-        coin = key.split("|", 1)[0]
-        if observed is not None and coin not in observed:
-            continue
-        if key in valid_keys:
-            if state.get("inactive_scans", 0) != 0:
-                state["inactive_scans"] = 0
-                changed = True
-            continue
 
-        inactive_scans = int(state.get("inactive_scans", 0) or 0) + 1
-        state["inactive_scans"] = inactive_scans
-        changed = True
-        if state.get("active") and inactive_scans >= debounce:
-            state["active"] = False
-            logger.info(
-                "[TRADE SIGNAL EDGE] reset key=%s invalid_scans=%d debounce=%d",
-                key, inactive_scans, debounce,
-            )
-
-    if changed:
+def _set_tracking_episode_state(signal: dict, active: bool) -> None:
+    """Persist the edge mirror of an OPEN/closed tracker row."""
+    edge_key, state = _edge_state_for(signal)
+    desired = {"active": bool(active), "inactive_scans": 0}
+    if state != desired:
+        EDGE_SIGNAL_STATE[edge_key] = desired
         _save_signal_state()
 
+
+def mark_tracking_episode_open(signal: dict) -> None:
+    """Called after a deterministic OPEN row is committed to SQLite."""
+    _set_tracking_episode_state(signal, True)
+
+
+def mark_tracking_episode_closed(signal: dict) -> None:
+    """Called synchronously after a deterministic row becomes terminal."""
+    edge_key, state = _edge_state_for(signal)
+    was_active = bool(state.get("active"))
+    _set_tracking_episode_state(signal, False)
+    logger.info(
+        "[TRADE SIGNAL EDGE] tracking_closed key=%s was_active=%s",
+        edge_key, was_active,
+    )
 
 def cleanup_signals():
     """Hapus entri floor cooldown lewat TTL agar memori tidak tumbuh tanpa batas."""
@@ -174,8 +151,24 @@ def _signal_body_for_dedup(signal: dict) -> dict:
     return {k: v for k, v in signal.items() if k not in skip}
 
 
+def _tracking_episode_is_open(signal: dict) -> bool | None:
+    """Return tracker truth for a deterministic identity, or None on DB failure."""
+    try:
+        from engine.trading import signal_tracker
+
+        return signal_tracker.has_open_episode(
+            coin=signal.get("coin") or signal.get("symbol"),
+            setup=signal.get("setup"),
+            side=signal.get("side"),
+            source="deterministic",
+        )
+    except Exception as exc:
+        logger.warning("[TRADE SIGNAL EDGE] open tracking query failed: %s", exc)
+        return None
+
+
 def can_send_signal(key: str, signal: dict) -> bool:
-    """Gate deterministic dengan edge episode lalu floor cooldown 15 menit.
+    """Gate deterministic dispatch by its durable OPEN tracker episode and TTL.
 
     Source selain deterministic mempertahankan perilaku TTL lama agar checker/LLM
     yang berbagi gateway tidak ikut berubah.
@@ -185,7 +178,19 @@ def can_send_signal(key: str, signal: dict) -> bool:
 
     if is_deterministic:
         edge_key, state = _edge_state_for(signal)
-        if state.get("active"):
+        tracker_open = _tracking_episode_is_open(signal)
+        if tracker_open is True:
+            # DB is authoritative even if a stale state file says inactive.
+            _set_tracking_episode_state(signal, True)
+            logger.info("[TRADE SIGNAL EDGE] suppressed_same_episode key=%s", edge_key)
+            return False
+        if tracker_open is False:
+            # A persisted active bit is only a cache mirror; a missing OPEN row
+            # means the episode has ended (or the earlier tracker insert failed).
+            if state.get("active"):
+                _set_tracking_episode_state(signal, False)
+        elif state.get("active"):
+            # Fail closed when tracker truth is temporarily unavailable.
             logger.info("[TRADE SIGNAL EDGE] suppressed_same_episode key=%s", edge_key)
             return False
 
@@ -205,16 +210,12 @@ def can_send_signal(key: str, signal: dict) -> bool:
 
 
 def record_signal_sent(key: str, signal: dict):
+    """Record only the 900-second floor; OPEN-row commit owns episode state."""
     LAST_SIGNALS[key] = {
         "signal": signal,
         "time": time.time()
     }
-    if str((signal or {}).get("source") or "").lower() == "deterministic":
-        _, state = _edge_state_for(signal)
-        state["active"] = True
-        state["inactive_scans"] = 0
     _save_signal_state()
-
 
 def _bootstrap_edge_state_from_open_tracking() -> int:
     """Seed active episodes from the durable production outcome tracker.
@@ -342,9 +343,9 @@ def scan_for_signals():
             logger.warning("macro context fetch failed (degraded): %s", e)
 
     candidates = []
-    # A coin with a usable market row was evaluated this snapshot. Missing/error
-    # rows are intentionally excluded from debounce so a data outage cannot reset
-    # an episode.
+    # A coin with a usable market row was evaluated this snapshot. The set remains
+    # available to the compatibility hook, but snapshot validity never resets an
+    # OPEN tracker episode.
     observed_coins: set[str] = set()
     no_data = 0
     no_setup = 0
