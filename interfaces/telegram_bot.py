@@ -366,6 +366,7 @@ def _market_submenu_keyboard():
             ["🌅 Ringkasan Pagi", "🌙 Ringkasan Malam"],
             ["📡 Radar Market", "📡 Radar Pro"],
             ["🌐 Kondisi Global"],
+            ["🔔 Monitor Pasar"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -400,7 +401,7 @@ def _analysis_submenu_keyboard():
         [
             ["🎯 Konteks Market", "🔮 Prediksi Market"],
             ["📊 Skor Quant", "🔎 Penjelasan AI"],
-            ["📊 Performa Sinyal"],
+            ["📊 Performance"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -421,11 +422,25 @@ def _macro_submenu_keyboard():
     )
 
 
-def _alert_monitor_submenu_keyboard():
+def _market_monitor_submenu_keyboard():
     return ReplyKeyboardMarkup(
         [
             ["🚨 Cek Breakout", "📊 Cek Volume Spike"],
+            ["📍 Levels (S/R)"],
+            ["💥 Cek Big Move (snapshot)", "🔵 Cek RSI Ekstrem (snapshot)"],
             ["📌 Snapshot Market"],
+            ["⬅ Kembali"],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+    )
+
+
+def _performance_submenu_keyboard():
+    return ReplyKeyboardMarkup(
+        [
+            ["📊 Akurasi Sinyal", "📈 Kinerja Trade (RR/PF)"],
+            ["📅 Ringkasan Mingguan", "🧪 Riset Shadow E3"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -436,15 +451,33 @@ def _alert_monitor_submenu_keyboard():
 def _system_submenu_keyboard():
     return ReplyKeyboardMarkup(
         [
-            ["⚙️ Status Sistem", "🧪 Test Alert"],
-            ["📉 Near Support", "📈 Near Resistance"],
-            ["🔵 RSI Extreme", "💥 Big Move"],
-            ["🛠 Debug Market"],
+            ["⚙️ Status Sistem", "🏥 Health Sistem"],
+            ["📊 Alert Stats", "🧪 Test Alert"],
+            ["🛠 Debug Market", "🧪 Cek Promosi Shadow"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
     )
+
+
+def _set_menu_parent(context: ContextTypes.DEFAULT_TYPE, parent: str | None) -> None:
+    """Remember the active reply-keyboard level so Back can return one level."""
+    user_data = getattr(context, "user_data", None)
+    if not isinstance(user_data, dict):
+        return
+    if parent is None:
+        user_data.pop("reply_menu_parent", None)
+    else:
+        user_data["reply_menu_parent"] = parent
+
+
+def _get_menu_parent(context: ContextTypes.DEFAULT_TYPE) -> str | None:
+    user_data = getattr(context, "user_data", None)
+    if not isinstance(user_data, dict):
+        return None
+    value = user_data.get("reply_menu_parent")
+    return value if isinstance(value, str) else None
 
 
 def _build_coin_selector(prefix, coins):
@@ -474,8 +507,24 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     text = update.message.text.strip()
 
-    # ⬅ Kembali (legacy: ⬅ Back) → menu utama
+    # ⬅ Kembali (legacy: ⬅ Back) → satu level di atas untuk submenu bertingkat.
     if text in ("⬅ Kembali", "⬅ Back"):
+        parent = _get_menu_parent(context)
+        if parent == "market_monitor":
+            _set_menu_parent(context, "market")
+            await update.message.reply_text(
+                "📊 MARKET",
+                reply_markup=_market_submenu_keyboard(),
+            )
+            return
+        if parent == "performance":
+            _set_menu_parent(context, "analysis")
+            await update.message.reply_text(
+                "📈 ANALISIS",
+                reply_markup=_analysis_submenu_keyboard(),
+            )
+            return
+        _set_menu_parent(context, None)
         await update.message.reply_text(
             "Pilih menu di bawah.",
             reply_markup=_main_menu_keyboard(),
@@ -484,6 +533,7 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # 📊 Market
     if text == "📊 Market":
+        _set_menu_parent(context, "market")
         await update.message.reply_text(
             "📊 MARKET\n\n"
             "🌅 Ringkasan Pagi — Ringkasan harian\n"
@@ -492,6 +542,14 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             "📡 Radar Pro — Radar dengan label AI\n"
             "🌐 Kondisi Global — Kondisi market global",
             reply_markup=_market_submenu_keyboard(),
+        )
+        return
+    if text == "🔔 Monitor Pasar":
+        _set_menu_parent(context, "market_monitor")
+        await update.message.reply_text(
+            "🔔 MONITOR PASAR\n\n"
+            "Levels, momentum snapshot, breakout, volume spike, dan snapshot market.",
+            reply_markup=_market_monitor_submenu_keyboard(),
         )
         return
     if text == "🌅 Ringkasan Pagi":
@@ -508,6 +566,24 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     if text == "🌐 Kondisi Global":
         await marketstate_command(update, context)
+        return
+    if text == "📍 Levels (S/R)":
+        await levels_command(update, context)
+        return
+    if text == "💥 Cek Big Move (snapshot)":
+        await check_big_move_command(update, context)
+        return
+    if text == "🔵 Cek RSI Ekstrem (snapshot)":
+        await check_rsi_extreme_command(update, context)
+        return
+    if text == "🚨 Cek Breakout":
+        await check_breakout_command(update, context)
+        return
+    if text == "📊 Cek Volume Spike":
+        await check_volume_spike_command(update, context)
+        return
+    if text == "📌 Snapshot Market":
+        await snapshot_command(update, context)
         return
 
     # 💹 Trading (baru — gabungan Spot + Futures)
@@ -582,13 +658,14 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # 📈 Analisis (baru) + fallback cache lama
     if text == "📈 Analisis":
+        _set_menu_parent(context, "analysis")
         await update.message.reply_text(
             "📈 ANALISIS\n\n"
             "🎯 Konteks Market — skor kondisi market\n"
             "🔮 Prediksi Market — probabilitas bullish/bearish\n"
             "📊 Skor Quant — market strength score\n"
             "🔎 Penjelasan AI — analisa AI per coin\n"
-            "📊 Performa Sinyal — win rate signal tracking",
+            "📊 Performance — akurasi sinyal dan kinerja trade",
             reply_markup=_analysis_submenu_keyboard(),
         )
         return
@@ -615,6 +692,27 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup=kb,
         )
         return
+    if text == "📊 Performance":
+        _set_menu_parent(context, "performance")
+        await update.message.reply_text(
+            "📊 PERFORMANCE\n\n"
+            "Akurasi sinyal produksi, kinerja trade, ringkasan mingguan, dan riset Shadow E3.",
+            reply_markup=_performance_submenu_keyboard(),
+        )
+        return
+    if text == "📊 Akurasi Sinyal":
+        await signal_stats_command(update, context)
+        return
+    if text == "📈 Kinerja Trade (RR/PF)":
+        await performance_command(update, context)
+        return
+    if text == "📅 Ringkasan Mingguan":
+        await weekly_winrate_summary_command(update, context)
+        return
+    if text == "🧪 Riset Shadow E3":
+        await shadow_stats_command(update, context)
+        return
+    # Label Performance lama untuk keyboard client yang masih ter-cache.
     if text == "📊 Performa Sinyal":
         await signal_stats_command(update, context)
         return
@@ -649,29 +747,12 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await check_whale_command(update, context)
         return
 
-    # 🔔 Alert & Monitor
-    if text == "🔔 Alert & Monitor":
-        await update.message.reply_text(
-            "🔔 ALERT & MONITOR\n\n"
-            "Breakout, volume spike, dan snapshot market.",
-            reply_markup=_alert_monitor_submenu_keyboard(),
-        )
-        return
-    if text == "🚨 Cek Breakout":
-        await check_breakout_command(update, context)
-        return
-    if text == "📊 Cek Volume Spike":
-        await check_volume_spike_command(update, context)
-        return
-    if text == "📌 Snapshot Market":
-        await snapshot_command(update, context)
-        return
-
     # ⚙️ Sistem
     if text == "⚙️ Sistem":
+        _set_menu_parent(context, "system")
         await update.message.reply_text(
             "⚙️ SISTEM\n\n"
-            "Status, test alert, near support/resistance, RSI ekstrem, big move, dan debug market.",
+            "Status, health, observability alert, test, debug, dan administrasi riset.",
             reply_markup=_system_submenu_keyboard(),
         )
         return
@@ -681,9 +762,20 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text == "🧪 Test Alert":
         await testalert(update, context)
         return
+    if text == "🏥 Health Sistem":
+        await health_command(update, context)
+        return
+    if text == "📊 Alert Stats":
+        await alert_stats_command(update, context)
+        return
     if text == "🛠 Debug Market":
         await marketdebug(update, context)
         return
+    if text == "🧪 Cek Promosi Shadow":
+        await shadow_promotion_check_command(update, context)
+        return
+
+    # Tombol Sistem lama (keyboard cache) — tetap kompatibel, tetapi tidak lagi aktif.
     if text == "📉 Near Support":
         await check_near_support_command(update, context)
         return
@@ -892,7 +984,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "BTC smart signal (STRONG BUY, ACCUMULATE, HOLD, TAKE PROFIT, RISK ALERT, CRASH WARNING)\n\n"
             "📈 Analytics\n"
             "/performance\n"
-            "Statistik performa trading\n\n"
+            "Kinerja trade (RR/PF)\n\n"
+            "/signal_stats\n"
+            "Akurasi sinyal produksi (alias: /stats)\n\n"
             "⚙️ System\n"
             "/status\n"
             "Status sistem Aliza\n\n"
@@ -6493,78 +6587,57 @@ async def levels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await target.reply_text("Toleransi harus angka positif, contoh: /levels 1.5")
             return
     try:
-        await target.reply_text(_format_near_levels_section(get_coins_near_levels(tolerance), tolerance))
+        await target.reply_text(_format_near_levels_section(_near_levels_for_display(tolerance), tolerance))
     except Exception as e:
         logging.error("levels_command: %s", e, exc_info=True)
         await target.reply_text("Terjadi kesalahan saat cek level.")
 
 
-async def check_near_support_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("COMMAND RECEIVED: /check_near_support")
+def _near_levels_for_display(tolerance_pct: float = NEAR_LEVEL_DEFAULT_TOLERANCE_PCT) -> list[dict]:
+    """Single on-demand data path shared by /levels and legacy side commands."""
+    return get_coins_near_levels(tolerance_pct)
+
+
+def _format_near_levels_side(levels: list[dict], side: str, tolerance_pct: float) -> str:
+    """Present one side of the already-unified near-level result without rechecking it."""
+    is_support = side == "support"
+    label = "support" if is_support else "resistance"
+    icon = "📉" if is_support else "📈"
+    level_name = "Support" if is_support else "Resistance"
+    rows = [row for row in levels if row.get("side") == side]
+    if not rows:
+        return f"Tidak ada coin yang dekat {label} saat ini."
+    lines = [f"{icon} Near {label} (toleransi ±{float(tolerance_pct):.2f}%):", ""]
+    lines.extend(
+        f"{row['coin']} — jarak {row['distance_pct']:.2f}% | Harga {_fmt_snapshot_usd(row['price'])} | "
+        f"{level_name} {_fmt_snapshot_usd(row['level'])}"
+        for row in rows
+    )
+    return "\n".join(lines)
+
+
+async def _check_near_level_side_command(update: Update, side: str) -> None:
     target = update.effective_message
     if not target:
         return
     try:
-        snapshot = get_market_snapshot()
-        data_map = snapshot.get("data") or {}
-        hits: list[str] = []
-        for coin in sorted(data_map.keys()):
-            coin_data = data_map.get(coin)
-            if not isinstance(coin_data, dict):
-                continue
-            price = _snapshot_float(coin_data.get("price"))
-            support = _snapshot_float(coin_data.get("support"))
-            if price is None or support is None or support <= 0:
-                continue
-            if abs(price - support) / support > 0.01:
-                continue
-            jarak_pct = abs(price - support) / support * 100.0
-            hits.append(
-                f"{coin} — jarak {jarak_pct:.2f}% | Harga {_fmt_snapshot_usd(price)} | Support {_fmt_snapshot_usd(support)}"
-            )
-        if not hits:
-            await target.reply_text("Tidak ada coin yang dekat support saat ini.")
-        else:
-            await target.reply_text(
-                "📉 Near support (≤1% dari support):\n\n" + "\n".join(hits)
-            )
+        tolerance = NEAR_LEVEL_DEFAULT_TOLERANCE_PCT
+        await target.reply_text(
+            _format_near_levels_side(_near_levels_for_display(tolerance), side, tolerance)
+        )
     except Exception as e:
-        logging.error("check_near_support_command: %s", e, exc_info=True)
-        await target.reply_text("Terjadi kesalahan saat cek near support.")
+        logging.error("check_near_%s_command: %s", side, e, exc_info=True)
+        await target.reply_text(f"Terjadi kesalahan saat cek near {side}.")
+
+
+async def check_near_support_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("COMMAND RECEIVED: /check_near_support")
+    await _check_near_level_side_command(update, "support")
 
 
 async def check_near_resistance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info("COMMAND RECEIVED: /check_near_resistance")
-    target = update.effective_message
-    if not target:
-        return
-    try:
-        snapshot = get_market_snapshot()
-        data_map = snapshot.get("data") or {}
-        hits: list[str] = []
-        for coin in sorted(data_map.keys()):
-            coin_data = data_map.get(coin)
-            if not isinstance(coin_data, dict):
-                continue
-            price = _snapshot_float(coin_data.get("price"))
-            resistance = _snapshot_float(coin_data.get("resistance"))
-            if price is None or resistance is None or resistance <= 0:
-                continue
-            if abs(price - resistance) / resistance > 0.01:
-                continue
-            jarak_pct = abs(price - resistance) / resistance * 100.0
-            hits.append(
-                f"{coin} — jarak {jarak_pct:.2f}% | Harga {_fmt_snapshot_usd(price)} | Resistance {_fmt_snapshot_usd(resistance)}"
-            )
-        if not hits:
-            await target.reply_text("Tidak ada coin yang dekat resistance saat ini.")
-        else:
-            await target.reply_text(
-                "📈 Near resistance (≤1% dari resistance):\n\n" + "\n".join(hits)
-            )
-    except Exception as e:
-        logging.error("check_near_resistance_command: %s", e, exc_info=True)
-        await target.reply_text("Terjadi kesalahan saat cek near resistance.")
+    await _check_near_level_side_command(update, "resistance")
 
 
 async def check_rsi_extreme_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7333,7 +7406,13 @@ async def _post_init_set_bot_commands(application):
                 BotCommand("balance", "Lihat ringkasan akun dan risk"),
                 BotCommand("status", "Status sistem"),
                 BotCommand("levels", "Cek coin dekat support/resistance"),
+                BotCommand("performance", "Kinerja Trade (RR/PF)"),
+                BotCommand("alert_stats", "Statistik alert dan digest"),
+                BotCommand("snapshot", "Snapshot market saat ini"),
+                BotCommand("health", "Health sistem"),
+                BotCommand("weekly_winrate", "Ringkasan winrate mingguan"),
                 BotCommand("shadow_stats", "Statistik shadow E3"),
+                BotCommand("shadow_promotion_check", "Cek promosi Shadow E3"),
             ]
         )
     except Exception as e:
