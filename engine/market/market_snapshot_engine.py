@@ -28,6 +28,15 @@ from engine.market.market_universe import (
 from engine.market.market_analyzer import get_data_coverage
 
 ENRICH_HEADERS = {"User-Agent": "AlizaAI"}
+BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
+
+# Big Move compares the current snapshot price with the most recently closed
+# Binance 1h candle.  The reference changes only at a UTC hour boundary, so
+# retain it per pair until that boundary rather than adding a request to every
+# 60-second snapshot cycle.
+_one_hour_close_cache: dict[str, dict[str, float | int]] = {}
+_one_hour_close_cache_lock = Lock()
+ONE_HOUR_FAILURE_RETRY_SEC = 300
 
 
 def _get_cg_headers() -> dict:
@@ -200,6 +209,103 @@ def _enrich_collected_with_binance_24h(collected):
             pass
 
 
+def _one_hour_cache_refresh_after(now: float) -> float:
+    """First second after the next UTC 1h candle has closed."""
+    return float((int(now) // 3600 + 1) * 3600 + 1)
+
+
+def _latest_closed_1h_close(pair: str, now: float | None = None) -> float | None:
+    """Return the latest fully closed Binance 1h close, cached to its rollover.
+
+    A cache hit never makes a network call. On a miss/rollover Binance returns
+    the two latest 1h candles; the still-open candle is explicitly excluded.
+    Returning ``None`` is deliberate: callers then retain their existing
+    24-hour fallback instead of publishing a stale 1h reference.
+    """
+    now = time.time() if now is None else float(now)
+    symbol = str(pair or "").strip().upper()
+    if not symbol:
+        return None
+    with _one_hour_close_cache_lock:
+        cached = _one_hour_close_cache.get(symbol)
+        if cached and now < float(cached.get("refresh_after", 0.0)):
+            cached_close = float(cached.get("close", 0.0))
+            return cached_close if cached_close > 0 else None
+
+    def _cache_failed_lookup() -> None:
+        # Non-Binance pairs and transient outages must not be retried on each
+        # snapshot minute. A short retry also recovers faster than the 1h cache.
+        with _one_hour_close_cache_lock:
+            _one_hour_close_cache[symbol] = {
+                "close": 0.0,
+                "refresh_after": now + ONE_HOUR_FAILURE_RETRY_SEC,
+            }
+    try:
+        response = requests.get(
+            BINANCE_KLINES_URL,
+            params={"symbol": symbol, "interval": "1h", "limit": 2},
+            headers=ENRICH_HEADERS,
+            timeout=10,
+        )
+        if response.status_code != 200:
+            logging.warning("market_snapshot_engine: Binance 1h kline HTTP %s pair=%s", response.status_code, symbol)
+            _cache_failed_lookup()
+            return None
+        raw = response.json()
+    except Exception as exc:
+        logging.warning("market_snapshot_engine: Binance 1h kline fetch failed pair=%s: %s", symbol, exc)
+        _cache_failed_lookup()
+        return None
+
+    now_ms = int(now * 1000)
+    close = None
+    for candle in raw if isinstance(raw, list) else []:
+        try:
+            close_time = int(candle[6])
+            value = float(candle[4])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if close_time < now_ms and value > 0:
+            close = value
+    if close is None:
+        _cache_failed_lookup()
+        return None
+    with _one_hour_close_cache_lock:
+        _one_hour_close_cache[symbol] = {
+            "close": close,
+            "refresh_after": _one_hour_cache_refresh_after(now),
+        }
+    return close
+
+
+def _price_change_from_1h_close(price: object, reference_close: object) -> float | None:
+    """Percent change of the live snapshot price against a closed 1h reference."""
+    try:
+        current = float(price)
+        reference = float(reference_close)
+    except (TypeError, ValueError):
+        return None
+    if current <= 0 or reference <= 0:
+        return None
+    return (current / reference - 1.0) * 100.0
+
+
+def _enrich_collected_with_binance_1h(collected: dict) -> None:
+    """Write ``price_change_1h`` when a fresh closed 1h Binance reference exists."""
+    if not collected:
+        return
+    for sym, row in collected.items():
+        if not isinstance(row, dict):
+            continue
+        reference_close = _latest_closed_1h_close(f"{str(sym).strip().upper()}USDT")
+        pct = _price_change_from_1h_close(row.get("price"), reference_close)
+        if pct is not None:
+            # These names are intentionally the priority fields consumed by
+            # interfaces.telegram_bot._snapshot_big_move_pct().
+            row["price_change_1h"] = pct
+            row["price_change_pct_1h"] = pct
+
+
 def _coverage_for_symbol(symbol, data, valid, reason=None):
     payload = data.get("market_data") if isinstance(data, dict) and isinstance(data.get("market_data"), dict) else data
     coverage = payload.get("data_coverage") if isinstance(payload, dict) else None
@@ -324,6 +430,7 @@ def update_market_snapshot():
 
     if collected:
         _enrich_collected_with_binance_24h(collected)
+        _enrich_collected_with_binance_1h(collected)
         snapshot_ts = datetime.utcnow()
         market_intelligence = None
         if generate_market_intelligence is not None:
