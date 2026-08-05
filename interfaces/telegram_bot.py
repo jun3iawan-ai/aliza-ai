@@ -901,7 +901,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/marketdebug\n"
             "Debug data market\n\n"
             "/alert_stats\n"
-            "Statistik alert (terkirim/digest/skip/rate-limit)"
+            "Statistik alert (terkirim/digest/skip/rate-limit)\n\n"
+            "/levels [toleransi%]\n"
+            "Cek coin dekat support/resistance (default 1%)"
         )
         await update.message.reply_text(msg)
     except Exception as e:
@@ -5186,6 +5188,10 @@ async def morning_brief_job(context: ContextTypes.DEFAULT_TYPE):
 
     ts = get_snapshot_timestamp_str() or "—"
     ev_preview = _format_events_for_display(events_tm)
+    near_level_section = _format_near_levels_section(
+        get_coins_near_levels(snapshot=snapshot),
+        NEAR_LEVEL_DEFAULT_TOLERANCE_PCT,
+    )
 
     # Weekend liquidity warning
     from datetime import datetime as _dt
@@ -5210,6 +5216,7 @@ async def morning_brief_job(context: ContextTypes.DEFAULT_TYPE):
         + _format_macro_section_for_brief_with_data_per()
         + "\n\n" + _format_cross_asset_section()
         + "\n\n" + _format_market_intelligence_section()
+        + "\n\n" + near_level_section
         + "\n\n📅 Event besok (ringkas): "
         + ev_preview
         + weekend_warning
@@ -5326,6 +5333,10 @@ async def evening_summary_job(context: ContextTypes.DEFAULT_TYPE):
 
     ts = get_snapshot_timestamp_str() or "—"
     ev_preview = _format_events_for_display(events_tm)
+    near_level_section = _format_near_levels_section(
+        get_coins_near_levels(snapshot=snapshot),
+        NEAR_LEVEL_DEFAULT_TOLERANCE_PCT,
+    )
     brief_header = (
         "🌙 EVENING SUMMARY\n"
         f"🕒 Snapshot: {ts}\n"
@@ -5338,6 +5349,7 @@ async def evening_summary_job(context: ContextTypes.DEFAULT_TYPE):
         + _format_macro_section_for_brief_with_data_per()
         + "\n\n" + _format_cross_asset_section()
         + "\n\n" + _format_market_intelligence_section()
+        + "\n\n" + near_level_section
         + "\n\n📅 Event besok (ringkas): "
         + ev_preview
     )
@@ -6120,124 +6132,161 @@ def _fmt_snapshot_usd(v: float) -> str:
         return "$—"
 
 
-async def near_support_checker(context: ContextTypes.DEFAULT_TYPE):
-    """Cek harga dekat support (≤1%); cooldown 4 jam per (coin, near_support)."""
+def _near_level_default_tolerance_pct() -> float:
+    """Read the display/detection default without letting a bad env disable the command."""
     try:
+        value = float(os.getenv("NEAR_LEVEL_DEFAULT_TOLERANCE_PCT", "1.0"))
+        return value if value > 0 else 1.0
+    except (TypeError, ValueError):
+        return 1.0
+
+
+NEAR_LEVEL_DEFAULT_TOLERANCE_PCT = _near_level_default_tolerance_pct()
+NEAR_LEVEL_PUSH_ENABLED = os.getenv("NEAR_LEVEL_PUSH_ENABLED", "false").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+
+
+def get_coins_near_levels(tolerance_pct: float = NEAR_LEVEL_DEFAULT_TOLERANCE_PCT, snapshot: dict | None = None) -> list[dict]:
+    """Return near support/resistance rows from one snapshot without dispatching.
+
+    Passing ``snapshot`` makes this deterministic for callers/tests. The
+    eligibility rules intentionally match the pre-existing push checkers.
+    """
+    try:
+        tolerance_pct = float(tolerance_pct)
+    except (TypeError, ValueError):
+        return []
+    if tolerance_pct <= 0:
+        return []
+    if snapshot is None:
         snapshot = get_market_snapshot()
-        data_map = snapshot.get("data") or {}
-        if not data_map:
-            logging.warning("near_support_checker: empty snapshot")
-            return
-        chat_id = None
-        if context and getattr(context, "bot_data", None):
-            chat_id = context.bot_data.get("chat_id")
-        if not chat_id:
-            chat_id = DEFAULT_CHAT_ID
-        if not chat_id:
-            logging.warning("near_support_checker: no chat_id")
-            return
-        now_utc = datetime.utcnow()
-        for coin in data_map.keys():
-            if coin in ALERT_COIN_BLACKLIST:
+    data_map = snapshot.get("data") if isinstance(snapshot, dict) else None
+    if not isinstance(data_map, dict):
+        return []
+
+    tolerance = tolerance_pct / 100.0
+    rows: list[dict] = []
+    for coin in sorted(data_map):
+        if coin in ALERT_COIN_BLACKLIST:
+            continue
+        coin_data = data_map.get(coin)
+        if not isinstance(coin_data, dict):
+            continue
+        price = _snapshot_float(coin_data.get("price"))
+        support = _snapshot_float(coin_data.get("support"))
+        resistance = _snapshot_float(coin_data.get("resistance"))
+        if price is None:
+            continue
+        if support is not None and support > 0 and resistance is not None and resistance > 0:
+            if abs(resistance - support) / support < 0.02:
                 continue
-            coin_data = data_map.get(coin)
-            if not isinstance(coin_data, dict):
+        if not ngov.is_coin_snapshot_fresh(coin_data):
+            continue
+        for side, level in (("support", support), ("resistance", resistance)):
+            if level is None or level <= 0:
                 continue
-            price = _snapshot_float(coin_data.get("price"))
-            support = _snapshot_float(coin_data.get("support"))
-            if price is None or support is None or support <= 0:
+            rel = abs(price - level) / level
+            if rel >= tolerance or rel < 0.0005:
                 continue
-            resistance = _snapshot_float(coin_data.get("resistance"))
-            if resistance is not None and resistance > 0 and support > 0:
-                spread = abs(resistance - support) / support
-                if spread < 0.02:
-                    continue  # range terlalu sempit, kedua alert tidak actionable
-            rel = abs(price - support) / support
-            if rel >= 0.01 or rel < 0.0005:
-                continue
-            if not ngov.is_coin_snapshot_fresh(coin_data):
-                logging.warning("near_support_checker: skip %s — stale snapshot data", coin)
-                ngov.record_skipped_stale("near_support")
-                continue
-            jarak_pct = rel * 100.0
-            if not _snapshot_alert_allowed(coin, "near_support", now_utc):
-                continue
+            rows.append(
+                {
+                    "coin": coin,
+                    "side": side,
+                    "price": price,
+                    "level": level,
+                    "distance_pct": rel * 100.0,
+                }
+            )
+    return rows
+
+
+def _format_near_levels_section(levels: list[dict], tolerance_pct: float = NEAR_LEVEL_DEFAULT_TOLERANCE_PCT) -> str:
+    """Compact reusable text for /levels and scheduled market reports."""
+    support_rows = [row for row in levels if row.get("side") == "support"]
+    resistance_rows = [row for row in levels if row.get("side") == "resistance"]
+    lines = [f"📍 LEVEL TERDEKAT (toleransi ±{float(tolerance_pct):.2f}%)", "", "🔻 Dekat Support"]
+    if support_rows:
+        lines.extend(
+            f"• {row['coin']} — Harga {_fmt_snapshot_usd(row['price'])} | Support {_fmt_snapshot_usd(row['level'])} | Jarak {row['distance_pct']:.2f}%"
+            for row in support_rows
+        )
+    else:
+        lines.append("• Tidak ada coin dekat support saat ini.")
+    lines.extend(["", "🔺 Dekat Resistance"])
+    if resistance_rows:
+        lines.extend(
+            f"• {row['coin']} — Harga {_fmt_snapshot_usd(row['price'])} | Resistance {_fmt_snapshot_usd(row['level'])} | Jarak {row['distance_pct']:.2f}%"
+            for row in resistance_rows
+        )
+    else:
+        lines.append("• Tidak ada coin dekat resistance saat ini.")
+    if not levels:
+        lines.extend(["", "Tidak ada coin dekat level saat ini."])
+    return "\n".join(lines)
+
+
+async def _near_level_push_checker(context: ContextTypes.DEFAULT_TYPE, side: str) -> None:
+    """Keep the legacy scheduled detector, with individual push behind a flag."""
+    levels = [row for row in get_coins_near_levels() if row["side"] == side]
+    if not levels:
+        return
+    if not NEAR_LEVEL_PUSH_ENABLED:
+        logging.info("near_level_push disabled: suppressed %d %s candidate(s)", len(levels), side)
+        return
+
+    chat_id = None
+    if context and getattr(context, "bot_data", None):
+        chat_id = context.bot_data.get("chat_id")
+    if not chat_id:
+        chat_id = DEFAULT_CHAT_ID
+    if not chat_id:
+        logging.warning("near_%s_checker: no chat_id", side)
+        return
+
+    now_utc = datetime.utcnow()
+    condition = f"near_{side}"
+    for row in levels:
+        coin = row["coin"]
+        if not _snapshot_alert_allowed(coin, condition, now_utc):
+            continue
+        if side == "support":
             msg = (
                 "📉 NEAR SUPPORT ALERT\n\n"
                 f"{coin} mendekati level support!\n"
-                f"Harga: {_fmt_snapshot_usd(price)} | Support: {_fmt_snapshot_usd(support)}\n"
-                f"Jarak: {jarak_pct:.2f}%\n"
+                f"Harga: {_fmt_snapshot_usd(row['price'])} | Support: {_fmt_snapshot_usd(row['level'])}\n"
+                f"Jarak: {row['distance_pct']:.2f}%\n"
                 "💡 Potensi bounce — pantau konfirmasi bullish\n"
                 "——\n"
                 f"Aliza Engine • {_wib_now_label()}"
             )
-            ngov.queue_alert(
-                "near_support",
-                "NEAR SUPPORT",
-                f"{coin} @ {_fmt_snapshot_usd(price)} (jarak {jarak_pct:.2f}%)",
-                msg,
+            label = "NEAR SUPPORT"
+        else:
+            msg = (
+                "📈 NEAR RESISTANCE ALERT\n\n"
+                f"{coin} mendekati level resistance!\n"
+                f"Harga: {_fmt_snapshot_usd(row['price'])} | Resistance {_fmt_snapshot_usd(row['level'])}\n"
+                f"Jarak: {row['distance_pct']:.2f}%\n"
+                "💡 Potensi reversal atau breakout — siap ambil profit atau entry short\n"
+                "——\n"
+                f"Aliza Engine • {_wib_now_label()}"
             )
+            label = "NEAR RESISTANCE"
+        ngov.queue_alert(condition, label, f"{coin} @ {_fmt_snapshot_usd(row['price'])} (jarak {row['distance_pct']:.2f}%)", msg)
+
+
+async def near_support_checker(context: ContextTypes.DEFAULT_TYPE):
+    """Legacy scheduled support push; disabled by default via NEAR_LEVEL_PUSH_ENABLED."""
+    try:
+        await _near_level_push_checker(context, "support")
     except Exception as e:
         logging.error("near_support_checker: %s", e, exc_info=True)
 
 
 async def near_resistance_checker(context: ContextTypes.DEFAULT_TYPE):
-    """Cek harga dekat resistance (≤1%); cooldown 4 jam per (coin, near_resistance)."""
+    """Legacy scheduled resistance push; disabled by default via NEAR_LEVEL_PUSH_ENABLED."""
     try:
-        snapshot = get_market_snapshot()
-        data_map = snapshot.get("data") or {}
-        if not data_map:
-            logging.warning("near_resistance_checker: empty snapshot")
-            return
-        chat_id = None
-        if context and getattr(context, "bot_data", None):
-            chat_id = context.bot_data.get("chat_id")
-        if not chat_id:
-            chat_id = DEFAULT_CHAT_ID
-        if not chat_id:
-            logging.warning("near_resistance_checker: no chat_id")
-            return
-        now_utc = datetime.utcnow()
-        for coin in data_map.keys():
-            if coin in ALERT_COIN_BLACKLIST:
-                continue
-            coin_data = data_map.get(coin)
-            if not isinstance(coin_data, dict):
-                continue
-            price = _snapshot_float(coin_data.get("price"))
-            resistance = _snapshot_float(coin_data.get("resistance"))
-            if price is None or resistance is None or resistance <= 0:
-                continue
-            support = _snapshot_float(coin_data.get("support"))
-            if support is not None and support > 0 and resistance > 0:
-                spread = abs(resistance - support) / support
-                if spread < 0.02:
-                    continue  # range terlalu sempit
-            rel = abs(price - resistance) / resistance
-            if rel >= 0.01 or rel < 0.0005:
-                continue
-            if not ngov.is_coin_snapshot_fresh(coin_data):
-                logging.warning("near_resistance_checker: skip %s — stale snapshot data", coin)
-                ngov.record_skipped_stale("near_resistance")
-                continue
-            jarak_pct = rel * 100.0
-            if not _snapshot_alert_allowed(coin, "near_resistance", now_utc):
-                continue
-            msg = (
-                "📈 NEAR RESISTANCE ALERT\n\n"
-                f"{coin} mendekati level resistance!\n"
-                f"Harga: {_fmt_snapshot_usd(price)} | Resistance: {_fmt_snapshot_usd(resistance)}\n"
-                f"Jarak: {jarak_pct:.2f}%\n"
-                "💡 Potensi reversal atau breakout — siap ambil profit atau entry short\n"
-                "——\n"
-                f"Aliza Engine • {_wib_now_label()}"
-            )
-            ngov.queue_alert(
-                "near_resistance",
-                "NEAR RESISTANCE",
-                f"{coin} @ {_fmt_snapshot_usd(price)} (jarak {jarak_pct:.2f}%)",
-                msg,
-            )
+        await _near_level_push_checker(context, "resistance")
     except Exception as e:
         logging.error("near_resistance_checker: %s", e, exc_info=True)
 
@@ -6419,6 +6468,35 @@ async def alert_digest_flush_job(context: ContextTypes.DEFAULT_TYPE):
                 )
     except Exception as e:
         logging.error("alert_digest_flush_job: %s", e, exc_info=True)
+
+
+async def levels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the current near support/resistance rows without creating an alert."""
+    logging.info("COMMAND RECEIVED: /levels")
+    target = update.effective_message
+    if not target:
+        return
+    if not _authorized_chat(update):
+        await target.reply_text("⛔ Unauthorized.")
+        return
+    args = list(getattr(context, "args", None) or [])
+    if len(args) > 1:
+        await target.reply_text("Format: /levels atau /levels 1.5")
+        return
+    tolerance = NEAR_LEVEL_DEFAULT_TOLERANCE_PCT
+    if args:
+        try:
+            tolerance = float(args[0])
+            if tolerance <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            await target.reply_text("Toleransi harus angka positif, contoh: /levels 1.5")
+            return
+    try:
+        await target.reply_text(_format_near_levels_section(get_coins_near_levels(tolerance), tolerance))
+    except Exception as e:
+        logging.error("levels_command: %s", e, exc_info=True)
+        await target.reply_text("Terjadi kesalahan saat cek level.")
 
 
 async def check_near_support_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7254,6 +7332,7 @@ async def _post_init_set_bot_commands(application):
                 BotCommand("set_balance", "Set modal akun (USDT) untuk position sizing"),
                 BotCommand("balance", "Lihat ringkasan akun dan risk"),
                 BotCommand("status", "Status sistem"),
+                BotCommand("levels", "Cek coin dekat support/resistance"),
                 BotCommand("shadow_stats", "Statistik shadow E3"),
             ]
         )
@@ -7318,6 +7397,7 @@ def main():
     app.add_handler(CommandHandler("marketstate", marketstate_command))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("alert_stats", alert_stats_command))
+    app.add_handler(CommandHandler("levels", levels_command))
     app.add_handler(CommandHandler("testalert", testalert))
     app.add_handler(CommandHandler("marketdebug", marketdebug))
     app.add_handler(CommandHandler("market_context", market_context_command))

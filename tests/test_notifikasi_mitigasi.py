@@ -187,7 +187,9 @@ class FreshnessCheckTests(IsolatedAsyncioTestCase):
              patch.object(telegram_bot, "DEFAULT_CHAT_ID", "12345"):
             await telegram_bot.near_resistance_checker(ctx)
             await telegram_bot.big_move_checker(ctx)
-        self.assertEqual(ngov.pending_count(), 2)
+        # Near-level push is intentionally disabled by default; fresh data must
+        # still allow the other checker (big_move) to enqueue its alert.
+        self.assertEqual(ngov.pending_count(), 1)
 
     def test_freshness_helper_epoch_float_handles_missing_and_unparseable(self):
         # missing timestamp -> can't prove staleness -> treated as fresh
