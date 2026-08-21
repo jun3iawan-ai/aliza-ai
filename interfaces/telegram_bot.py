@@ -45,7 +45,8 @@ from engine.market.market_snapshot_engine import (
     update_market_snapshot,
 )
 from engine.market.global_market_cache import get_global_market_data
-from engine.market.breakout_detector import run_breakout_check, format_breakout_alert_message
+from engine.market.breakout_detector import run_breakout_check, format_breakout_alert_message, get_sr_levels
+from engine.market.coin_info import get_tokenomics
 from engine.market.volume_spike_detector import (
     run_volume_spike_check,
     format_volume_spike_alert_message,
@@ -367,6 +368,7 @@ def _market_submenu_keyboard():
             ["📡 Radar Market", "📡 Radar Pro"],
             ["🌐 Kondisi Global"],
             ["🔔 Monitor Pasar"],
+            ["ℹ️ Info Coin"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -566,6 +568,13 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     if text == "🌐 Kondisi Global":
         await marketstate_command(update, context)
+        return
+    if text == "ℹ️ Info Coin":
+        kb = _build_coin_selector("info", MAJOR_COINS)
+        await update.message.reply_text(
+            "ℹ️ INFO COIN\n\nPilih coin untuk melihat ringkasan Teknikal, Tokenomics, On-chain, dan Makro & Sentimen.",
+            reply_markup=kb,
+        )
         return
     if text == "📍 Levels (S/R)":
         await levels_command(update, context)
@@ -886,7 +895,7 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def coin_selector_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle inline coin selector: market, entry, close, scan, why, spot."""
+    """Handle inline coin selector: market, entry, close, scan, why, spot, info."""
     if not update.callback_query or not update.callback_query.data:
         return
     if not _authorized_chat(update):
@@ -937,6 +946,12 @@ async def coin_selector_callback(update: Update, context: ContextTypes.DEFAULT_T
         elif prefix == "spot":
             context.args = [symbol]
             await spot_command(update, context)
+        elif prefix == "info":
+            text, err = _format_info_coin_message(symbol)
+            if err:
+                await msg.reply_text(err)
+            else:
+                await msg.reply_text(text)
     except Exception as e:
         logging.error("Coin selector callback error: %s", e)
         if update.callback_query and update.callback_query.message:
@@ -1257,6 +1272,221 @@ def _get_market_report_text(symbol):
         f"Resistance : {_fmt(resistance)}\n\n"
         f"🕒 Market Snapshot : {get_snapshot_timestamp_str()}"
     )
+    return message, None
+
+
+def _info_coin_fmt_price(v) -> str:
+    """Adaptive-precision $ formatter (sama pola dengan spot_command._fmt) --
+    penting untuk coin harga sub-cent di watchlist (PEPE, BONE, dst)."""
+    if v is None:
+        return "tidak tersedia"
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return "tidak tersedia"
+    if f == 0:
+        return "$0"
+    abs_f = abs(f)
+    if abs_f >= 1000:
+        return f"${f:,.2f}"
+    if abs_f >= 1:
+        return f"${f:,.4f}"
+    if abs_f >= 0.01:
+        return f"${f:.4f}"
+    if abs_f >= 0.000001:
+        return f"${f:.8f}"
+    return f"${f:.10f}"
+
+
+def _info_coin_fmt_supply(v) -> str:
+    if v is None:
+        return "tidak tersedia"
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return "tidak tersedia"
+    return _brief_fmt_vol(f)
+
+
+def _info_coin_nearest_levels(symbol: str, price, fallback_support, fallback_resistance):
+    """
+    Pilih support/resistance untuk ditampilkan di Info Coin.
+    Prioritas: get_sr_levels() (cluster 1D, breakout_detector.py) -- pilih level
+    terdekat dari harga saat ini di tiap sisi. Fallback: support/resistance naive
+    (min/max 20 candle) dari snapshot, ditandai "(est.)" agar tidak disalahartikan
+    sebagai level cluster yang sama.
+    """
+    try:
+        levels = get_sr_levels(symbol)
+    except Exception as e:
+        logging.debug("_info_coin_nearest_levels: get_sr_levels(%s) gagal: %s", symbol, e)
+        levels = None
+
+    if isinstance(levels, dict) and levels.get("support") and levels.get("resistance"):
+        sup_list = [float(x) for x in levels["support"]]
+        res_list = [float(x) for x in levels["resistance"]]
+        try:
+            p = float(price) if price is not None else None
+        except (TypeError, ValueError):
+            p = None
+        if p is not None:
+            below = [x for x in sup_list if x <= p]
+            support = max(below) if below else max(sup_list)
+            above = [x for x in res_list if x >= p]
+            resistance = min(above) if above else min(res_list)
+        else:
+            support = max(sup_list)
+            resistance = min(res_list)
+        return support, resistance, ""
+
+    return fallback_support, fallback_resistance, " (est.)"
+
+
+def _format_info_coin_message(symbol: str):
+    """
+    Bangun pesan 'Info Coin' 4 seksi (Teknikal, Tokenomics, On-chain, Makro & Sentimen).
+
+    Display-only: HANYA membaca fungsi getter read-only yang sudah ada
+    (get_market_snapshot, get_sr_levels, get_tokenomics, get_macro_data,
+    get_global_market_data). Tidak memanggil generate_signal/process_signal/
+    signal_tracker/notification_governor/checker-alert/engine.shadow apa pun.
+
+    Return (message_text, None) atau (None, error_message).
+    """
+    symbol = (symbol or "").strip().upper()
+    if symbol not in MAJOR_COINS:
+        return None, "Coin tidak tersedia."
+
+    snapshot = get_market_snapshot()
+    data = snapshot.get("data") or {}
+    if symbol not in data:
+        return None, f"Market data tidak tersedia untuk {symbol}."
+    md = data[symbol]
+
+    # --- staleness ---
+    ts = snapshot.get("timestamp")
+    age_label = ""
+    if isinstance(ts, datetime):
+        ts_aware = ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
+        age_sec = (datetime.now(timezone.utc) - ts_aware).total_seconds()
+        age_min = max(0, int(age_sec // 60))
+        age_label = f"⏱ data {age_min} menit lalu" if age_min >= 1 else "⏱ data <1 menit lalu"
+
+    # --- TEKNIKAL ---
+    price = md.get("price")
+    pct_24h = md.get("price_change_percentage_24h")
+    pct_1h = md.get("price_change_1h")
+    trend = md.get("trend") or "—"
+    trend_4h = md.get("trend_4h") or "—"
+    trend_1d = md.get("trend_1d") or "—"
+    alignment = md.get("trend_alignment") or "—"
+    rsi = md.get("rsi")
+    ma20, ma50, ma200 = md.get("ma20"), md.get("ma50"), md.get("ma200")
+    volume_24h = md.get("volume_24h")
+
+    # Trend "SIDEWAYS" diam-diam karena data MA kurang (bukan sideways sungguhan) --
+    # lihat market_analyzer.py: fallback silent ke SIDEWAYS saat ma50/ma200 dan
+    # ma20/ma50 sama-sama tidak tersedia.
+    trend_label = str(trend)
+    if str(trend).strip().upper() == "SIDEWAYS":
+        ma_pair_1 = bool(ma50) and bool(ma200)
+        ma_pair_2 = bool(ma20) and bool(ma50)
+        if not ma_pair_1 and not ma_pair_2:
+            trend_label = f"{trend} (data terbatas)"
+
+    fallback_support = md.get("support")
+    fallback_resistance = md.get("resistance")
+    support, resistance, sr_tag = _info_coin_nearest_levels(symbol, price, fallback_support, fallback_resistance)
+
+    rsi_str = f"{float(rsi):.1f}" if rsi is not None else "tidak tersedia"
+    ma_str = (
+        f"{_info_coin_fmt_price(ma20)} / {_info_coin_fmt_price(ma50)} / {_info_coin_fmt_price(ma200)}"
+        if any(v is not None for v in (ma20, ma50, ma200))
+        else "tidak tersedia"
+    )
+    vol_str = f"${_brief_fmt_vol(volume_24h)}" if volume_24h is not None else "tidak tersedia"
+
+    teknikal = (
+        f"━ 📈 TEKNIKAL\n"
+        f"Harga: {_info_coin_fmt_price(price)} (24h: {_brief_fmt_pct(pct_24h)} | 1h: {_brief_fmt_pct(pct_1h)})\n"
+        f"Tren: {trend_label} (4H: {trend_4h} | 1D: {trend_1d} | Align: {alignment})\n"
+        f"RSI-14: {rsi_str}\n"
+        f"SMA20/50/200: {ma_str}\n"
+        f"Support: {_info_coin_fmt_price(support)}{sr_tag} | Resistance: {_info_coin_fmt_price(resistance)}{sr_tag}\n"
+        f"Volume 24h: {vol_str}"
+    )
+
+    # --- TOKENOMICS ---
+    try:
+        tok = get_tokenomics(symbol)
+    except Exception as e:
+        logging.warning("_format_info_coin_message: get_tokenomics(%s) gagal: %s", symbol, e)
+        tok = {"status": "unavailable", "message": "tokenomics: exception saat fetch"}
+
+    if tok.get("status") == "ok":
+        mcap = tok.get("market_cap")
+        fdv = tok.get("fully_diluted_valuation")
+        rank = tok.get("market_cap_rank")
+        circ = tok.get("circulating_supply")
+        total = tok.get("total_supply")
+        maxs = tok.get("max_supply")
+        mcap_str = f"${_brief_fmt_vol(mcap)}" if mcap is not None else "tidak tersedia"
+        fdv_str = f"${_brief_fmt_vol(fdv)}" if fdv is not None else "tidak tersedia"
+        rank_str = f"#{int(rank)}" if rank is not None else "—"
+        circ_str = _info_coin_fmt_supply(circ) if circ is not None else "tidak tersedia"
+        total_str = _info_coin_fmt_supply(total) if total is not None else "tidak tersedia"
+        max_str = _info_coin_fmt_supply(maxs) if maxs is not None else "∞ (tanpa batas)"
+        tokenomics = (
+            f"━ 🪙 TOKENOMICS\n"
+            f"MCap: {mcap_str} (rank {rank_str}) | FDV: {fdv_str}\n"
+            f"Supply: {circ_str} beredar / {total_str} total / {max_str} max"
+        )
+    else:
+        tokenomics = "━ 🪙 TOKENOMICS\nTokenomics: tidak tersedia saat ini."
+
+    # --- ON-CHAIN ---
+    whale = md.get("whale_activity") or "UNKNOWN"
+    onchain = (
+        f"━ ⛓️ ON-CHAIN\n"
+        f"Whale (market-wide): {whale} ⚠️ proxy transaksi besar BTC — bukan spesifik {symbol}\n"
+        f"Netflow & aktivitas jaringan: belum tersedia"
+    )
+
+    # --- MAKRO & SENTIMEN ---
+    try:
+        fed = get_macro_data("FEDFUNDS", "latest")
+    except Exception as e:
+        logging.warning("_format_info_coin_message: get_macro_data(FEDFUNDS) gagal: %s", e)
+        fed = None
+    if fed and fed.get("value") is not None:
+        fed_str = f"Fed Funds Rate: {fed['value']:.2f}% (FRED, per {fed.get('date', '—')})"
+    else:
+        fed_str = "Fed Funds Rate: tidak tersedia (FRED_API_KEY belum dikonfigurasi atau fetch gagal)"
+
+    gd = get_global_market_data() or {}
+    dominance = gd.get("btc_dominance")
+    dominance_status = gd.get("btc_dominance_status", "ok")
+    fg = gd.get("fear_greed")
+    fg_status = gd.get("fear_greed_status", "ok")
+    dominance_str = (
+        f"{dominance:.2f}%" if dominance is not None else "tidak tersedia"
+    )
+    if dominance_status == "failed":
+        dominance_str += " (fetch gagal, nilai default)"
+    fg_str = f"{fg:.0f} ({_fear_greed_label(fg)})" if fg is not None else "tidak tersedia"
+    if fg_status == "failed":
+        fg_str += " (fetch gagal, nilai default)"
+
+    makro = (
+        f"━ 🌍 MAKRO & SENTIMEN\n"
+        f"{fed_str}\n"
+        f"BTC Dominance: {dominance_str} | Fear & Greed: {fg_str}"
+    )
+
+    header = f"ℹ️ INFO COIN — {symbol}"
+    footer = age_label or f"🕒 Market Snapshot : {get_snapshot_timestamp_str()}"
+
+    message = "\n".join([header, teknikal, tokenomics, onchain, makro, footer])
     return message, None
 
 
@@ -6156,6 +6386,7 @@ async def check_whale_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                 f"{coin} Pressure: {whale_pressure} | Accum: {accum_label} | RSI: {rsi_label} | Trend: {trend}"
             )
         lines.append("")
+        lines.append("⚠️ Kolom Pressure berbasis proksi transaksi besar BTC (market-wide), bukan data per-coin.")
         lines.append(f"⏰ {_wib_now_label()}")
         await target.reply_text("\n".join(lines))
     except Exception as e:
