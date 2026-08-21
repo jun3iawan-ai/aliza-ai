@@ -24,6 +24,8 @@ TIMEOUT = 12
 _cache = {
     "fear_greed": 50.0,
     "btc_dominance": 50.0,
+    "fear_greed_status": "ok",
+    "btc_dominance_status": "ok",
     "timestamp": 0.0,
 }
 _lock = threading.Lock()
@@ -39,16 +41,21 @@ def _safe_float(val, default=None):
 
 
 def _fetch_fear_greed():
-    """Fetch Fear & Greed Index from API. Returns float, default 50."""
+    """Fetch Fear & Greed Index from API. Returns (value, status) -- value defaults
+    to 50.0 on failure for backward compatibility with existing consumers that
+    only read the number; status ("ok"/"failed") lets callers that care (e.g.
+    the Info Coin display) distinguish a real 50 from "fetch gagal, ini default"."""
     try:
         r = requests.get(FEAR_GREED_URL, headers=HEADERS, timeout=TIMEOUT)
         if r.status_code == 200:
             d = r.json()
             v = (d.get("data") or [{}])[0].get("value")
-            return _safe_float(v, 50.0)
+            val = _safe_float(v, None)
+            if val is not None:
+                return val, "ok"
     except Exception as e:
         logging.debug("global_market_cache: fear_greed fetch failed: %s", e)
-    return 50.0
+    return 50.0, "failed"
 
 
 def _fetch_btc_dominance_coingecko():
@@ -104,26 +111,30 @@ def _fetch_btc_dominance_fallback():
 
 
 def _fetch_btc_dominance():
-    """Fetch BTC dominance: CoinGecko first, then CoinPaprika if rate-limited or parse error."""
+    """Fetch BTC dominance: CoinGecko first, then CoinPaprika if rate-limited or
+    parse error. Returns (value, status) -- value defaults to 50.0 on failure for
+    backward compatibility; status ("ok"/"failed") is additive, see _fetch_fear_greed."""
     try:
         val = _fetch_btc_dominance_coingecko()
         if val is not None:
-            return val
+            return val, "ok"
     except Exception as e:
         logging.warning("global_market_cache: CoinGecko dominance exception: %s", e)
     val_fb = _fetch_btc_dominance_fallback()
     if val_fb is not None:
-        return val_fb
+        return val_fb, "ok"
     logging.warning("global_market_cache: btc_dominance unavailable — using default 50.0")
-    return 50.0
+    return 50.0, "failed"
 
 
 def _refresh():
     """Update cache from APIs. Caller must hold _lock or call via get_global_market_data."""
-    fear_greed = _fetch_fear_greed()
-    btc_dominance = _fetch_btc_dominance()
+    fear_greed, fear_greed_status = _fetch_fear_greed()
+    btc_dominance, btc_dominance_status = _fetch_btc_dominance()
     _cache["fear_greed"] = fear_greed
     _cache["btc_dominance"] = btc_dominance
+    _cache["fear_greed_status"] = fear_greed_status
+    _cache["btc_dominance_status"] = btc_dominance_status
     _cache["timestamp"] = time.time()
 
 
@@ -131,7 +142,9 @@ def get_global_market_data():
     """
     Return cached fear_greed, btc_dominance, and timestamp.
     Refreshes from API if cache is empty or older than CACHE_REFRESH_INTERVAL.
-    Returns dict: fear_greed (float), btc_dominance (float), timestamp (float).
+    Returns dict: fear_greed (float), btc_dominance (float), timestamp (float),
+    plus fear_greed_status / btc_dominance_status ("ok"/"failed") -- additive,
+    existing consumers that only read the numeric fields are unaffected.
     """
     now = time.time()
     with _lock:
@@ -140,5 +153,7 @@ def get_global_market_data():
         return {
             "fear_greed": _cache["fear_greed"],
             "btc_dominance": _cache["btc_dominance"],
+            "fear_greed_status": _cache.get("fear_greed_status", "ok"),
+            "btc_dominance_status": _cache.get("btc_dominance_status", "ok"),
             "timestamp": _cache["timestamp"],
         }
