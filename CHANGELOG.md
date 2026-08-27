@@ -4,6 +4,10 @@ Changelog ini dimulai dari checkpoint Git nyata pada 21 Juli 2026. Repo memiliki
 
 ## [Unreleased]
 
+### 2026-08-27
+
+- `0370c42` — Perapian dokumentasi (`docs/beres-beres`): perbaiki peringatan basi di `docs/runbooks/deploy-restart-rollback.md` yang masih menyebut `scripts/deploy/deploy.sh` "belum aman" (path `/home/ubuntu/aliza-ai`, restart `aliza-api`) — sudah tidak benar sejak `aded2b3` (21 Juli 2026); paragraf diganti dengan deskripsi akurat script saat ini (path `/opt/aliza-ai`, precheck worktree bersih + branch `main`, `git pull --ff-only`, hanya restart `aliza-telegram`, verifikasi `systemctl is-active`). Runbook lain (`graceful-shutdown.md`, `health-check.md`, `smoke-test.md`, `troubleshooting.md`) dicek terhadap kode aktual dan masih akurat, tidak diubah. Memindahkan 18 file `.md` report/audit fitur pasca-maintenance 21 Juli yang sebelumnya untracked di root repo ke folder bertanggal di `docs/reports/` (`2026-07-21-post-maintenance/`, `2026-07-25-evaluasi-winrate/`, `2026-07-27-signal-rearm/`, `2026-08-05-signal-fixes/`, `2026-08-05-telegram-menu-restructure/`, `2026-08-21-info-coin/`, `2026-08-27-vps-health-shadow-e3/`), lihat `BERES_BERES_REPORT.md` untuk detail pemetaan path lama → baru. Salinan identik di `AlizaAI-Crypto/01-hasil-audit-codex/` tidak disentuh.
+
 ### 2026-07-21
 
 - `6e54996` — Memindahkan dokumentasi ke `agent-rules/`, `architecture/`, `runbooks/`, dan `audits/` dengan rename 100%; tahap isi berikutnya menggabungkan playbook debug, memecah panduan test, dan memperbarui indeks.
