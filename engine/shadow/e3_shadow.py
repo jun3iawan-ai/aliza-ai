@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections import Counter
 from datetime import datetime, timezone
 from threading import Lock
 from typing import Any
@@ -92,13 +93,33 @@ def _closed_4h_klines(symbol: str) -> list[dict[str, float | int]]:
     return list(rows)
 
 
-def build_shadow_signal(symbol: str, market_data: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Build E3 levels from an already-produced market snapshot row."""
+def build_shadow_signal(
+    symbol: str,
+    market_data: dict[str, Any],
+    rows: list[dict[str, Any]],
+    counters: Counter[str] | None = None,
+) -> dict[str, Any] | None:
+    """Build E3 levels from an already-produced market snapshot row.
+
+    ``counters`` is purely observational bookkeeping for
+    ``collect_shadow_signals`` (see below): when provided, exactly one bucket
+    is incremented per call — matching whichever gate caused this call to
+    return ``None``, or ``"success"`` when a candidate is produced. Passing
+    it (or not) never changes the return value or any decision logic; it is
+    a no-op side channel for logging/metrics only.
+    """
+
+    def _stop(reason: str) -> None:
+        if counters is not None:
+            counters[reason] += 1
+
     if not isinstance(market_data, dict) or len(rows or []) < 15:
+        _stop("insufficient_rows")
         return None
     atr_values = average_true_range(rows, 14)
     atr = atr_values[-1] if atr_values else None
     if atr is None or float(atr) <= 0:
+        _stop("atr_invalid")
         return None
     data = dict(market_data)
     data["symbol"] = symbol
@@ -106,17 +127,21 @@ def build_shadow_signal(symbol: str, market_data: dict[str, Any], rows: list[dic
         signal = TradingBrain().analyze(data)
     except Exception as exc:  # noqa: BLE001
         logger.warning("shadow_e3 TradingBrain failed coin=%s: %s", symbol, exc)
+        _stop("trading_brain_exception")
         return None
     if not signal or signal.get("setup") in (None, "NO SETUP"):
+        _stop("no_setup")
         return None
     setup = str(signal.get("setup"))
     entry = float(signal.get("entry") or data.get("price"))
     side = str(signal.get("side") or "").upper()
     if side not in {"LONG", "SHORT"} or entry <= 0:
+        _stop("invalid_side_entry")
         return None
     if setup == "OVERSOLD BOUNCE":
         support = data.get("support")
         if support is None or entry > float(support) * 1.01:
+            _stop("support_filter_reject")
             return None
     distance = float(atr)
     signal["coin"] = str(symbol).upper().replace("USDT", "")
@@ -130,6 +155,7 @@ def build_shadow_signal(symbol: str, market_data: dict[str, Any], rows: list[dic
     signal["dispatch_status"] = "RECORDED"
     signal["signal_time"] = datetime.now(timezone.utc).isoformat()
     signal["regime"] = str(data.get("market_regime") or data.get("regime") or "UNKNOWN")
+    _stop("success")
     return signal
 
 
@@ -137,12 +163,35 @@ def collect_shadow_signals(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     if not enabled():
         return []
     rows_by_coin: list[dict[str, Any]] = []
+    # Per-cycle, per-reason breakdown of why each coin did/didn't produce a
+    # candidate this cycle. Purely in-memory, reset on every call (local
+    # variable) — never persisted, never changes candidate generation.
+    counters: Counter[str] = Counter()
+    total_processed = 0
     for symbol, market_data in (snapshot.get("data") or {}).items():
+        total_processed += 1
         rows = _closed_4h_klines(symbol)
-        signal = build_shadow_signal(symbol, market_data, rows)
+        signal = build_shadow_signal(symbol, market_data, rows, counters=counters)
         if signal:
             rows_by_coin.append(signal)
-    logger.info("shadow_e3 candidates=%d", len(rows_by_coin))
+    breakdown_total = sum(counters.values())
+    assert breakdown_total == total_processed, (
+        "shadow_e3 observability breakdown mismatch: breakdown_total=%d "
+        "total_processed=%d counters=%s" % (breakdown_total, total_processed, dict(counters))
+    )
+    logger.info(
+        "shadow_e3 candidates=%d (success=%d, no_setup=%d, atr_invalid=%d, "
+        "insufficient_rows=%d, invalid_side_entry=%d, support_filter_reject=%d, "
+        "trading_brain_exception=%d)",
+        len(rows_by_coin),
+        counters.get("success", 0),
+        counters.get("no_setup", 0),
+        counters.get("atr_invalid", 0),
+        counters.get("insufficient_rows", 0),
+        counters.get("invalid_side_entry", 0),
+        counters.get("support_filter_reject", 0),
+        counters.get("trading_brain_exception", 0),
+    )
     return rows_by_coin
 
 

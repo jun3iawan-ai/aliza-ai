@@ -10,6 +10,65 @@ Konteks: `FASE4_REPORT.md` mendefinisikan kriteria promosi shadow_e3 → produks
 
 ---
 
+## Update Kebijakan (27 Agustus 2026) — Evaluasi Berbasis Jumlah Outcome, Bukan Tanggal Kalender
+
+**Perubahan:** Kriteria "kapan boleh mengevaluasi promosi shadow_e3 → produksi" diubah dari **tanggal kalender tetap** (sebelumnya diperkirakan sekitar **1 September 2026**, mengikuti estimasi "≥6 minggu sejak aktivasi" di `FASE4_REPORT.md`) menjadi **murni jumlah outcome closed (≥60 outcome)**, **tanpa batas tanggal keras**.
+
+**Alasan:** `docs/reports/2026-08-27-vps-health-shadow-e3/SHADOW_E3_STAGNATION_REPORT.md` membuktikan bahwa shadow_e3 hanya menghasilkan kandidat saat `market_regime` global (dihitung dari BTC saja) berstatus `RANGE` atau `DOWNTREND` (lihat bagian "Limitasi Desain" di bawah). Regime `TREND` bisa bertahan berminggu-minggu tanpa kepastian durasi — laporan itu mendokumentasikan BTC memasuki regime `TREND` sejak sekitar 18-20 Agustus 2026 dan bertahan hingga tanggal laporan (27 Agustus 2026), menyebabkan `shadow_e3 candidates=0` selama 9+ hari/11.340 siklus berturut-turut, murni karena mekanisme desain — bukan bug. Selama regime `TREND` berlangsung, jumlah outcome closed shadow_e3 (28 outcome per 27 Agustus 2026) berhenti bertambah sama sekali, sehingga menjadwalkan evaluasi pada tanggal kalender tetap (1 September 2026) berisiko memaksa keputusan promosi/tidak-promosi dengan sampel yang masih jauh dari ambang statistik (≥60 outcome) semata-mata karena kondisi pasar sedang tidak kooperatif dengan strategi ini — bukan karena performanya sudah cukup teruji.
+
+**Kebijakan baru:** Evaluasi promosi shadow_e3 dilakukan setelah `signal_tracking` mencatat **≥60 outcome closed dengan `source='shadow_e3'`**, kapan pun itu tercapai — tidak ada lagi target tanggal tetap. Command `/shadow_promotion_check` (`engine/shadow/promotion_criteria.py`, tidak diubah oleh kebijakan ini) tetap bisa dijalankan kapan saja sebagai pantauan progres read-only; hasil "BELUM MEMENUHI" karena N belum cukup **bukan alasan untuk mempercepat keputusan**, dan sebaliknya, berlalunya tanggal 1 September 2026 **bukan lagi sinyal bahwa evaluasi "harus" dilakukan**. Kriteria numerik lain — expectancy >+0,3%/trade, profit factor >1,2, batas bawah bootstrap CI95 >−0,1%, tidak ada satu coin mendominasi >50% kontribusi profit — tetap seperti sebelumnya (lihat "Item Implementasi" di atas); hanya mekanisme "kapan boleh/harus dievaluasi" yang berubah, dari tanggal ke jumlah outcome.
+
+## Limitasi Desain shadow_e3 — Hanya Aktif Saat Regime RANGE/DOWNTREND
+
+shadow_e3 (`engine/shadow/e3_shadow.py`) secara struktural **hanya bisa menghasilkan kandidat setup `OVERSOLD BOUNCE` atau `OVERBOUGHT REJECTION`** — satu-satunya dua setup yang pernah tercatat di `signal_tracking` untuk `source='shadow_e3'` sepanjang sejarahnya. Kedua setup ini difilter oleh `engine/strategy/strategy_regime_map.py`:
+
+```python
+STRATEGY_MAP = {
+    "TREND": [
+        "PULLBACK LONG",
+        "PULLBACK SHORT",
+        "MOMENTUM LONG",
+        "MOMENTUM SHORT",
+        "BREAKOUT LONG",
+    ],
+    "RANGE": [
+        "OVERSOLD BOUNCE",
+        "OVERBOUGHT REJECTION",
+    ],
+    "DOWNTREND": [
+        "PULLBACK SHORT",
+        "OVERBOUGHT REJECTION",
+    ],
+    "VOLATILE": [],
+}
+```
+
+`OVERSOLD BOUNCE` dan `OVERBOUGHT REJECTION` **hanya diizinkan saat `market_regime` adalah `RANGE` (keduanya) atau `DOWNTREND` (khusus `OVERBOUGHT REJECTION`)**. Saat regime `TREND` atau `VOLATILE`, kedua setup ini diblokir total — apa pun RSI/alignment per-coin.
+
+`market_regime` sendiri dihitung **market-wide dari data BTC saja** (bukan per-coin), oleh `engine/intelligence/market_regime_detector.py`:
+
+```python
+if trend == "BULLISH" and rsi > 60:
+    return {"market_regime": "TREND"}
+if trend == "SIDEWAYS" and 40 <= rsi <= 60:
+    return {"market_regime": "RANGE"}
+if trend == "BEARISH" and rsi < 40:
+    return {"market_regime": "DOWNTREND"}
+
+# Fallback by trend
+if trend == "BULLISH":
+    return {"market_regime": "TREND"}
+if trend == "BEARISH":
+    return {"market_regime": "DOWNTREND"}
+return {"market_regime": "RANGE"}
+```
+
+**Implikasi:** selama BTC berada dalam tren bullish kuat berkelanjutan (`trend="BULLISH"`), regime global langsung `TREND`, dan shadow_e3 **akan senyap total untuk seluruh watchlist sekaligus** (21 coin), terlepas dari RSI masing-masing altcoin — berapa pun lama tren BTC itu berlangsung. **Ini BUKAN indikasi kegagalan sistem, bug, atau regresi kode** — ini adalah mekanisme desain yang sudah ada sejak sebelum shadow_e3 dibuat dan tidak berubah sejak deploy-nya (21 Juli 2026). Strategi ini bisa diam berminggu-minggu murni menunggu regime pasar berpindah ke `RANGE`/`DOWNTREND`; jangan menafsirkan `candidates=0` yang berkepanjangan sebagai masalah yang perlu diperbaiki tanpa mengecek regime pasar terlebih dahulu.
+
+**Bukti pendukung lengkap:** lihat investigasi penuh di `docs/reports/2026-08-27-vps-health-shadow-e3/SHADOW_E3_STAGNATION_REPORT.md` — reproduksi live 27 Agustus 2026 mengonfirmasi mekanisme ini bekerja persis seperti dijelaskan; 11.340 baris log berturut-turut `candidates=0` antara 20-27 Agustus 2026, nihil exception, nihil perubahan kode di seluruh rantai dependency sejak sebelum shadow_e3 dibuat.
+
+---
+
 ## Langkah 0 — Diagnosis & Keputusan
 
 ### 0.1 Metodologi bootstrap CI — pendekatan yang dipilih & keterbatasannya
@@ -264,7 +323,7 @@ Keputusan promosi tetap manual — command ini tidak mengubah apa pun.
 
 1. Review ambang `BOOTSTRAP_MIN_N=10` — kalau user ingin lebih konservatif (mis. 20-30, mendekati ambang "sampel kecil" `backtest/metrics.py::aggregate_metrics()` yang pakai N<30), mudah diubah (satu konstanta).
 2. Definisi "kontribusi profit per coin" (Langkah 0.2) adalah interpretasi baru penulis laporan ini karena tidak ada rumus resmi sebelumnya — worth dikonfirmasi ke user apakah definisi ini (share dari total PnL positif) sesuai maksud aslinya, atau user punya definisi lain di pikiran.
-3. Command ini akan sering melaporkan "BELUM MEMENUHI" untuk beberapa minggu ke depan (sesuai perkiraan `FASE4_REPORT.md`: observasi ≥6 minggu berakhir sekitar 1 September 2026) — ini perilaku yang diharapkan, bukan bug.
+3. Command ini akan sering melaporkan "BELUM MEMENUHI" untuk jangka waktu yang tidak pasti — **bukan lagi dibatasi target tanggal 1 September 2026** (estimasi awal dari `FASE4_REPORT.md`, kini digantikan kebijakan berbasis outcome; lihat "Update Kebijakan (27 Agustus 2026)" di atas). Jumlah outcome closed shadow_e3 berhenti bertambah sama sekali selama regime pasar `TREND` berlangsung (lihat "Limitasi Desain" di atas dan `SHADOW_E3_STAGNATION_REPORT.md`) — ini perilaku yang diharapkan, bukan bug.
 
 ---
 
