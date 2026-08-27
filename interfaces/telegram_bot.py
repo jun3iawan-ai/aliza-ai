@@ -209,6 +209,15 @@ IS_PRIMARY_DISPATCHER = os.getenv("IS_PRIMARY_DISPATCHER", "true").strip().lower
 DEFAULT_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 _bot_instance = None
 _dispatch_semaphore = asyncio.Semaphore(5)
+
+# Telegram sendMessage hard limit is 4096 chars per message (see
+# https://core.telegram.org/bots/api#sendmessage). Long content (e.g.
+# morning_brief/evening_summary headers or LLM-generated analysis text
+# covering many coins) is split across multiple sequential messages by
+# dispatch_alert_message() below instead of failing with "Message is too
+# long" — see MESSAGE_TOO_LONG_FIX_REPORT.md for root-cause details.
+TELEGRAM_MESSAGE_LIMIT = 4096
+_PART_SUFFIX_RESERVE = 32  # headroom reserved for the "[lanjutan i/n]" suffix
 _calendar_reminder_last_sent: dict[str, datetime] = {}
 # NOTE: cooldown state for near_support/near_resistance/rsi/big_move/whale/
 # volume_spike/breakout/funding used to live in plain in-memory dicts here
@@ -284,8 +293,52 @@ def get_bot() -> Bot:
     return _bot_instance
 
 
+def _split_message_for_telegram(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
+    """Split `text` into chunks that fit Telegram's sendMessage limit.
+
+    Returns [text] unchanged (no suffix added) when it already fits in a
+    single message — this keeps the common case byte-for-byte identical to
+    the pre-fix behavior. When splitting is needed, chunks are cut on the
+    best available boundary (paragraph, then line, then word — hard cut
+    only as a last resort) so a sentence or emoji is not sliced mid-way,
+    and each part gets a "[lanjutan i/n]" suffix so the reader knows more
+    is coming.
+    """
+    if not text or len(text) <= limit:
+        return [text]
+
+    effective_limit = max(1, limit - _PART_SUFFIX_RESERVE)
+    raw_chunks: list[str] = []
+    remaining = text
+    while len(remaining) > effective_limit:
+        window = remaining[:effective_limit]
+        split_at = None
+        for sep in ("\n\n", "\n", " "):
+            idx = window.rfind(sep)
+            if idx > 0:
+                split_at = idx
+                break
+        if split_at is None:
+            split_at = effective_limit  # no natural boundary found — hard cut
+        raw_chunks.append(remaining[:split_at].rstrip())
+        remaining = remaining[split_at:].lstrip("\n ")
+    if remaining:
+        raw_chunks.append(remaining)
+
+    total = len(raw_chunks)
+    if total <= 1:
+        return raw_chunks or [text]
+    return [f"{chunk}\n\n[lanjutan {i}/{total}]" for i, chunk in enumerate(raw_chunks, start=1)]
+
+
 async def dispatch_alert_message(message: str, chat_id: int | str | None = None, force: bool = False) -> bool:
-    """Centralized Telegram dispatcher (single source of truth)."""
+    """Centralized Telegram dispatcher (single source of truth).
+
+    Messages longer than Telegram's 4096-char sendMessage limit are split
+    into multiple sequential messages via _split_message_for_telegram()
+    instead of raising "Message is too long" — see
+    MESSAGE_TOO_LONG_FIX_REPORT.md.
+    """
     if not IS_PRIMARY_DISPATCHER:
         logging.info("ALERT DISPATCH SKIPPED (NON-PRIMARY INSTANCE)")
         return False
@@ -300,8 +353,16 @@ async def dispatch_alert_message(message: str, chat_id: int | str | None = None,
     if not target_chat_id:
         raise RuntimeError("CHAT_ID NOT SET")
 
-    await bot.send_message(chat_id=target_chat_id, text=message)
-    logging.info("ALERT DISPATCHED via CENTRAL GATEWAY")
+    parts = _split_message_for_telegram(message)
+    for part in parts:
+        await bot.send_message(chat_id=target_chat_id, text=part)
+    if len(parts) > 1:
+        logging.info(
+            "ALERT DISPATCHED via CENTRAL GATEWAY (%d parts, %d chars total)",
+            len(parts), len(message),
+        )
+    else:
+        logging.info("ALERT DISPATCHED via CENTRAL GATEWAY")
     return True
 
 
