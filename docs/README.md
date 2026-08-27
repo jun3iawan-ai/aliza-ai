@@ -10,7 +10,7 @@ Folder `docs/` adalah sumber kanonik dokumentasi manusia. Struktur memisahkan at
 | [agent-rules/runtime/](agent-rules/runtime/) | current | System prompt, persona, routing, dan aturan output runtime LLM. |
 | [architecture/](architecture/) | current | Overview sistem, engine contracts, position sizing, dan strategi testing. |
 | [runbooks/](runbooks/) | current | Health check, troubleshooting, smoke test, deploy/restart/rollback, dan graceful shutdown. |
-| [reports/](reports/) | historical, canonical | Report fase, eksperimen, robustness, serta maintenance bertanggal. |
+| [reports/](reports/) | historical (fase/maintenance) + current (fitur pasca-maintenance) | Report fase, eksperimen, robustness, maintenance bertanggal, serta report audit/deploy fitur pasca-maintenance 21 Juli 2026 (current, belum superseded). |
 | [audits/](audits/) | historical/superseded | Audit sistem/security dan raw evidence yang dipertahankan sebagai audit trail. |
 
 Folder lama `docs/cursor-ai/`, `docs/instructions/`, dan `docs/audit/` sudah digantikan oleh struktur di atas dan tidak boleh dibuat kembali.
@@ -52,6 +52,16 @@ Folder lama `docs/cursor-ai/`, `docs/instructions/`, dan `docs/audit/` sudah dig
 - [Fase 3](reports/phases/2026-07-21/fase-3/): eksperimen dan holdout.
 - [Fase 4](reports/phases/2026-07-21/fase-4/): robustness E3 dan shadow mode.
 - [Maintenance 21 Juli](reports/2026-07-21-maintenance/): VPS health, cleanup, shutdown, dan audit/perapian dokumentasi.
+
+### Report fitur pasca-maintenance (current)
+
+- [21 Juli — deploy pasca-maintenance](reports/2026-07-21-post-maintenance/): audit & deploy fitur berita, evening summary, notifikasi, dan merge/push fix `deploy.sh` (commit `aded2b3`).
+- [25 Juli — evaluasi & winrate](reports/2026-07-25-evaluasi-winrate/): audit mekanisme evaluasi/pembelajaran dan status winrate sinyal.
+- [27 Juli — signal re-arm](reports/2026-07-27-signal-rearm/): audit re-fire `[TRADE SIGNAL]` dan implementasi edge-triggered re-arm.
+- [5 Agustus — perbaikan sinyal](reports/2026-08-05-signal-fixes/): evaluasi big-move alert, near-level on-demand, dan fix big-move 1h sungguhan.
+- [5 Agustus — restrukturisasi menu Telegram](reports/2026-08-05-telegram-menu-restructure/): audit menu lengkap dan restrukturisasi menu Telegram.
+- [21 Agustus — Info Coin](reports/2026-08-21-info-coin/): audit menu informasi dan implementasi Info Coin Paket 1.
+- [27 Agustus — VPS health & shadow E3](reports/2026-08-27-vps-health-shadow-e3/): VPS health report #2 dan investigasi stagnasi shadow_e3.
 
 ## Audit historis
 

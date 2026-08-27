@@ -1,6 +1,6 @@
 # Deploy, Restart, dan Rollback aliza-telegram
 
-Runbook manual ini authoritative untuk deployment di `/opt/aliza-ai`. Script `scripts/deploy/deploy.sh` belum aman digunakan: pada verifikasi 2026-07-21 script masih melakukan `cd /home/ubuntu/aliza-ai`, menjalankan `git pull origin main`, dan me-restart `aliza-api` serta `aliza-telegram`. Jangan jalankan script tersebut sampai diperbaiki dan direview.
+Runbook manual ini authoritative untuk deployment di `/opt/aliza-ai`. Sejak commit `aded2b3` ("fix: harden deploy script for production service", 21 Juli 2026), `scripts/deploy/deploy.sh` sudah aman digunakan sebagai jalur deploy standar. Script tersebut: `cd /opt/aliza-ai` (bukan lagi `/home/ubuntu/aliza-ai`), gagal (`fail`) bila `git status --porcelain` menunjukkan working tree tidak bersih, gagal bila branch aktif bukan `main`, mencatat commit sebelum dan sesudah pull, menjalankan `git pull --ff-only origin main`, hanya me-restart `aliza-telegram.service` (tidak lagi menyentuh `aliza-api`), lalu memverifikasi `systemctl is-active` setelah restart dan gagal (menampilkan `systemctl status`) bila service tidak `active`. Syarat pakai: jalankan dari `/opt/aliza-ai` dengan working tree bersih di branch `main`, dan user punya akses `sudo systemctl restart aliza-telegram.service`. Langkah manual di bawah ini tetap berlaku sebagai referensi rinci dan untuk kasus di luar jalur fast-forward biasa (mis. rollback).
 
 ## 1. Precheck
 
