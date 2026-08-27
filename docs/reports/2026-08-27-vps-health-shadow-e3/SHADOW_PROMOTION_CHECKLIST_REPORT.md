@@ -73,7 +73,7 @@ return {"market_regime": "RANGE"}
 
 ### 0.1 Metodologi bootstrap CI — pendekatan yang dipilih & keterbatasannya
 
-`backtest/robustness.py::_bootstrap()` ([backtest/robustness.py:56-73](backtest/robustness.py#L56-L73)) melakukan **percentile bootstrap**: resample `pnl_pct` dengan penggantian sebanyak N (ukuran sampel asli) untuk setiap iterasi, hitung rata-rata tiap resample, ulangi 10.000 kali, lalu ambil persentil ke-2,5 dan ke-97,5 dari distribusi rata-rata tersebut sebagai CI 95%. Ini murni matematika statistik generik atas daftar `pnl_pct` — **tidak spesifik untuk konteks backtest** (tidak butuh data historis ratusan hari, tidak butuh simulator) — sehingga bisa dipakai ulang persis untuk data live tanpa modifikasi formula.
+`backtest/robustness.py::_bootstrap()` ([backtest/robustness.py:56-73](../../../backtest/robustness.py#L56-L73)) melakukan **percentile bootstrap**: resample `pnl_pct` dengan penggantian sebanyak N (ukuran sampel asli) untuk setiap iterasi, hitung rata-rata tiap resample, ulangi 10.000 kali, lalu ambil persentil ke-2,5 dan ke-97,5 dari distribusi rata-rata tersebut sebagai CI 95%. Ini murni matematika statistik generik atas daftar `pnl_pct` — **tidak spesifik untuk konteks backtest** (tidak butuh data historis ratusan hari, tidak butuh simulator) — sehingga bisa dipakai ulang persis untuk data live tanpa modifikasi formula.
 
 **Keterbatasan yang didokumentasikan secara eksplisit (bukan diabaikan):**
 - Bootstrap pada N sangat kecil (mis. N=1) menghasilkan CI berlebar-nol/degenerate (bootstrap dari satu nilai yang sama berulang-ulang selalu menghasilkan rata-rata = nilai itu sendiri) — ini BUKAN presisi tinggi, melainkan tidak informatif sama sekali. Karena itu ditambahkan **ambang minimum N sebelum bootstrap dihitung** (`BOOTSTRAP_MIN_N = 10`), di bawah itu hasil dilaporkan eksplisit "belum bisa dihitung", bukan angka CI yang menyesatkan. Nilai 10 dipilih **konsisten dengan `LEARNING_MIN_SAMPLES`** (default di `engine/learning/confidence_adjuster.py`, dipakai ulang lagi di Gap 2 `weekly_winrate_summary`) — bukan angka baru yang tidak berhubungan, supaya seluruh sistem punya satu definisi "cukup data secara statistik" yang konsisten.
@@ -114,7 +114,7 @@ Dipakai `MIN(signal_time) WHERE source='shadow_e3'` — **bukan** tanggal commit
 - Secara semantik berbeda: `/shadow_stats` = "apa yang terjadi", `/shadow_promotion_check` = "apakah sudah siap dipertimbangkan untuk promosi" — audiens/mental model berbeda (lihat cepat vs tinjauan keputusan formal).
 - Konsisten dengan pola codebase yang sudah memisahkan `/signal_stats` dari `/shadow_stats` untuk alasan serupa.
 
-Otorisasi memakai pola `_authorized_chat(update)` yang sama persis seperti `/entry` ([interfaces/telegram_bot.py:1245-1247](interfaces/telegram_bot.py#L1245-L1247)):
+Otorisasi memakai pola `_authorized_chat(update)` yang sama persis seperti `/entry` ([interfaces/telegram_bot.py:1245-1247](../../../interfaces/telegram_bot.py#L1245-L1247)):
 ```python
 if not _authorized_chat(update):
     await msg.reply_text("⛔ Unauthorized.")
