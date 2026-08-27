@@ -61,7 +61,7 @@ Folder lama `docs/cursor-ai/`, `docs/instructions/`, dan `docs/audit/` sudah dig
 - [5 Agustus — perbaikan sinyal](reports/2026-08-05-signal-fixes/): evaluasi big-move alert, near-level on-demand, dan fix big-move 1h sungguhan.
 - [5 Agustus — restrukturisasi menu Telegram](reports/2026-08-05-telegram-menu-restructure/): audit menu lengkap dan restrukturisasi menu Telegram.
 - [21 Agustus — Info Coin](reports/2026-08-21-info-coin/): audit menu informasi dan implementasi Info Coin Paket 1.
-- [27 Agustus — VPS health & shadow E3](reports/2026-08-27-vps-health-shadow-e3/): VPS health report #2 dan investigasi stagnasi shadow_e3.
+- [27 Agustus — VPS health & shadow E3](reports/2026-08-27-vps-health-shadow-e3/): VPS health report #2, investigasi stagnasi shadow_e3, merge/push `docs/beres-beres`+fix message-too-long, merge/push shadow_e3 observability, dan audit risiko "Message is too long" di 172 titik `reply_text()` command interaktif.
 
 ## Audit historis
 
