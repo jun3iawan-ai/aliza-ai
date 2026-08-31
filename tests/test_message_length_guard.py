@@ -188,3 +188,94 @@ class MorningBriefEveningSummaryOversizedContentTests(IsolatedAsyncioTestCase):
         self.assertGreater(len(fake_bot.sent), 2)
         for sent_text in fake_bot.sent:
             self.assertLessEqual(len(sent_text), tb.TELEGRAM_MESSAGE_LIMIT)
+
+
+class Utf16AwareLengthTests(TestCase):
+    """Regression for EVENING_SUMMARY_DUPLIKASI_AUDIT_REPORT.md's "temuan
+    tambahan": Telegram enforces its 4096-char sendMessage limit in UTF-16
+    code units, not Python code points. Most emoji used across
+    morning_brief/evening_summary headers (🌅🌙🎯🚨📊📈🟢🌍📅🕒📋🔔💹🟡🔴, etc.) are
+    astral-plane characters that take 2 UTF-16 units but count as 1 under
+    plain len() — a chunk built with the old len()-based check could pass
+    Python's length check while still being rejected by Telegram with the
+    exact "Message is too long" error seen in production logs for both
+    /morning_brief and /evening_summary on 2026-08-31 13:22-13:23 WIB."""
+
+    def test_astral_emoji_is_two_utf16_units_but_one_python_char(self):
+        for emoji in ("🌅", "🌙", "🎯", "🚨", "📊", "📈", "🟢", "🌍", "📅", "🕒", "📋", "🔔", "💹", "🟡", "🔴"):
+            self.assertEqual(len(emoji), 1)
+            self.assertEqual(tb._utf16_len(emoji), 2)
+
+    def test_bmp_characters_count_the_same_in_both_measures(self):
+        text = "Analisis market untuk BTC hari ini."
+        self.assertEqual(len(text), tb._utf16_len(text))
+
+    def test_python_len_under_limit_but_utf16_len_over_limit_gets_split(self):
+        # 3200 Python code points (well under TELEGRAM_MESSAGE_LIMIT=4096 —
+        # the old top-level `len(text) <= limit` check would have returned
+        # this unchanged as a single message) but 6400 UTF-16 units (over
+        # Telegram's real limit).
+        text = "🌅🎯🚨📊" * 800
+        self.assertLess(len(text), tb.TELEGRAM_MESSAGE_LIMIT)
+        self.assertGreater(tb._utf16_len(text), tb.TELEGRAM_MESSAGE_LIMIT)
+
+        parts = tb._split_message_for_telegram(text)
+
+        self.assertGreater(len(parts), 1)
+        for part in parts:
+            self.assertLessEqual(tb._utf16_len(part), tb.TELEGRAM_MESSAGE_LIMIT)
+
+    def test_dense_emoji_brief_header_style_content_stays_within_utf16_limit(self):
+        # Mirrors the real brief_header shape: emoji-prefixed lines repeated
+        # once per watchlist coin.
+        text = "🌅 MORNING BRIEF\n" + (
+            "🟢 BTC funding stabil, tren naik, OI naik, RSI netral.\n" * 120
+        )
+        self.assertGreater(tb._utf16_len(text), tb.TELEGRAM_MESSAGE_LIMIT)
+
+        parts = tb._split_message_for_telegram(text)
+
+        for part in parts:
+            self.assertLessEqual(tb._utf16_len(part), tb.TELEGRAM_MESSAGE_LIMIT)
+
+    def test_utf16_slice_index_never_exceeds_budget(self):
+        text = "🌅🎯🚨📊 kata biasa " * 50
+        for budget in (1, 2, 3, 10, 50, 200):
+            idx = tb._utf16_slice_index(text, budget)
+            self.assertLessEqual(tb._utf16_len(text[:idx]), budget)
+
+
+class TelegramRealLimitSimulationTests(IsolatedAsyncioTestCase):
+    """FakeBot here rejects any text whose UTF-16 length exceeds Telegram's
+    real 4096 limit, mirroring the actual Bot API rejection ("Message is too
+    long") instead of a Python len()-based approximation — reproducing the
+    exact failure mode from the 2026-08-31 13:22-13:23 WIB incident where
+    brief_header dispatch failed despite already being routed through
+    _split_message_for_telegram()."""
+
+    class _StrictFakeBot:
+        def __init__(self):
+            self.sent: list[str] = []
+
+        async def send_message(self, chat_id, text):
+            if tb._utf16_len(text) > tb.TELEGRAM_MESSAGE_LIMIT:
+                raise RuntimeError("Message is too long")
+            self.sent.append(text)
+
+    async def test_dense_emoji_header_does_not_trigger_telegram_length_rejection(self):
+        fake_bot = self._StrictFakeBot()
+        dense_header = "🌅 MORNING BRIEF\n" + (
+            "🟢 BTC funding stabil, tren naik, OI naik, RSI netral.\n" * 150
+        )
+        self.assertGreater(tb._utf16_len(dense_header), tb.TELEGRAM_MESSAGE_LIMIT)
+
+        with patch.multiple(
+            tb,
+            get_bot=lambda: fake_bot,
+            IS_PRIMARY_DISPATCHER=True,
+            DEFAULT_CHAT_ID="123",
+        ):
+            result = await tb.dispatch_alert_message(dense_header, chat_id="123", force=True)
+
+        self.assertTrue(result)
+        self.assertGreater(len(fake_bot.sent), 0)

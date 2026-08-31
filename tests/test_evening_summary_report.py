@@ -309,3 +309,234 @@ class AiEstimateDisclaimerTestCase(unittest.TestCase):
         out2 = tb._reorder_section_by_rr(out1)
         self.assertEqual(out1.count("estimasi AI"), 1)
         self.assertEqual(out2.count("estimasi AI"), 1)
+
+
+_DUPLICATED_KEPUTUSAN_BLOCK = """⚡ KEPUTUSAN HARI INI
+Regime: Trending Bullish
+Bias: Bullish
+Conviction: 5/10 — Sentimen pasar menunjukkan bullish, meskipun ada beberapa coin yang sedang dalam kondisi bearish.
+Action: 🟢 BELI BERTAHAP
+Catalyst: Event ISM Manufacturing besok
+
+📊 KONTEKS MARKET
+Market menunjukkan momentum bullish jangka pendek.
+Cross-asset: risk-on, DXY melemah.
+
+🎯 STRATEGI HARI INI
+Tambah exposure bertahap di level support.
+
+⚠️ YANG HARUS DIHINDARI
+Over-leverage tanpa konfirmasi struktur.
+
+🚨 LEVEL & CATALYST PENTING
+Support BTC $77,507.17 — pantau breakout resistance.
+
+📋 SKENARIO MINGGU INI
+Bull case (prob 55%): breakout resistance → target $85,000
+Base case (prob 30%): sideways di range saat ini
+Bear case (prob 15%): breakdown support → risiko ke $75,000
+Invalidasi bull: Penutupan harian di bawah $77,507.17 untuk BTC.
+
+⚡ KEPUTUSAN HARI INI
+Regime: Trending Bearish
+Bias: Neutral-Bearish
+Conviction: 5/10 — Meskipun ada peluang bullish, tekanan bearish saat ini perlu diperhatikan.
+Action: ⏸️ TAHAN
+Catalyst: Event ISM Manufacturing besok
+
+📊 KONTEKS MARKET
+Market menunjukkan tekanan bearish jangka pendek.
+Cross-asset: risk-off, DXY menguat.
+
+🎯 STRATEGI HARI INI
+Tahan posisi, tunggu konfirmasi arah.
+
+⚠️ YANG HARUS DIHINDARI
+Entry baru tanpa konfirmasi reversal.
+
+🚨 LEVEL & CATALYST PENTING
+Support BTC $77,507.17 — waspadai breakdown.
+
+📋 SKENARIO MINGGU INI
+Bull case (prob 25%): reversal dari support → target $82,000
+Base case (prob 40%): sideways dengan bias turun
+Bear case (prob 35%): breakdown lanjutan → risiko ke $73,000
+Invalidasi bull: Jika harga jatuh di bawah 77,507.17 dan tidak ada bullish signal."""
+
+
+class DuplicateKeputusanHariIniTestCase(unittest.IsolatedAsyncioTestCase):
+    """Regression for EVENING_SUMMARY_DUPLIKASI_AUDIT_REPORT.md poin 2: a
+    single `main_prompt` completion (no retry/loop involved — confirmed via
+    log audit, exactly one OpenAI call per gather() task) can itself contain
+    two full "⚡ KEPUTUSAN HARI INI" blocks back-to-back, reproducing the
+    exact 2026-08-31 13:23 WIB "Ringkasan Malam" incident (conflicting
+    Bullish/BELI BERTAHAP then Bearish/TAHAN blocks in one message). The old
+    dedup logic only stripped a trailing SARAN SPOT/SARAN FUTURES/DISCLAIMER
+    leak — it never checked for a repeated KEPUTUSAN HARI INI header."""
+
+    async def test_second_keputusan_block_is_dropped(self):
+        brief_data = {
+            "market_score": 50,
+            "market_label": "Neutral",
+            "fear_greed": 50,
+            "btc_dominance": 55.0,
+            "top_coins": {},
+            "funding_rates": {},
+            "macro": {},
+            "active_signal": None,
+            "events_tomorrow": [],
+            "context_summary": "",
+        }
+
+        async def _fake_llm_duplicates_main_block(prompt):
+            # "6 section saja" appears only in _generate_brief_analysis's own
+            # main_prompt (FORMAT OUTPUT instruction) — unlike
+            # "KEPUTUSAN HARI INI (WAJIB DIIKUTI)", which is a section inside
+            # the *spot/futures* prompts, not main_prompt itself.
+            if "6 section saja" in prompt:
+                return _DUPLICATED_KEPUTUSAN_BLOCK
+            if "hanya saran spot" in prompt.lower():
+                return "🟢 SARAN SPOT (Swing 1-7 hari)\nTidak ada setup spot yang layak — tunggu pullback ke support."
+            return "📊 SARAN FUTURES (Swing 1-7 hari)\nKondisi tidak mendukung futures saat ini."
+
+        with patch.object(tb, "ask_aliza", object()), \
+             patch.object(tb, "_call_llm_async", side_effect=_fake_llm_duplicates_main_block), \
+             patch.object(tb, "_get_cross_asset_data", return_value={"dxy": None, "gold": None, "oil": None, "sp500": None, "vix": None}), \
+             patch.object(tb, "_fetch_crypto_news", return_value=[]), \
+             patch.object(tb, "_fetch_macro_news", return_value=[]), \
+             patch.object(tb, "_get_stablecoin_data", return_value={"interpretation": "-", "usdt_dominance": None}), \
+             patch.object(tb, "_get_deribit_options", return_value={"interpretation": "-", "put_call_ratio": None, "max_pain": None}), \
+             patch.object(tb, "_get_coinbase_premium", return_value={"interpretation": "-", "premium_pct": None}), \
+             patch.object(tb, "_get_institutional_data", return_value={
+                 "etf_flow_usd_m": None, "etf_flow_7d_usd_m": None,
+                 "etf_sentiment": "-", "netflow_btc": None, "netflow_sentiment": "-",
+                 "liq_above": None, "liq_below": None,
+             }), \
+             patch.object(tb, "_build_coin_details_for_brief", return_value=({}, "")):
+            analysis = await tb._generate_brief_analysis(brief_data)
+
+        self.assertEqual(analysis.count("⚡ KEPUTUSAN HARI INI"), 1)
+        self.assertIn("Trending Bullish", analysis)
+        self.assertIn("BELI BERTAHAP", analysis)
+        # the second (bearish/TAHAN) block must be fully gone, not just its header
+        self.assertNotIn("Trending Bearish", analysis)
+        self.assertNotIn("Neutral-Bearish", analysis)
+        self.assertNotIn("⏸️ TAHAN", analysis)
+
+
+class SpotAnalysisHeaderSafeguardTestCase(unittest.IsolatedAsyncioTestCase):
+    """Regression for EVENING_SUMMARY_DUPLIKASI_AUDIT_REPORT.md poin 3: the
+    "tidak ada setup" instruction in _generate_spot_analysis's prompt didn't
+    repeat the "🟢 SARAN SPOT" header (unlike the equivalent instruction in
+    _generate_futures_analysis, which does) — the LLM sometimes obeyed the
+    literal "Tulis: <sentence>" instruction and dropped the header entirely,
+    while _reorder_section_by_rr's unconditional AI-estimate disclaimer still
+    got appended, producing a header-less section with a trailing disclaimer.
+    This tests the programmatic safeguard in _generate_spot_analysis itself
+    (prepend the header if the LLM's non-empty output omits it), independent
+    of whether the prompt wording happens to be followed."""
+
+    _CROSS_BUNDLE = {
+        "sp500_str": "-", "vix_str": "-", "gold_str": "-", "oil_str": "-", "dxy_str": "-",
+    }
+
+    @staticmethod
+    def _brief_data(score, fg):
+        return {
+            "market_score": score,
+            "market_label": "Bearish" if score < 40 else "Bullish",
+            "fear_greed": fg,
+            "btc_dominance": 55.0,
+            "funding_rates": {},
+            "macro": {},
+            "active_signal": None,
+            "events_tomorrow": [],
+            "context_summary": "",
+        }
+
+    async def test_missing_header_from_llm_gets_prepended(self):
+        async def _headerless_llm(_prompt):
+            # Simulates the LLM literally following "Tulis: <sentence>" and
+            # omitting the "🟢 SARAN SPOT (Swing 1-7 hari)" header entirely —
+            # exactly what triggered the header being missing from the
+            # 2026-08-31 13:23 WIB "Ringkasan Malam" message.
+            return "Tidak ada setup spot yang layak — tunggu pullback ke support."
+
+        with patch.object(tb, "ask_aliza", object()), \
+             patch.object(tb, "_call_llm_async", side_effect=_headerless_llm):
+            out = await tb._generate_spot_analysis(
+                self._brief_data(20, 15), {}, _cross_bundle=self._CROSS_BUNDLE
+            )
+
+        self.assertTrue(out.startswith("🟢 SARAN SPOT (Swing 1-7 hari)"))
+        self.assertIn("Tidak ada setup spot yang layak", out)
+
+    async def test_header_already_present_is_not_duplicated(self):
+        well_formed = (
+            "🟢 SARAN SPOT (Swing 1-7 hari)\n"
+            "• BTC LONG\n"
+            "  Entry ideal: $100 — tunggu harga ke sini\n"
+        )
+
+        async def _well_formed_llm(_prompt):
+            return well_formed
+
+        with patch.object(tb, "ask_aliza", object()), \
+             patch.object(tb, "_call_llm_async", side_effect=_well_formed_llm):
+            out = await tb._generate_spot_analysis(
+                self._brief_data(70, 60), {}, _cross_bundle=self._CROSS_BUNDLE
+            )
+
+        self.assertEqual(out.count("🟢 SARAN SPOT"), 1)
+
+
+class ParseAndRecordSignalsIdempotencyTestCase(unittest.TestCase):
+    """Residual-risk guard from EVENING_SUMMARY_DUPLIKASI_AUDIT_REPORT.md
+    poin 4: the 2026-08-31 duplication incident didn't corrupt
+    signal_tracking only because the market was in the "TAHAN"/no-setup
+    branch (no bullet coin entries to parse). If the KEPUTUSAN HARI INI
+    duplication bug (poin 2) recurs while the market DOES have a valid
+    bullet-point setup, _parse_and_record_signals must not write the same
+    (coin, setup, entry, sl, tp) combination to signal_tracking twice."""
+
+    def test_duplicated_identical_coin_block_is_recorded_once(self):
+        duplicated_text = (
+            "🟢 SARAN SPOT (Swing 1-7 hari)\n\n"
+            "• BTC LONG\n"
+            "  Entry ideal: $66,000.00 — tunggu harga ke sini\n"
+            "  SL: $62,040.00 (6.0% dari entry)\n"
+            "  Target 1: $68,500.00 (+3.8%) — ambil 50%\n"
+            "  RR: 1.1x\n\n"
+            "• BTC LONG\n"
+            "  Entry ideal: $66,000.00 — tunggu harga ke sini\n"
+            "  SL: $62,040.00 (6.0% dari entry)\n"
+            "  Target 1: $68,500.00 (+3.8%) — ambil 50%\n"
+            "  RR: 1.1x\n"
+        )
+
+        with patch.object(tb, "record_signal") as mock_record, \
+             patch.object(tb, "get_market_snapshot", return_value={"market_intelligence": {"market_regime": "TRENDING"}}):
+            tb._parse_and_record_signals(duplicated_text, market_score=50)
+
+        self.assertEqual(mock_record.call_count, 1)
+
+    def test_distinct_coin_blocks_are_all_recorded(self):
+        text = (
+            "🟢 SARAN SPOT (Swing 1-7 hari)\n\n"
+            "• BTC LONG\n"
+            "  Entry ideal: $66,000.00 — tunggu harga ke sini\n"
+            "  SL: $62,040.00 (6.0% dari entry)\n"
+            "  Target 1: $68,500.00 (+3.8%) — ambil 50%\n"
+            "  RR: 1.1x\n\n"
+            "• ETH LONG\n"
+            "  Entry ideal: $2,400.00 — tunggu harga ke sini\n"
+            "  SL: $2,256.00 (6.0% dari entry)\n"
+            "  Target 1: $2,500.00 (+4.2%) — ambil 50%\n"
+            "  RR: 1.2x\n"
+        )
+
+        with patch.object(tb, "record_signal") as mock_record, \
+             patch.object(tb, "get_market_snapshot", return_value={"market_intelligence": {"market_regime": "TRENDING"}}):
+            tb._parse_and_record_signals(text, market_score=50)
+
+        self.assertEqual(mock_record.call_count, 2)

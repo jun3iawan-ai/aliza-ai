@@ -293,6 +293,32 @@ def get_bot() -> Bot:
     return _bot_instance
 
 
+def _utf16_len(text: str) -> int:
+    """Panjang `text` dalam UTF-16 code unit — cara Telegram menghitung batas
+    4096 karakter sendMessage, BEDA dari len() Python yang menghitung code
+    point. Karakter astral-plane (banyak emoji dipakai di brief header:
+    🌅🌙🎯🚨📊📈🟢🌍📅🕒📋🔔💹🟡🔴 dst.) makan 2 UTF-16 unit tapi cuma dihitung 1
+    oleh len() — potongan yang lolos cek len() Python bisa tetap ditolak
+    Telegram dengan "Message is too long" (lihat
+    EVENING_SUMMARY_DUPLIKASI_AUDIT_REPORT.md, temuan tambahan)."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _utf16_slice_index(text: str, max_units: int) -> int:
+    """Index karakter Python terbesar `i` sehingga _utf16_len(text[:i]) <= max_units.
+
+    Perlu dihitung manual (bukan `text[:max_units]`) karena satu karakter
+    Python astral-plane = 2 unit UTF-16, jadi budget UTF-16 tidak sama
+    dengan jumlah karakter Python yang boleh diambil."""
+    units = 0
+    for i, ch in enumerate(text):
+        ch_units = 2 if ord(ch) > 0xFFFF else 1
+        if units + ch_units > max_units:
+            return i
+        units += ch_units
+    return len(text)
+
+
 def _split_message_for_telegram(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
     """Split `text` into chunks that fit Telegram's sendMessage limit.
 
@@ -303,15 +329,22 @@ def _split_message_for_telegram(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) 
     only as a last resort) so a sentence or emoji is not sliced mid-way,
     and each part gets a "[lanjutan i/n]" suffix so the reader knows more
     is coming.
+
+    Length is measured in UTF-16 code units (via `_utf16_len`), matching how
+    Telegram itself enforces the 4096-char sendMessage limit — a plain
+    Python `len()` undercounts astral-plane emoji (2 UTF-16 units each) and
+    can let an oversized chunk slip past this check only to be rejected by
+    Telegram with "Message is too long".
     """
-    if not text or len(text) <= limit:
+    if not text or _utf16_len(text) <= limit:
         return [text]
 
     effective_limit = max(1, limit - _PART_SUFFIX_RESERVE)
     raw_chunks: list[str] = []
     remaining = text
-    while len(remaining) > effective_limit:
-        window = remaining[:effective_limit]
+    while _utf16_len(remaining) > effective_limit:
+        window_end = _utf16_slice_index(remaining, effective_limit)
+        window = remaining[:window_end]
         split_at = None
         for sep in ("\n\n", "\n", " "):
             idx = window.rfind(sep)
@@ -319,7 +352,9 @@ def _split_message_for_telegram(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) 
                 split_at = idx
                 break
         if split_at is None:
-            split_at = effective_limit  # no natural boundary found — hard cut
+            # no natural boundary found — hard cut, but always make forward
+            # progress even if window_end itself is 0 (pathological tiny limit)
+            split_at = window_end if window_end > 0 else 1
         raw_chunks.append(remaining[:split_at].rstrip())
         remaining = remaining[split_at:].lstrip("\n ")
     if remaining:
@@ -4131,7 +4166,10 @@ DXY: {cx['dxy_str']}"""
     _score = score if score is not None else 50
     _fg = float(fg) if fg is not None else 50
     if _score < 40 or _fg < 25:
-        _action_constraint = "TAHAN — JANGAN rekomendasikan entry baru. Tulis: Tidak ada setup spot yang layak — tunggu pullback ke support."
+        _action_constraint = (
+            "TAHAN — JANGAN rekomendasikan entry baru. Tulis persis: "
+            "\"🟢 SARAN SPOT (Swing 1-7 hari)\\nTidak ada setup spot yang layak — tunggu pullback ke support.\""
+        )
     elif _score < 50 or _fg < 35:
         _action_constraint = "SELEKTIF — hanya rekomendasikan entry jika harga sudah di level support, bukan entry sekarang."
     else:
@@ -4159,7 +4197,8 @@ RULE 5: Jika >=2 coin: tambahkan correlation warning
 
 OUTPUT FORMAT (HANYA section ini, tidak ada section lain):
 🟢 SARAN SPOT (Swing 1-7 hari)
-[Jika tidak ada setup: "Tidak ada setup spot yang layak — tunggu pullback ke support."]
+[Jika tidak ada setup: "🟢 SARAN SPOT (Swing 1-7 hari)
+Tidak ada setup spot yang layak — tunggu pullback ke support."]
 [Jika ada setup, maksimal 3 coin terbaik:]
 
 • [COIN] [LABEL]
@@ -4185,6 +4224,12 @@ Jawab HANYA dengan section 🟢 SARAN SPOT di atas, tanpa pembuka, tanpa penutup
 
     out = await _call_llm_async(prompt)
     if out:
+        # Pengaman: jangan percaya LLM mentah-mentah untuk kontrak header ini —
+        # kalau LLM lupa menulis header (terlepas dari instruksi prompt di atas),
+        # tempelkan manual supaya section ini tidak pernah hilang total dari
+        # pesan akhir (lihat EVENING_SUMMARY_DUPLIKASI_AUDIT_REPORT.md poin 3).
+        if not out.lstrip().startswith("🟢 SARAN SPOT"):
+            out = "🟢 SARAN SPOT (Swing 1-7 hari)\n" + out.lstrip()
         return out
     return (
         "🟢 SARAN SPOT (Swing 1-7 hari)\n"
@@ -4721,6 +4766,16 @@ Total probabilitas Bull+Base+Bear harus = 100%.
         "Analisis teknikal swing trading dari sistem Aliza, bukan saran investasi.\n"
         "Selalu pasang SL dan gunakan sizing sesuai risk tolerance."
     )
+    # Dedup: kalau LLM mengulang seluruh format 6-section dari awal (mengabaikan
+    # instruksi "Jawab HANYA dengan 6 section"), main_out bisa berisi >1 blok
+    # "⚡ KEPUTUSAN HARI INI" berurutan — potong di sini, sebelum dedup marker
+    # SARAN SPOT/FUTURES/DISCLAIMER di bawah, supaya kalau blok kedua juga
+    # mengandung section-section itu, ikut terpotong bersih bersama blok kedua.
+    _keputusan_marker = "⚡ KEPUTUSAN HARI INI"
+    if main_out.count(_keputusan_marker) > 1:
+        _lines = main_out.split("\n")
+        _hits = [i for i, l in enumerate(_lines) if _keputusan_marker in l]
+        main_out = "\n".join(_lines[: _hits[1]]).strip()
     # Hapus duplikasi section futures di main_out
     for _marker in ("SARAN SPOT", "SARAN FUTURES", "DISCLAIMER"):
         if _marker in main_out:
@@ -5446,6 +5501,13 @@ def _parse_and_record_signals(text: str, market_score: int = 0) -> None:
     """Parse output saran spot/futures dan simpan ke signal_tracking."""
     try:
         coin_blocks = _re_sig.split(r'\n(?=•\s+\w)', text)
+        # Guard idempoten: kalau main_out sempat mengandung blok duplikat
+        # (lihat EVENING_SUMMARY_DUPLIKASI_AUDIT_REPORT.md poin 2/4 — sudah
+        # ditangani di _generate_brief_analysis, tapi dijaga lagi di sini
+        # supaya sumber duplikasi lain tidak ikut menulis record dobel ke
+        # signal_tracking), catat tiap kombinasi (coin, setup, entry, sl, tp)
+        # hanya sekali per pemanggilan.
+        _seen_keys: set[tuple] = set()
         for block in coin_blocks:
             coin_match = _re_sig.search(r'•\s+(\w+)', block)
             if not coin_match:
@@ -5472,6 +5534,11 @@ def _parse_and_record_signals(text: str, market_score: int = 0) -> None:
 
             if not entry or not sl or not tp:
                 continue
+
+            _dedup_key = (coin, setup, entry, sl, tp)
+            if _dedup_key in _seen_keys:
+                continue
+            _seen_keys.add(_dedup_key)
 
             try:
                 _snap = get_market_snapshot()
