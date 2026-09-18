@@ -72,7 +72,11 @@ from engine.market.economic_calendar import (
     get_events_next_hour,
 )
 from engine.market import institutional_data as inst_data
-from engine.market.market_context_engine import calculate_market_score, format_context_for_brief
+from engine.market.market_context_engine import (
+    calculate_market_score,
+    format_context_for_brief,
+    map_label_to_alert_status,
+)
 import engine.market.market_snapshot_engine as snapshot_state
 from engine.market.market_intelligence import analyze_market_environment
 from engine.market.market_report_formatter import format_market_report
@@ -5499,6 +5503,95 @@ async def pre_fetch_brief_data_job(_context: ContextTypes.DEFAULT_TYPE) -> None:
         logging.warning("pre_fetch_brief_data_job: %s", e)
 
 
+def _coins_aligned_with_market_status(status: str, radar_data: list[dict]) -> list[str]:
+    """Return only coins whose multi-timeframe alignment strongly matches status."""
+    required_alignment = {
+        "Bullish": "STRONG_BULLISH",
+        "Bearish": "STRONG_BEARISH",
+    }.get(status)
+    if not required_alignment:
+        return []
+    return [
+        str(item.get("coin"))
+        for item in radar_data
+        if item.get("trend_alignment") == required_alignment and item.get("coin")
+    ]
+
+
+def _format_market_context_alert_message(
+    previous_status: str,
+    current_status: str,
+    score: int | float,
+    aligned_coins: list[str],
+    timestamp: str,
+) -> str:
+    emoji = {"Bearish": "🔴", "Neutral": "⚪", "Bullish": "🟢"}
+    lines = [
+        "🔔 Perubahan Status Konteks Market",
+        "",
+        f"{previous_status} {emoji[previous_status]} → {current_status} {emoji[current_status]}",
+        f"Skor: {score}/100",
+    ]
+    if current_status != "Neutral":
+        lines.extend(["", "Coin searah (trend kuat sama arah):"])
+        if aligned_coins:
+            lines.append(", ".join(aligned_coins))
+        else:
+            lines.append("Tidak ada coin dengan trend kuat searah saat ini.")
+    lines.extend(["", f"⏰ {timestamp}"])
+    return "\n".join(lines)
+
+
+async def market_context_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Alert once when the persisted three-state market context changes."""
+    try:
+        chat_id = None
+        try:
+            if context and getattr(context, "bot_data", None):
+                chat_id = context.bot_data.get("chat_id")
+        except Exception:
+            chat_id = None
+        if not chat_id:
+            chat_id = DEFAULT_CHAT_ID
+        if not chat_id:
+            logging.warning("market_context_alert skipped: no chat_id (set TELEGRAM_CHAT_ID or /start)")
+            return
+
+        result = calculate_market_score()
+        current_status = map_label_to_alert_status(result.get("label", "Neutral"))
+        previous_status = ngov.get_value("market_context_alert", "status")
+
+        # First observation establishes the persisted baseline without an alert.
+        if previous_status is None:
+            ngov.set_value("market_context_alert", "status", current_status)
+            return
+        if previous_status == current_status:
+            return
+
+        aligned_coins: list[str] = []
+        if current_status != "Neutral":
+            radar_data = generate_radar_pro()
+            aligned_coins = _coins_aligned_with_market_status(current_status, radar_data)
+
+        timestamp = result.get("timestamp") or datetime.now(
+            timezone(timedelta(hours=7))
+        ).strftime("%Y-%m-%d %H:%M:%S WIB")
+        message = _format_market_context_alert_message(
+            str(previous_status),
+            current_status,
+            result.get("total_score", 50),
+            aligned_coins,
+            str(timestamp),
+        )
+        sent = await safe_dispatch(message, chat_id=chat_id, force=True)
+        if sent:
+            ngov.set_value("market_context_alert", "status", current_status)
+        else:
+            logging.warning("market_context_alert dispatch not sent; state not updated")
+    except Exception as e:
+        logging.exception("market_context_alert_job: %s", e)
+
+
 import re as _re_sig
 
 
@@ -7940,6 +8033,13 @@ def main():
         logging.info(
             "Pre-fetch brief data job scheduled (every 900s, window 06:00–07:50 / 18:00–19:50 WIB)."
         )
+        app.job_queue.run_repeating(
+            market_context_alert_job,
+            interval=900,
+            first=200,
+            name="market_context_alert",
+        )
+        logging.info("Market context alert job scheduled (every 900s, first in 200s).")
         WIB_TIMES_UTC = [
             (23, 0),  # 06:00 WIB
             (5, 0),  # 12:00 WIB

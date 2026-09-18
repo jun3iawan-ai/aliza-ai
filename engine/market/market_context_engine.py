@@ -40,6 +40,16 @@ def _label_for_score(score: int) -> tuple[str, str, str]:
     return ("Strong Bullish", "💚", "Kondisi sangat baik — peluang swing terbuka, pantau entry di pullback.")
 
 
+def map_label_to_alert_status(label: str) -> str:
+    """Collapse the five market-score labels into the three alert statuses."""
+    normalized = str(label or "").strip()
+    if normalized in {"Bearish", "Weak"}:
+        return "Bearish"
+    if normalized in {"Bullish", "Strong Bullish"}:
+        return "Bullish"
+    return "Neutral"
+
+
 def _neutral_components() -> dict[str, dict[str, Any]]:
     # Balanced neutral defaults; total = 50 when all data sources fail.
     return {
