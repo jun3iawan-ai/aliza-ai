@@ -6661,6 +6661,24 @@ def _snapshot_big_move_pct(coin_data: dict) -> float | None:
     return None
 
 
+# Short windows deliberately do not fall back to the 24h snapshot fields: a
+# 24h value would misrepresent a 15m/30m alert. The established 1h helper is
+# preserved unchanged, including its legacy 24h fallback.
+BIG_MOVE_TIMEFRAMES = (
+    ("15m", "price_change_15m", "15 menit"),
+    ("30m", "price_change_30m", "30 menit"),
+    ("1h", None, "1 jam"),
+)
+
+
+def _snapshot_big_move_pct_for_timeframe(coin_data: dict, field_name: str | None) -> float | None:
+    if field_name is None:
+        return _snapshot_big_move_pct(coin_data)
+    if not isinstance(coin_data, dict):
+        return None
+    return _snapshot_float(coin_data.get(field_name))
+
+
 def _fmt_snapshot_usd(v: float) -> str:
     if v is None:
         return "$—"
@@ -6905,7 +6923,7 @@ async def rsi_extreme_checker(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def big_move_checker(context: ContextTypes.DEFAULT_TYPE):
-    """Perubahan harga ≥3% (1h jika ada, else fallback snapshot); cooldown (coin, up|down)."""
+    """Check 15m/30m/1h moves ≥3%; 1h retains its snapshot fallback."""
     try:
         snapshot = get_market_snapshot()
         data_map = snapshot.get("data") or {}
@@ -6921,58 +6939,58 @@ async def big_move_checker(context: ContextTypes.DEFAULT_TYPE):
             logging.warning("big_move_checker: no chat_id")
             return
         now_utc = datetime.utcnow()
+        now_ts = now_utc.replace(tzinfo=timezone.utc).timestamp()
         for coin in data_map.keys():
             if coin in ALERT_COIN_BLACKLIST:
                 continue
             coin_data = data_map.get(coin)
             if not isinstance(coin_data, dict):
                 continue
-            pct = _snapshot_big_move_pct(coin_data)
-            if pct is None or abs(pct) < 3.0:
-                continue
             price = _snapshot_float(coin_data.get("price"))
             if price is None:
                 continue
-            # Validasi umur data — skip jika snapshot coin lebih dari SNAPSHOT_MAX_AGE_SEC.
-            # (Sebelumnya cek ini membandingkan epoch float dengan hasattr/isoformat dan
-            # selalu gagal secara diam-diam — lihat NOTIFIKASI_MITIGASI_REPORT.md.)
+            # Validate the shared snapshot before creating an alert for any window.
             if not ngov.is_coin_snapshot_fresh(coin_data):
                 logging.warning("big_move_checker: skip %s — stale snapshot data", coin)
                 ngov.record_skipped_stale("big_move")
                 continue
-            direction = "up" if pct > 0 else "down"
-            # Cooldown khusus big_move (BIG_MOVE_COOLDOWN_SEC, default 2 jam), per (coin, arah) —
-            # terpisah dari cooldown 4 jam near_support/near_resistance/rsi supaya bisa
-            # dikonfigurasi independen dan supaya alert naik & turun tidak saling menekan.
-            key = f"{coin}:{direction}"
-            # See _whale_alert_allowed for why .replace(tzinfo=timezone.utc) is required
-            # here instead of a bare now_utc.timestamp() on this naive datetime.
-            now_ts = now_utc.replace(tzinfo=timezone.utc).timestamp()
-            if not ngov.is_cooldown_allowed("big_move", key, ngov.BIG_MOVE_COOLDOWN_SEC, now=now_ts):
-                continue
-            if ngov.is_duplicate_value("big_move", key, pct):
-                continue  # nilai persis sama dengan alert terakhir — data tidak benar-benar berubah
-            if pct > 0:
-                msg = (
-                    "🚀 BIG MOVE ALERT\n\n"
-                    f"{coin} naik {pct:+.2f}% dalam 1 jam!\n"
-                    f"Harga: {_fmt_snapshot_usd(price)}\n"
-                    "💡 Momentum kuat — pantau apakah breakout atau bull trap\n"
-                    "——\n"
-                    f"Aliza Engine • {_wib_now_label()}"
+            for timeframe, field_name, window_label in BIG_MOVE_TIMEFRAMES:
+                pct = _snapshot_big_move_pct_for_timeframe(coin_data, field_name)
+                if pct is None or abs(pct) < 3.0:
+                    continue
+                direction = "up" if pct > 0 else "down"
+                # Each timeframe has an independent persisted cooldown/dedup key.
+                key = f"{coin}:{direction}:{timeframe}"
+                if not ngov.is_cooldown_allowed("big_move", key, ngov.BIG_MOVE_COOLDOWN_SEC, now=now_ts):
+                    continue
+                if ngov.is_duplicate_value("big_move", key, pct):
+                    continue  # nilai tidak benar-benar berubah pada timeframe ini
+                if pct > 0:
+                    msg = (
+                        "🚀 BIG MOVE ALERT\n\n"
+                        f"{coin} naik {pct:+.2f}% dalam {window_label}!\n"
+                        f"Harga: {_fmt_snapshot_usd(price)}\n"
+                        "💡 Momentum kuat — pantau apakah breakout atau bull trap\n"
+                        "——\n"
+                        f"Aliza Engine • {_wib_now_label()}"
+                    )
+                else:
+                    msg = (
+                        "💥 BIG MOVE ALERT\n\n"
+                        f"{coin} turun {abs(pct):.2f}% dalam {window_label}!\n"
+                        f"Harga: {_fmt_snapshot_usd(price)}\n"
+                        "💡 Penurunan tajam — pantau support dan potensi entry\n"
+                        "——\n"
+                        f"Aliza Engine • {_wib_now_label()}"
+                    )
+                ngov.record_cooldown("big_move", key, now=now_ts)
+                ngov.record_value("big_move", key, pct)
+                ngov.queue_alert(
+                    "big_move",
+                    "BIG MOVE",
+                    f"{coin} {pct:+.2f}% ({timeframe}) @ {_fmt_snapshot_usd(price)}",
+                    msg,
                 )
-            else:
-                msg = (
-                    "💥 BIG MOVE ALERT\n\n"
-                    f"{coin} turun {abs(pct):.2f}% dalam 1 jam!\n"
-                    f"Harga: {_fmt_snapshot_usd(price)}\n"
-                    "💡 Penurunan tajam — pantau support dan potensi entry\n"
-                    "——\n"
-                    f"Aliza Engine • {_wib_now_label()}"
-                )
-            ngov.record_cooldown("big_move", key, now=now_ts)
-            ngov.record_value("big_move", key, pct)
-            ngov.queue_alert("big_move", "BIG MOVE", f"{coin} {pct:+.2f}% @ {_fmt_snapshot_usd(price)}", msg)
     except Exception as e:
         logging.error("big_move_checker: %s", e, exc_info=True)
 

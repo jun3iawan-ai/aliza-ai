@@ -91,7 +91,7 @@ class SnapshotAlertCooldownTests(TestCase):
 
 
 class BigMoveCooldownTests(IsolatedAsyncioTestCase):
-    """Item 2 / test 2: big_move_checker cooldown per (coin, direction),
+    """Item 2 / test 2: big_move_checker cooldown per (coin, direction, timeframe),
     BIG_MOVE_COOLDOWN_SEC, persisted."""
 
     def setUp(self):
@@ -130,7 +130,7 @@ class BigMoveCooldownTests(IsolatedAsyncioTestCase):
         with patch.object(telegram_bot, "get_market_snapshot", return_value=snapshot), \
              patch.object(telegram_bot, "DEFAULT_CHAT_ID", "12345"):
             await telegram_bot.big_move_checker(ctx)
-        recorded = ngov.get_value("cooldown:big_move", "OM:down")
+        recorded = ngov.get_value("cooldown:big_move", "OM:down:1h")
         self.assertIsNotNone(recorded)
         self.assertLess(abs(recorded - real_now), 5)
 

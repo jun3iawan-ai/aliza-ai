@@ -38,6 +38,12 @@ _one_hour_close_cache: dict[str, dict[str, float | int]] = {}
 _one_hour_close_cache_lock = Lock()
 ONE_HOUR_FAILURE_RETRY_SEC = 300
 
+# Short Big Move windows use the same closed-candle semantics as the existing
+# 1h reference. Their cache is intentionally separate so a 15m/30m refresh
+# never changes the established 1h cache behaviour.
+_short_interval_close_cache: dict[str, dict[str, float | int]] = {}
+_short_interval_close_cache_lock = Lock()
+
 
 def _get_cg_headers() -> dict:
     h = {"User-Agent": "AlizaAI"}
@@ -278,6 +284,84 @@ def _latest_closed_1h_close(pair: str, now: float | None = None) -> float | None
     return close
 
 
+def _interval_cache_refresh_after(now: float, interval_sec: int) -> float:
+    """First second after the next UTC interval candle has closed."""
+    return float((int(now) // interval_sec + 1) * interval_sec + 1)
+
+
+def _latest_closed_short_interval_close(
+    pair: str,
+    interval: str,
+    interval_sec: int,
+    now: float | None = None,
+) -> float | None:
+    """Return the latest closed 15m/30m Binance close, cached to rollover."""
+    now = time.time() if now is None else float(now)
+    symbol = str(pair or "").strip().upper()
+    if not symbol or interval_sec <= 0:
+        return None
+    cache_key = f"{symbol}:{interval}"
+    with _short_interval_close_cache_lock:
+        cached = _short_interval_close_cache.get(cache_key)
+        if cached and now < float(cached.get("refresh_after", 0.0)):
+            cached_close = float(cached.get("close", 0.0))
+            return cached_close if cached_close > 0 else None
+
+    def _cache_failed_lookup() -> None:
+        with _short_interval_close_cache_lock:
+            _short_interval_close_cache[cache_key] = {
+                "close": 0.0,
+                "refresh_after": now + ONE_HOUR_FAILURE_RETRY_SEC,
+            }
+
+    try:
+        response = requests.get(
+            BINANCE_KLINES_URL,
+            params={"symbol": symbol, "interval": interval, "limit": 2},
+            headers=ENRICH_HEADERS,
+            timeout=10,
+        )
+        if response.status_code != 200:
+            logging.warning(
+                "market_snapshot_engine: Binance %s kline HTTP %s pair=%s",
+                interval,
+                response.status_code,
+                symbol,
+            )
+            _cache_failed_lookup()
+            return None
+        raw = response.json()
+    except Exception as exc:
+        logging.warning(
+            "market_snapshot_engine: Binance %s kline fetch failed pair=%s: %s",
+            interval,
+            symbol,
+            exc,
+        )
+        _cache_failed_lookup()
+        return None
+
+    now_ms = int(now * 1000)
+    close = None
+    for candle in raw if isinstance(raw, list) else []:
+        try:
+            close_time = int(candle[6])
+            value = float(candle[4])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if close_time < now_ms and value > 0:
+            close = value
+    if close is None:
+        _cache_failed_lookup()
+        return None
+    with _short_interval_close_cache_lock:
+        _short_interval_close_cache[cache_key] = {
+            "close": close,
+            "refresh_after": _interval_cache_refresh_after(now, interval_sec),
+        }
+    return close
+
+
 def _price_change_from_1h_close(price: object, reference_close: object) -> float | None:
     """Percent change of the live snapshot price against a closed 1h reference."""
     try:
@@ -304,6 +388,24 @@ def _enrich_collected_with_binance_1h(collected: dict) -> None:
             # interfaces.telegram_bot._snapshot_big_move_pct().
             row["price_change_1h"] = pct
             row["price_change_pct_1h"] = pct
+
+def _enrich_collected_with_binance_short_intervals(collected: dict) -> None:
+    """Write 15m/30m Big Move percentages from fresh closed Binance candles."""
+    if not collected:
+        return
+    for sym, row in collected.items():
+        if not isinstance(row, dict):
+            continue
+        pair = f"{str(sym).strip().upper()}USDT"
+        for interval, interval_sec, field_name in (
+            ("15m", 15 * 60, "price_change_15m"),
+            ("30m", 30 * 60, "price_change_30m"),
+        ):
+            reference_close = _latest_closed_short_interval_close(pair, interval, interval_sec)
+            pct = _price_change_from_1h_close(row.get("price"), reference_close)
+            if pct is not None:
+                row[field_name] = pct
+
 
 
 def _coverage_for_symbol(symbol, data, valid, reason=None):
@@ -431,6 +533,7 @@ def update_market_snapshot():
     if collected:
         _enrich_collected_with_binance_24h(collected)
         _enrich_collected_with_binance_1h(collected)
+        _enrich_collected_with_binance_short_intervals(collected)
         snapshot_ts = datetime.utcnow()
         market_intelligence = None
         if generate_market_intelligence is not None:
