@@ -68,13 +68,17 @@ def generate_radar_pro():
         alignment = data.get("trend_alignment") or "UNKNOWN"
         rsi = data.get("rsi")
         whale = data.get("whale_activity")
-        risk = data.get("market_risk_score")
         phase = data.get("market_phase_prediction")
 
-        # Default label dari kondisi existing
-        if risk == "HIGH":
-            label = "⚠ Crash Risk"
-        elif whale in ["HIGH", "EXTREME"]:
+        # Default label dari kondisi existing.
+        # "market_risk_score" adalah nilai GLOBAL (sama untuk semua coin dalam
+        # satu siklus snapshot, lihat market_radar.py + market_analyzer.py),
+        # jadi tidak dipakai langsung sebagai default di sini -- itu dulu
+        # membuat SEMUA coin ter-label "Crash Risk" begitu risk global HIGH,
+        # walau coin ybs sedang bullish. Label "Crash Risk" sekarang hanya
+        # dipasang oleh detect_crash_risk() di bawah, yang mensyaratkan risk
+        # HIGH *dan* kondisi teknikal coin ybs (bearish/overbought/liquidation).
+        if whale in ["HIGH", "EXTREME"]:
             label = "🐋 Whale Activity"
         elif trend == "BULLISH" and rsi is not None and rsi > 60:
             label = "🚀 Momentum"
