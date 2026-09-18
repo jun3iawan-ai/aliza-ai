@@ -22,7 +22,7 @@ def generate_market_prediction(snapshot):
     """
     1. Panggil calculate_market_bias(snapshot)
     2. Panggil calculate_probabilities(bullish_score, bearish_score)
-    3. Bias: bullish_probability > bearish_probability → BULLISH, else → BEARISH
+    3. Bias: probabilitas lebih tinggi menentukan BULLISH/BEARISH; skor seri → NEUTRAL
     4. Confidence: > 70 → HIGH, 55–70 → MEDIUM, < 55 → LOW
 
     Return: {
@@ -55,8 +55,10 @@ def generate_market_prediction(snapshot):
 
         if bull_p > bear_p:
             result["bias"] = "BULLISH"
-        else:
+        elif bear_p > bull_p:
             result["bias"] = "BEARISH"
+        else:
+            result["bias"] = "NEUTRAL"
 
         if bull_p > 70 or bear_p > 70:
             result["confidence"] = "HIGH"

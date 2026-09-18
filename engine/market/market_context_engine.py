@@ -62,7 +62,7 @@ def calculate_market_score() -> dict[str, Any]:
     try:
         g = get_global_market_data() or {}
         fg = _safe_float(g.get("fear_greed"))
-        if fg is None:
+        if g.get("fear_greed_status") == "failed" or fg is None:
             failed_components += 1
         else:
             if fg <= 24:
@@ -84,7 +84,7 @@ def calculate_market_score() -> dict[str, Any]:
     try:
         g = get_global_market_data() or {}
         dom = _safe_float(g.get("btc_dominance"))
-        if dom is None:
+        if g.get("btc_dominance_status") == "failed" or dom is None:
             failed_components += 1
         else:
             if dom > 60:

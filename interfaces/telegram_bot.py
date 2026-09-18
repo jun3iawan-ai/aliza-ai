@@ -2132,7 +2132,12 @@ async def quant_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         scores = calculate_market_bias(snapshot)
         bullish_score = scores.get("bullish_score", 0)
         bearish_score = scores.get("bearish_score", 0)
-        bias = "BULLISH" if bullish_score > bearish_score else "BEARISH"
+        if bullish_score > bearish_score:
+            bias = "BULLISH"
+        elif bearish_score > bullish_score:
+            bias = "BEARISH"
+        else:
+            bias = "NEUTRAL"
         total = bullish_score + bearish_score
         if total == 0:
             strength = "WEAK"
