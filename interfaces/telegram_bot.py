@@ -505,8 +505,7 @@ def _trading_submenu_keyboard():
 def _analysis_submenu_keyboard():
     return ReplyKeyboardMarkup(
         [
-            ["🎯 Konteks Market", "📊 Skor Quant"],
-            ["🔎 Penjelasan AI"],
+            ["🎯 Konteks Market", "🔎 Penjelasan AI"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -759,17 +758,14 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         _set_menu_parent(context, "analysis")
         await update.message.reply_text(
             "📈 ANALISIS\n\n"
-            "🎯 Konteks Market — skor kondisi market\n"
-            "📊 Skor Quant — market strength score\n"
+            "🎯 Konteks Market — skor kondisi market (tren harga, makro, sentimen, funding, dominance)\n"
             "🔎 Penjelasan AI — analisa AI per coin",
             reply_markup=_analysis_submenu_keyboard(),
         )
         return
-    if text == "🎯 Konteks Market":
+    # "📊 Skor Quant" digabung ke Konteks Market (komponen tren harga).
+    if text in ("🎯 Konteks Market", "📊 Skor Quant"):
         await market_context_command(update, context)
-        return
-    if text == "📊 Skor Quant":
-        await quant_command(update, context)
         return
     if text == "🔎 Penjelasan AI":
         kb = _build_coin_selector("why", MAJOR_COINS)
@@ -2164,36 +2160,43 @@ async def market_context_command(update: Update, context: ContextTypes.DEFAULT_T
     try:
         result = calculate_market_score()
         c = result.get("components", {})
-        fg = c.get("fear_greed") or {}
-        dom = c.get("btc_dominance") or {}
-        fr = c.get("funding_rate") or {}
+        pt = c.get("price_trend") or {}
         macro = c.get("macro") or {}
-        tech = c.get("technical") or {}
+        fg = c.get("fear_greed") or {}
+        fr = c.get("funding_rate") or {}
+        dom = c.get("btc_dominance") or {}
 
-        fg_val = fg.get("value")
-        dom_val = dom.get("value")
-        fr_val = fr.get("avg_fr")
-        cpi_change = macro.get("cpi_change")
-        fed_rate = macro.get("fed_rate")
-        has_signal = bool(tech.get("has_signal"))
-
-        fg_label = "—" if fg_val is None else f"{float(fg_val):.1f}"
-        dom_label = "—" if dom_val is None else f"{float(dom_val):.2f}%"
-        fr_label = "—" if fr_val is None else f"{float(fr_val):+.4f}%"
+        _arw = {"BULLISH": "↑", "BEARISH": "↓", "SIDEWAYS": "→"}
+        if pt.get("n"):
+            n, up, down = pt["n"], pt.get("up") or 0, pt.get("down") or 0
+            pt_label = (f"BTC 4H {_arw.get(pt.get('btc_4h'), '?')} 1D {_arw.get(pt.get('btc_1d'), '?')}"
+                        f" · {up}/{n} coin 4H naik, {down}/{n} turun")
+        else:
+            pt_label = "data tidak tersedia"
+        cpi_change, fed_rate, fed_change = macro.get("cpi_change"), macro.get("fed_rate"), macro.get("fed_change")
         cpi_label = "—" if cpi_change is None else f"{float(cpi_change):+.2f}%"
         fed_label = "—" if fed_rate is None else f"{float(fed_rate):.2f}%"
-        tech_label = "ada sinyal" if has_signal else "tidak ada sinyal"
+        if fed_change is not None:
+            fed_label += " (naik)" if fed_change > 0 else " (turun)" if fed_change < 0 else " (tetap)"
+        fg_val, fr_val, dom_val = fg.get("value"), fr.get("avg_fr"), dom.get("value")
+        fg_label = "—" if fg_val is None else f"{float(fg_val):.0f}"
+        if fr_val is None:
+            fr_label = "—"
+        else:
+            frv = float(fr_val)
+            fr_label = f"{frv:+.4f}% " + ("(short ramai)" if frv < -0.01 else "(long ramai)" if frv > 0.01 else "(seimbang)")
+        dom_label = "—" if dom_val is None else f"{float(dom_val):.1f}%"
 
         msg = (
-            "🎯 Market Context Score\n\n"
+            "🎯 Konteks Market\n\n"
             f"Total: {result.get('total_score', 50)}/100 — {result.get('label', 'Neutral')} {result.get('emoji', '⚪')}\n\n"
             "Breakdown:\n"
-            f"• Fear & Greed: {fg.get('score', 0)}/20 (nilai: {fg_label})\n"
-            f"• BTC Dominance: {dom.get('score', 0)}/15 (nilai: {dom_label})\n"
-            f"• Funding Rate: {fr.get('score', 0)}/25 (avg FR: {fr_label})\n"
-            f"• Makro: {macro.get('score', 0)}/25 (CPI: {cpi_label} | Fed: {fed_label})\n"
-            f"• Teknikal: {tech.get('score', 0)}/15 ({tech_label})\n\n"
-            f"{result.get('summary', 'Pasar sideways — tunggu breakout atau sinyal yang jelas.')}\n\n"
+            f"• Tren harga: {pt.get('score', 0)}/40 ({pt_label})\n"
+            f"• Makro: {macro.get('score', 0)}/20 (CPI: {cpi_label} | Fed: {fed_label})\n"
+            f"• Fear & Greed: {fg.get('score', 0)}/15 (nilai: {fg_label})\n"
+            f"• Funding: {fr.get('score', 0)}/15 (avg: {fr_label})\n"
+            f"• BTC Dominance: {dom.get('score', 0)}/10 (nilai: {dom_label})\n\n"
+            f"{result.get('summary', 'Seimbang — belum ada arah dominan.')}\n\n"
             f"⏰ {result.get('timestamp', '—')}"
         )
         await target.reply_text(msg)
