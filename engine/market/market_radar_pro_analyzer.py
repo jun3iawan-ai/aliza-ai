@@ -66,6 +66,12 @@ def generate_radar_pro():
             continue
         trend = data.get("trend") or "SIDEWAYS"
         alignment = data.get("trend_alignment") or "UNKNOWN"
+        # Label & detector memakai tren 4H yang sama dengan panah di Radar
+        # (MA10/MA30, field trend_4h) supaya panah dan label tidak bertentangan.
+        # Fallback ke field "trend" lama bila trend_4h tidak tersedia.
+        trend_4h = str(data.get("trend_4h") or "").upper()
+        label_trend = trend_4h if trend_4h in ("BULLISH", "BEARISH", "SIDEWAYS") else trend
+        ctx = dict(data, trend=label_trend)
         rsi = data.get("rsi")
         whale = data.get("whale_activity")
         phase = data.get("market_phase_prediction")
@@ -80,19 +86,21 @@ def generate_radar_pro():
         # HIGH *dan* kondisi teknikal coin ybs (bearish/overbought/liquidation).
         if whale in ["HIGH", "EXTREME"]:
             label = "🐋 Whale Activity"
-        elif trend == "BULLISH" and rsi is not None and rsi > 60:
+        elif label_trend == "BULLISH" and rsi is not None and rsi > 60:
             label = "🚀 Momentum"
-        elif trend == "BEARISH" and rsi is not None and rsi < 40:
+        elif label_trend == "BEARISH" and rsi is not None and rsi < 40:
             label = "⚡ Breakdown Risk"
-        elif trend == "BULLISH":
-            label = "📈 Strong Trend"
+        elif label_trend == "BULLISH":
+            label = "📈 Uptrend"
+        elif label_trend == "BEARISH":
+            label = "📉 Downtrend"
         else:
             label = "• Neutral"
 
         crash_risk_flag = False
         if detect_crash_risk is not None:
             try:
-                crash = detect_crash_risk(data)
+                crash = detect_crash_risk(ctx)
                 crash_risk_flag = bool(crash.get("crash_risk"))
                 logging.debug("Crash detector %s risk=%s", coin, crash_risk_flag)
                 if crash_risk_flag:
@@ -103,7 +111,7 @@ def generate_radar_pro():
         # Altseason detector: hanya untuk coin selain BTC, butuh btc_data
         if coin != "BTC" and btc_data and detect_altseason is not None:
             try:
-                altseason = detect_altseason(coin, data, btc_data)
+                altseason = detect_altseason(coin, ctx, btc_data)
                 if altseason.get("altseason_signal"):
                     label = "🚀 Altseason Signal"
             except Exception as e:
@@ -112,7 +120,7 @@ def generate_radar_pro():
         # Whale accumulation detector
         if detect_whale_accumulation is not None:
             try:
-                whale = detect_whale_accumulation(coin, data)
+                whale = detect_whale_accumulation(coin, ctx)
                 if whale.get("whale_accumulation"):
                     label = "🐋 Whale Accumulation"
             except Exception as e:
@@ -121,7 +129,7 @@ def generate_radar_pro():
         # Liquidation cascade detector
         if detect_liquidation_cascade is not None:
             try:
-                liq = detect_liquidation_cascade(coin, data)
+                liq = detect_liquidation_cascade(coin, ctx)
                 if liq.get("liquidation_signal"):
                     liq_type = liq.get("type")
                     if liq_type == "LONG_LIQUIDATION":

@@ -161,11 +161,11 @@ class UnifiedRadarTests(IsolatedAsyncioTestCase):
         with patch.object(rp, "get_snapshot_timestamp_str", return_value="14:02:08"):
             out = rp.format_radar_report([
                 {"coin": "BTC", "trend_4h": "BEARISH", "trend_1d": "SIDEWAYS", "rsi": 25.2, "label": "⚡ Breakdown Risk"},
-                {"coin": "OM", "trend_4h": "BULLISH", "trend_1d": "BULLISH", "rsi": 61, "label": "📈 Strong Trend"},
+                {"coin": "OM", "trend_4h": "BULLISH", "trend_1d": "BULLISH", "rsi": 61, "label": "📈 Uptrend"},
                 {"coin": "ADA", "trend_4h": "BEARISH", "trend_1d": "UNKNOWN", "rsi": None, "label": "• Neutral"},
             ])
         self.assertIn("BTC    4H ↓  1D →  RSI 25  ⚡ Breakdown Risk", out)
-        self.assertIn("4H ↑  1D ↑  RSI 61  📈 Strong Trend ⭐", out)
+        self.assertIn("4H ↑  1D ↑  RSI 61  📈 Uptrend ⭐", out)
         self.assertIn("ADA    4H ↓  1D ?  RSI  —  —", out)
         self.assertNotIn("Neutral", out)
         self.assertIn("14:02:08", out)
