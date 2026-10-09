@@ -169,3 +169,21 @@ class TestOtherDetectorsUnaffectedByFix:
         item = _label_for(monkeypatch, markets, "BNB")
 
         assert item["label"] == "🐋 Whale Activity"
+
+
+def test_label_follows_trend_4h_arrow_and_is_symmetric(monkeypatch):
+    """Label Radar memakai trend_4h (sama dengan panah), bukan field trend lama."""
+    markets = {
+        "OM": dict(_coin(trend="BULLISH", rsi=49), trend_4h="SIDEWAYS"),    # dulu "Strong Trend"
+        "ETH": dict(_coin(trend="SIDEWAYS", rsi=45), trend_4h="BEARISH"),   # dulu "Neutral"
+        "SOL": dict(_coin(trend="SIDEWAYS", rsi=55), trend_4h="BULLISH"),
+        "ADA": _coin(trend="BEARISH", rsi=30),                         # tanpa trend_4h → fallback
+    }
+    monkeypatch.setattr(analyzer, "get_market_snapshot", lambda: {"data": markets})
+    for name in ("detect_crash_risk", "detect_altseason", "detect_whale_accumulation", "detect_liquidation_cascade"):
+        monkeypatch.setattr(analyzer, name, None)
+    labels = {r["coin"]: r["label"] for r in analyzer.generate_radar_pro()}
+    assert labels["OM"] == "• Neutral"
+    assert labels["ETH"] == "📉 Downtrend"
+    assert labels["SOL"] == "📈 Uptrend"
+    assert labels["ADA"] == "⚡ Breakdown Risk"
