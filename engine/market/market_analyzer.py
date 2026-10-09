@@ -32,6 +32,10 @@ def _get_cg_headers() -> dict:
 COINGECKO_CHART_URL = "https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
 BINANCE_TICKER_URL = "https://api.binance.com/api/v3/ticker/price"
 BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
+BINANCE_FUTURES_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
+# Coin yang baru listing di spot (mis. HYPE) punya histori pendek; kalau spot
+# memberi kurang dari ini, pakai candle futures USDT-M yang historinya lebih panjang.
+SPOT_HISTORY_MIN = 60
 TIMEOUT = 12
 KLINES_LIMIT = 100
 
@@ -129,6 +133,30 @@ def _extract_closed_kline_closes(data, now_ms=None):
 
 
 def _get_binance_klines(symbol_usdt, interval, limit=100):
+    """Spot klines; fallback ke futures jika histori spot terlalu pendek."""
+    closes = _get_binance_spot_klines(symbol_usdt, interval, limit)
+    need = min(int(limit or 0), SPOT_HISTORY_MIN)
+    if len(closes) >= need:
+        return closes
+    sym = (symbol_usdt or "").upper().strip()
+    if not sym.endswith("USDT"):
+        sym = f"{sym}USDT"
+    try:
+        r = requests.get(BINANCE_FUTURES_KLINES_URL,
+                         params={"symbol": sym, "interval": interval, "limit": min(limit, 1000)},
+                         headers=HEADERS, timeout=TIMEOUT)
+        if r.status_code == 200 and isinstance(r.json(), list):
+            fut = _extract_closed_kline_closes(r.json())
+            if len(fut) > len(closes):
+                logging.info("klines %s %s: spot %d candle, pakai futures %d", sym, interval, len(closes), len(fut))
+                set_cached_klines(sym, interval, fut)
+                return fut
+    except Exception as e:  # noqa: BLE001
+        logging.debug("futures klines fallback %s %s: %s", sym, interval, e)
+    return closes
+
+
+def _get_binance_spot_klines(symbol_usdt, interval, limit=100):
     """
     Fetch OHLCV klines from Binance. symbol_usdt must be e.g. BTCUSDT, ETHUSDT.
     Returns list of closed-candle prices (oldest to newest), or [] on failure.

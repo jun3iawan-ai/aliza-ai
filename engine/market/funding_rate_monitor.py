@@ -33,7 +33,7 @@ WATCHLIST = [
     "BTC", "ETH", "BNB", "SOL", "XRP",
     "ADA", "SUI", "ARB", "JTO", "ETHFI",
     "WLD", "OM", "ASTER", "XPL", "TAO",
-    "FARTCOIN", "HYPE", "ZEREBRO", "XAUT",
+    "HYPE", "XAUT",
 ]
 SYMBOL_MAP = {
     "BTC": "BTCUSDT", "ETH": "ETHUSDT", "BNB": "BNBUSDT",
@@ -41,8 +41,7 @@ SYMBOL_MAP = {
     "SUI": "SUIUSDT", "ARB": "ARBUSDT", "JTO": "JTOUSDT",
     "ETHFI": "ETHFIUSDT", "WLD": "WLDUSDT", "OM": "OMUSDT",
     "ASTER": "ASTERUSDT", "XPL": "XPLUSDT", "TAO": "TAOUSDT",
-    "FARTCOIN": "FARTCOINUSDT", "HYPE": "HYPEUSDT",
-    "ZEREBRO": "ZEREBROUSDT", "XAUT": "XAUTUSDT",
+    "HYPE": "HYPEUSDT", "XAUT": "XAUTUSDT",
     "PEPE": "1000PEPEUSDT",
 }
 
