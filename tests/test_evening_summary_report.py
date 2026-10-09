@@ -167,54 +167,163 @@ class SlPercentageLabelTestCase(unittest.TestCase):
         self.assertIn("(5.0% dari entry)", out)
 
 
+_BRIEF_PATCHES = dict(
+    _get_cross_asset_data={"dxy": None, "gold": None, "oil": None, "sp500": None, "vix": None},
+    _fetch_crypto_news=[],
+    _fetch_macro_news=[],
+    _get_stablecoin_data={"interpretation": "-", "usdt_dominance": None},
+    _get_deribit_options={"interpretation": "-", "put_call_ratio": None, "max_pain": None},
+    _get_coinbase_premium={"interpretation": "-", "premium_pct": None},
+    _get_institutional_data={
+        "etf_flow_usd_m": None, "etf_flow_7d_usd_m": None,
+        "etf_sentiment": "-", "netflow_btc": None, "netflow_sentiment": "-",
+        "liq_above": None, "liq_below": None,
+    },
+    _build_coin_details_for_brief=({}, ""),
+    _intraday_ranges_since_morning={"BTC": {"open": 1.0, "high": 2.0, "low": 0.5, "last": 1.5}},
+)
+
+
+def _brief_data():
+    return {
+        "market_score": 50, "market_label": "Neutral", "fear_greed": 50,
+        "btc_dominance": 55.0, "top_coins": {}, "funding_rates": {}, "macro": {},
+        "active_signal": None, "events_tomorrow": [], "context_summary": "",
+    }
+
+
+async def _run_brief(fake_llm, mode="pagi"):
+    import contextlib
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(tb, "ask_aliza", object()))
+        llm = stack.enter_context(patch.object(tb, "_call_llm_async", side_effect=fake_llm))
+        for name, value in _BRIEF_PATCHES.items():
+            stack.enter_context(patch.object(tb, name, return_value=value))
+        out = await tb._generate_brief_analysis(_brief_data(), mode=mode)
+    return out, llm
+
+
+_GOOD_PAGI = """🧭 KONDISI HARI INI
+Regime : RANGE
+Bias   : Netral
+Kejelasan: 5/10 — sinyal campur
+Kenapa : funding panas, volume turun
+
+🗺️ SKENARIO BTC
+▲ Jika close 4H > 64.200 → 66.000
+▬ Jika tetap di range → sideways
+▼ Jika close 4H < 60.800 → 58.500
+
+👀 COIN LAYAK DIPANTAU
+• SOL — dekat support
+
+⚠️ YANG HARUS DIHINDARI
+• Leverage tinggi menjelang CPI
+
+🚨 CATALYST
+• 19:30 WIB — CPI AS"""
+
+
 class FallbackMessageTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_fallback_does_not_leak_internal_implementation_wording(self):
-        """The rare (~1x/7 days observed live) path where the main analysis LLM
-        call outputs SARAN SPOT/FUTURES/DISCLAIMER content instead of the 6
-        required KEPUTUSAN HARI INI sections, leaving main_out empty after the
-        dedup-truncation — must not expose phrases like 'LLM tidak mengikuti
-        format' to the end user."""
-        brief_data = {
-            "market_score": 50,
-            "market_label": "Neutral",
-            "fear_greed": 50,
-            "btc_dominance": 55.0,
-            "top_coins": {},
-            "funding_rates": {},
-            "macro": {},
-            "active_signal": None,
-            "events_tomorrow": [],
-            "context_summary": "",
+        """LLM membalas format lama (SARAN SPOT) / rusak → fallback peta kondisi,
+        tanpa kata-kata internal seperti 'LLM tidak mengikuti format'."""
+        async def _contaminated(prompt):
+            return "🟢 SARAN SPOT (Swing 1-7 hari)\nTidak ada setup spot yang layak."
+
+        out, _ = await _run_brief(_contaminated)
+        self.assertNotIn("LLM tidak mengikuti format", out)
+        self.assertNotIn("Format analisis tidak sesuai", out)
+        self.assertNotIn("SARAN SPOT", out)
+        self.assertIn("🌅 PETA KONDISI", out)
+        self.assertIn("🧭 KONDISI HARI INI", out)
+
+
+class BriefMapFormatTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_pagi_single_llm_call_no_action_or_entry(self):
+        async def _good(prompt):
+            return _GOOD_PAGI
+
+        out, llm = await _run_brief(_good)
+        self.assertEqual(llm.await_count, 1)
+        prompt = llm.await_args.args[0]
+        self.assertIn("JANGAN memberi perintah beli/jual", prompt)
+        self.assertTrue(out.startswith("🌅 PETA KONDISI — "))
+        self.assertIn("🗺️ SKENARIO BTC", out)
+        self.assertIn("bukan saran entry", out)
+        for leak in ("Action:", "KEPUTUSAN HARI INI", "SARAN SPOT", "SARAN FUTURES"):
+            self.assertNotIn(leak, out)
+
+    async def test_duplicate_block_and_leaked_sections_are_dropped(self):
+        leaky = _GOOD_PAGI + "\n\n🧭 KONDISI HARI INI\nRegime : TREND TURUN\n"
+        leaky2 = _GOOD_PAGI.replace("🚨 CATALYST", "Action: 🟢 BELI\n🚨 CATALYST")
+
+        async def _dup(prompt):
+            return leaky
+        out, _ = await _run_brief(_dup)
+        self.assertEqual(out.count("🧭 KONDISI HARI INI"), 1)
+        self.assertNotIn("TREND TURUN", out)
+
+        async def _leak(prompt):
+            return leaky2
+        out2, _ = await _run_brief(_leak)
+        self.assertNotIn("Action:", out2)
+        self.assertNotIn("BELI", out2)
+
+    async def test_malam_includes_morning_map_in_prompt(self):
+        async def _good_malam(prompt):
+            return ("🔄 APA YANG BERUBAH\nRegime : RANGE → RANGE\n\n📍 LEVEL YANG TERUJI\n• BTC 64.200 ❌\n\n"
+                    "📊 SKENARIO YANG TERJADI\nSideways berjalan.\n\n🗺️ SKENARIO BESOK\n▲ Jika > 64.200\n\n"
+                    "⚠️ PERHATIKAN BESOK\n• Weekend\n\n📅 EVENT BESOK\n• Tidak ada")
+
+        state = {"text": "PETA-PAGI-PENANDA",
+                 "levels": {"BTC": {"support": 0.8, "resistance": 1.8}}}
+        with patch.object(tb, "_load_morning_state_today", return_value=state):
+            out, llm = await _run_brief(_good_malam, mode="malam")
+        prompt = llm.await_args.args[0]
+        self.assertIn("PETA-PAGI-PENANDA", prompt)
+        self.assertIn("high: 2.00 | low: 0.50", prompt)
+        # section level dihitung kode, versi karangan LLM ("64.200") dibuang
+        self.assertNotIn("• BTC 64.200 ❌", out)
+        self.assertIn("BTC resistance 1.80 ❌ disentuh, gagal tembus (high 2.00)", out)
+        self.assertIn("BTC support 0.80 ✅ disentuh, bertahan (low 0.50)", out)
+        self.assertLess(out.index("📍 LEVEL YANG TERUJI"), out.index("📊 SKENARIO YANG TERJADI"))
+        self.assertTrue(out.startswith("🌙 REVIEW HARI INI — "))
+        self.assertIn("📍 LEVEL YANG TERUJI", out)
+
+
+class LevelTestLinesTestCase(unittest.TestCase):
+    def test_untouched_levels_are_excluded_and_breaks_detected(self):
+        levels = {
+            "BTC": {"support": 81037.99, "resistance": 86242.01},   # tidak tersentuh
+            "ETH": {"support": 2400.0, "resistance": 2500.0},       # resistance tembus
+            "SOL": {"support": 109.0, "resistance": 125.0},         # support jebol
         }
+        ranges = {
+            "BTC": {"open": 81808, "high": 82617.23, "low": 81603.52, "last": 82453.77},
+            "ETH": {"open": 2478, "high": 2520, "low": 2471, "last": 2510},
+            "SOL": {"open": 109.3, "high": 110.9, "low": 107.5, "last": 108.2},
+        }
+        lines = tb._level_test_lines(levels, ranges)
+        joined = "\n".join(lines)
+        self.assertNotIn("BTC", joined)
+        self.assertIn("ETH resistance 2,500.00 ⚡ tembus", joined)
+        self.assertIn("SOL support 109.00 ⚡ jebol", joined)
+        self.assertEqual(len(lines), 2)
 
-        async def _fake_llm_main_out_is_contaminated(prompt):
-            # Simulates the LLM ignoring "Jangan tulis saran spot atau futures"
-            # and answering with a SARAN SPOT block instead of the 6 sections.
-            if "KEPUTUSAN HARI INI (WAJIB DIIKUTI)" in prompt and "6 section saja" in prompt:
-                return "🟢 SARAN SPOT (Swing 1-7 hari)\nTidak ada setup spot yang layak."
-            if "hanya saran spot" in prompt.lower():
-                return "🟢 SARAN SPOT (Swing 1-7 hari)\nTidak ada setup spot yang layak — tunggu pullback ke support."
-            return "📊 SARAN FUTURES (Swing 1-7 hari)\nKondisi tidak mendukung futures saat ini."
 
-        with patch.object(tb, "ask_aliza", object()), \
-             patch.object(tb, "_call_llm_async", side_effect=_fake_llm_main_out_is_contaminated), \
-             patch.object(tb, "_get_cross_asset_data", return_value={"dxy": None, "gold": None, "oil": None, "sp500": None, "vix": None}), \
-             patch.object(tb, "_fetch_crypto_news", return_value=[]), \
-             patch.object(tb, "_fetch_macro_news", return_value=[]), \
-             patch.object(tb, "_get_stablecoin_data", return_value={"interpretation": "-", "usdt_dominance": None}), \
-             patch.object(tb, "_get_deribit_options", return_value={"interpretation": "-", "put_call_ratio": None, "max_pain": None}), \
-             patch.object(tb, "_get_coinbase_premium", return_value={"interpretation": "-", "premium_pct": None}), \
-             patch.object(tb, "_get_institutional_data", return_value={
-                 "etf_flow_usd_m": None, "etf_flow_7d_usd_m": None,
-                 "etf_sentiment": "-", "netflow_btc": None, "netflow_sentiment": "-",
-                 "liq_above": None, "liq_below": None,
-             }), \
-             patch.object(tb, "_build_coin_details_for_brief", return_value=({}, "")):
-            analysis = await tb._generate_brief_analysis(brief_data)
-
-        self.assertNotIn("LLM tidak mengikuti format", analysis)
-        self.assertNotIn("Format analisis tidak sesuai", analysis)
-        self.assertIn("KEPUTUSAN HARI INI", analysis)
+class BriefMapPersistenceTestCase(unittest.TestCase):
+    def test_save_then_load_same_day_and_stale_day_ignored(self):
+        import json, os, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "brief_map_state.json")
+            with patch.object(tb, "_BRIEF_MAP_STATE_PATH", path):
+                tb._save_morning_map("isi peta pagi", levels={"BTC": {"support": 1.0}})
+                self.assertEqual(tb._load_morning_map_today(), "isi peta pagi")
+                self.assertEqual(tb._load_morning_state_today()["levels"], {"BTC": {"support": 1.0}})
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump({"date_wib": "2000-01-01", "text": "basi"}, fh)
+                self.assertEqual(tb._load_morning_map_today(), "")
 
 
 _AI_ESTIMATE_MARKERS = ("estimasi AI", "belum tervalidasi", "bukan sinyal yang sudah melalui backtest")
@@ -311,117 +420,6 @@ class AiEstimateDisclaimerTestCase(unittest.TestCase):
         self.assertEqual(out2.count("estimasi AI"), 1)
 
 
-_DUPLICATED_KEPUTUSAN_BLOCK = """⚡ KEPUTUSAN HARI INI
-Regime: Trending Bullish
-Bias: Bullish
-Conviction: 5/10 — Sentimen pasar menunjukkan bullish, meskipun ada beberapa coin yang sedang dalam kondisi bearish.
-Action: 🟢 BELI BERTAHAP
-Catalyst: Event ISM Manufacturing besok
-
-📊 KONTEKS MARKET
-Market menunjukkan momentum bullish jangka pendek.
-Cross-asset: risk-on, DXY melemah.
-
-🎯 STRATEGI HARI INI
-Tambah exposure bertahap di level support.
-
-⚠️ YANG HARUS DIHINDARI
-Over-leverage tanpa konfirmasi struktur.
-
-🚨 LEVEL & CATALYST PENTING
-Support BTC $77,507.17 — pantau breakout resistance.
-
-📋 SKENARIO MINGGU INI
-Bull case (prob 55%): breakout resistance → target $85,000
-Base case (prob 30%): sideways di range saat ini
-Bear case (prob 15%): breakdown support → risiko ke $75,000
-Invalidasi bull: Penutupan harian di bawah $77,507.17 untuk BTC.
-
-⚡ KEPUTUSAN HARI INI
-Regime: Trending Bearish
-Bias: Neutral-Bearish
-Conviction: 5/10 — Meskipun ada peluang bullish, tekanan bearish saat ini perlu diperhatikan.
-Action: ⏸️ TAHAN
-Catalyst: Event ISM Manufacturing besok
-
-📊 KONTEKS MARKET
-Market menunjukkan tekanan bearish jangka pendek.
-Cross-asset: risk-off, DXY menguat.
-
-🎯 STRATEGI HARI INI
-Tahan posisi, tunggu konfirmasi arah.
-
-⚠️ YANG HARUS DIHINDARI
-Entry baru tanpa konfirmasi reversal.
-
-🚨 LEVEL & CATALYST PENTING
-Support BTC $77,507.17 — waspadai breakdown.
-
-📋 SKENARIO MINGGU INI
-Bull case (prob 25%): reversal dari support → target $82,000
-Base case (prob 40%): sideways dengan bias turun
-Bear case (prob 35%): breakdown lanjutan → risiko ke $73,000
-Invalidasi bull: Jika harga jatuh di bawah 77,507.17 dan tidak ada bullish signal."""
-
-
-class DuplicateKeputusanHariIniTestCase(unittest.IsolatedAsyncioTestCase):
-    """Regression for EVENING_SUMMARY_DUPLIKASI_AUDIT_REPORT.md poin 2: a
-    single `main_prompt` completion (no retry/loop involved — confirmed via
-    log audit, exactly one OpenAI call per gather() task) can itself contain
-    two full "⚡ KEPUTUSAN HARI INI" blocks back-to-back, reproducing the
-    exact 2026-08-31 13:23 WIB "Ringkasan Malam" incident (conflicting
-    Bullish/BELI BERTAHAP then Bearish/TAHAN blocks in one message). The old
-    dedup logic only stripped a trailing SARAN SPOT/SARAN FUTURES/DISCLAIMER
-    leak — it never checked for a repeated KEPUTUSAN HARI INI header."""
-
-    async def test_second_keputusan_block_is_dropped(self):
-        brief_data = {
-            "market_score": 50,
-            "market_label": "Neutral",
-            "fear_greed": 50,
-            "btc_dominance": 55.0,
-            "top_coins": {},
-            "funding_rates": {},
-            "macro": {},
-            "active_signal": None,
-            "events_tomorrow": [],
-            "context_summary": "",
-        }
-
-        async def _fake_llm_duplicates_main_block(prompt):
-            # "6 section saja" appears only in _generate_brief_analysis's own
-            # main_prompt (FORMAT OUTPUT instruction) — unlike
-            # "KEPUTUSAN HARI INI (WAJIB DIIKUTI)", which is a section inside
-            # the *spot/futures* prompts, not main_prompt itself.
-            if "6 section saja" in prompt:
-                return _DUPLICATED_KEPUTUSAN_BLOCK
-            if "hanya saran spot" in prompt.lower():
-                return "🟢 SARAN SPOT (Swing 1-7 hari)\nTidak ada setup spot yang layak — tunggu pullback ke support."
-            return "📊 SARAN FUTURES (Swing 1-7 hari)\nKondisi tidak mendukung futures saat ini."
-
-        with patch.object(tb, "ask_aliza", object()), \
-             patch.object(tb, "_call_llm_async", side_effect=_fake_llm_duplicates_main_block), \
-             patch.object(tb, "_get_cross_asset_data", return_value={"dxy": None, "gold": None, "oil": None, "sp500": None, "vix": None}), \
-             patch.object(tb, "_fetch_crypto_news", return_value=[]), \
-             patch.object(tb, "_fetch_macro_news", return_value=[]), \
-             patch.object(tb, "_get_stablecoin_data", return_value={"interpretation": "-", "usdt_dominance": None}), \
-             patch.object(tb, "_get_deribit_options", return_value={"interpretation": "-", "put_call_ratio": None, "max_pain": None}), \
-             patch.object(tb, "_get_coinbase_premium", return_value={"interpretation": "-", "premium_pct": None}), \
-             patch.object(tb, "_get_institutional_data", return_value={
-                 "etf_flow_usd_m": None, "etf_flow_7d_usd_m": None,
-                 "etf_sentiment": "-", "netflow_btc": None, "netflow_sentiment": "-",
-                 "liq_above": None, "liq_below": None,
-             }), \
-             patch.object(tb, "_build_coin_details_for_brief", return_value=({}, "")):
-            analysis = await tb._generate_brief_analysis(brief_data)
-
-        self.assertEqual(analysis.count("⚡ KEPUTUSAN HARI INI"), 1)
-        self.assertIn("Trending Bullish", analysis)
-        self.assertIn("BELI BERTAHAP", analysis)
-        # the second (bearish/TAHAN) block must be fully gone, not just its header
-        self.assertNotIn("Trending Bearish", analysis)
-        self.assertNotIn("Neutral-Bearish", analysis)
-        self.assertNotIn("⏸️ TAHAN", analysis)
 
 
 class SpotAnalysisHeaderSafeguardTestCase(unittest.IsolatedAsyncioTestCase):
