@@ -147,6 +147,34 @@ def get_sr_levels(symbol: str) -> dict[str, list[float]] | None:
     return {"resistance": res_levels, "support": sup_levels}
 
 
+def evaluate_breakout(price: float, sr: dict[str, list[float]] | None) -> dict[str, Any] | None:
+    """Inti deteksi breakout TANPA state (tanpa cooldown/level memory).
+    UP: harga > resistance*(1+margin); DOWN: harga < support*(1-margin);
+    diabaikan bila harga sudah >=MAX_BREAKOUT_DISTANCE_PCT dari level."""
+    try:
+        price = float(price)
+    except (TypeError, ValueError):
+        return None
+    if price <= 0 or not sr:
+        return None
+    resistances = [r for r in sr.get("resistance") or [] if r and r > 0]
+    supports = [s for s in sr.get("support") or [] if s and s > 0]
+    if not resistances or not supports:
+        return None
+    candidates_up = [r for r in resistances if price > r * (1 + MARGIN_BREAKOUT)]
+    candidates_down = [s for s in supports if price < s * (1 - MARGIN_BREAKOUT)]
+    if candidates_up:
+        direction, level = "UP", max(candidates_up)
+    elif candidates_down:
+        direction, level = "DOWN", min(candidates_down)
+    else:
+        return None
+    pct_from = (price - level) / level * 100.0
+    if abs(pct_from) / 100.0 >= MAX_BREAKOUT_DISTANCE_PCT:
+        return None
+    return {"direction": direction, "level": float(level), "price": price, "pct_from_level": float(pct_from)}
+
+
 def check_breakout(symbol: str, current_price: float) -> dict[str, Any] | None:
     """
     Deteksi breakout UP (> resistance + 0.5%) atau DOWN (< support - 0.5%).
@@ -165,34 +193,10 @@ def check_breakout(symbol: str, current_price: float) -> dict[str, Any] | None:
         return None
 
     sr = get_sr_levels(sym)
-    if sr is None:
+    hit = evaluate_breakout(price, sr)
+    if hit is None:
         return None
-
-    resistances = [r for r in sr.get("resistance") or [] if r and r > 0]
-    supports = [s for s in sr.get("support") or [] if s and s > 0]
-    if not resistances or not supports:
-        return None
-
-    # UP: harga di atas resistance tertinggi yang sudah ditembus dengan margin
-    candidates_up = [r for r in resistances if price > r * (1 + MARGIN_BREAKOUT)]
-    # DOWN: harga di bawah support terendah yang sudah ditembus dengan margin
-    candidates_down = [s for s in supports if price < s * (1 - MARGIN_BREAKOUT)]
-
-    direction = None
-    level = None
-    if candidates_up:
-        direction = "UP"
-        level = max(candidates_up)
-        pct_from = (price - level) / level * 100.0
-    elif candidates_down:
-        direction = "DOWN"
-        level = min(candidates_down)
-        pct_from = (price - level) / level * 100.0
-    else:
-        return None
-
-    if abs(pct_from) / 100.0 >= MAX_BREAKOUT_DISTANCE_PCT:
-        return None  # harga sudah terlalu jauh, alert tidak actionable
+    direction, level, pct_from = hit["direction"], hit["level"], hit["pct_from_level"]
 
     level_f = float(level)
     last_broken = ngov.get_value("breakout_level", sym)
@@ -264,7 +268,9 @@ async def run_breakout_check() -> list[dict[str, Any]]:
         logger.warning("breakout_detector: get_market_snapshot failed: %s", e)
         return []
 
-    for symbol in WATCHLIST:
+    # Semua coin di snapshot (dulu hanya WATCHLIST 5 coin). Level S/R di-cache
+    # 4 jam per coin, jadi tambahan coin = tambahan request ringan per 4 jam.
+    for symbol in list(data.keys()):
         row = data.get(symbol)
         if not row or not isinstance(row, dict):
             continue
