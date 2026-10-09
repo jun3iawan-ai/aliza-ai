@@ -63,11 +63,11 @@ class MenuRoutingTests(IsolatedAsyncioTestCase):
     async def test_trading_menu_uses_new_buttons_and_old_label_routes(self):
         labels = [b for row in tb._trading_submenu_keyboard().keyboard for b in row]
         labels = [getattr(b, "text", b) for b in labels]
-        assert "📍 Dekat Support" in labels and "🟢 Peluang Spot" not in labels
+        assert "📍 Dekat S/R" in labels and "🟢 Peluang Spot" not in labels
         with patch.object(tb, "near_support_command", AsyncMock()) as m:
-            for label in ("📍 Dekat Support", "🟢 Peluang Spot"):
+            for label in ("📍 Dekat S/R", "📍 Dekat Support", "🟢 Peluang Spot"):
                 await tb.menu_button_handler(self._update(label, []), SimpleNamespace(user_data={}))
-        assert m.await_count == 2
+        assert m.await_count == 3
 
     async def test_analisis_coin_selector_uses_cond_prefix(self):
         replies = []
@@ -75,3 +75,10 @@ class MenuRoutingTests(IsolatedAsyncioTestCase):
         markup = replies[-1][1]
         datas = [b.callback_data for row in markup.inline_keyboard for b in row]
         assert datas and all(d.startswith("cond_") for d in datas)
+
+
+def test_near_levels_has_both_sides():
+    data = {"BTC": BTC, "OM": {"price": 100.0, "resistance": 102.0, "trend_4h": "BULLISH"}}
+    text = cc.format_near_levels(cc.near_support_rows(data), cc.near_resistance_rows(data), snapshot_ts="t")
+    assert "🔻 Dekat support" in text and "BTC" in text
+    assert "🔺 Dekat resistance" in text and "OM     2.0% di bawah $102" in text

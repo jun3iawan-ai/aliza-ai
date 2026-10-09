@@ -89,9 +89,11 @@ from engine.market.market_radar_pro_analyzer import (
 from engine.market.market_universe import MAJOR_COINS
 from engine.market.coin_condition import (
     build_coin_condition,
-    format_near_support,
+    format_near_levels,
+    near_resistance_rows,
     near_support_rows,
 )
+from engine.market.market_scan import collect_scan, fetch_1h_changes, format_market_scan
 # Trading
 from engine.trading.opportunity_scanner import (
     scan_opportunities,
@@ -473,7 +475,7 @@ def _market_submenu_keyboard():
         [
             ["🌅 Ringkasan Pagi", "🌙 Ringkasan Malam"],
             ["📡 Radar", "ℹ️ Info Coin"],
-            ["🔔 Monitor Pasar"],
+            ["⚡ Scan Pasar"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -492,7 +494,7 @@ def _futures_trading_submenu_keyboard():
 def _trading_submenu_keyboard():
     return ReplyKeyboardMarkup(
         [
-            ["📍 Dekat Support", "🔍 Analisis Coin"],
+            ["📍 Dekat S/R", "🔍 Analisis Coin"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -524,27 +526,13 @@ def _macro_submenu_keyboard():
     )
 
 
-def _market_monitor_submenu_keyboard():
-    return ReplyKeyboardMarkup(
-        [
-            ["🚨 Cek Breakout", "📊 Cek Volume Spike"],
-            ["📍 Levels (S/R)"],
-            ["💥 Cek Big Move (snapshot)", "🔵 Cek RSI Ekstrem (snapshot)"],
-            ["📌 Snapshot Market"],
-            ["⬅ Kembali"],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=False,
-    )
-
-
 
 def _system_submenu_keyboard():
     return ReplyKeyboardMarkup(
         [
             ["⚙️ Status Sistem", "🏥 Health Sistem"],
             ["📊 Alert Stats", "🧪 Test Alert"],
-            ["🛠 Debug Market"],
+            ["🛠 Debug Market", "📌 Snapshot Market"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -629,17 +617,42 @@ async def _coin_condition_text(symbol: str) -> str:
     )
 
 
+async def scan_pasar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """⚡ Scan Pasar: laporan gabungan read-only (tanpa cooldown, tanpa kirim alert)."""
+    logging.info("COMMAND RECEIVED: scan_pasar (menu)")
+    target = _reply_target(update)
+    if not target:
+        return
+    try:
+        data = (get_market_snapshot() or {}).get("data") or {}
+        if not data:
+            await target.reply_text("Data market belum tersedia.")
+            return
+
+        def _work():
+            changes = fetch_1h_changes(list(data.keys()))
+            return collect_scan(data, changes, get_sr_levels, get_avg_volume)
+
+        scan = await asyncio.get_running_loop().run_in_executor(None, _work)
+        await target.reply_text(format_market_scan(scan, snapshot_ts=get_snapshot_timestamp_str() or "—"))
+    except Exception as e:  # noqa: BLE001
+        logging.error("SCAN PASAR ERROR: %s", e, exc_info=True)
+        await target.reply_text("Terjadi kesalahan memuat scan pasar.")
+
+
 async def near_support_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """📍 Dekat Support: coin yang harganya ≤3% di atas support + konteks tren."""
+    """📍 Dekat S/R: coin ≤3% di atas support / di bawah resistance + konteks tren."""
     logging.info("COMMAND RECEIVED: near_support (menu)")
     target = _reply_target(update)
     if not target:
         return
     try:
         data = (get_market_snapshot() or {}).get("data") or {}
-        rows = near_support_rows(data)
-        text = format_near_support(rows, snapshot_ts=get_snapshot_timestamp_str() or "—")
-        kb = _build_coin_selector("cond", [r["coin"] for r in rows]) if rows else None
+        sup_rows = near_support_rows(data)
+        res_rows = near_resistance_rows(data)
+        text = format_near_levels(sup_rows, res_rows, snapshot_ts=get_snapshot_timestamp_str() or "—")
+        coins = list(dict.fromkeys([r["coin"] for r in sup_rows] + [r["coin"] for r in res_rows]))
+        kb = _build_coin_selector("cond", coins) if coins else None
         await target.reply_text(text, reply_markup=kb) if kb else await target.reply_text(text)
     except Exception as e:  # noqa: BLE001
         logging.error("NEAR SUPPORT ERROR: %s", e)
@@ -673,13 +686,6 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     # ⬅ Kembali (legacy: ⬅ Back) → satu level di atas untuk submenu bertingkat.
     if text in ("⬅ Kembali", "⬅ Back"):
         parent = _get_menu_parent(context)
-        if parent == "market_monitor":
-            _set_menu_parent(context, "market")
-            await update.message.reply_text(
-                "📊 MARKET",
-                reply_markup=_market_submenu_keyboard(),
-            )
-            return
         _set_menu_parent(context, None)
         await update.message.reply_text(
             "Pilih menu di bawah.",
@@ -696,17 +702,15 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             "🌙 Ringkasan Malam — Ringkasan sore\n"
             "📡 Radar — arah 4H/1D, RSI & kondisi semua coin\n"
             "ℹ️ Info Coin — teknikal, tokenomics, on-chain per coin\n"
-            "🔔 Monitor Pasar — levels S/R, big move, RSI, breakout, volume",
+            "⚡ Scan Pasar — gerak 1 jam, breakout, volume spike, RSI ekstrem, dekat resistance",
             reply_markup=_market_submenu_keyboard(),
         )
         return
-    if text == "🔔 Monitor Pasar":
-        _set_menu_parent(context, "market_monitor")
-        await update.message.reply_text(
-            "🔔 MONITOR PASAR\n\n"
-            "Levels, momentum snapshot, breakout, volume spike, dan snapshot market.",
-            reply_markup=_market_monitor_submenu_keyboard(),
-        )
+    # Scan Pasar menggantikan submenu Monitor Pasar; label lama (keyboard
+    # ter-cache) diarahkan ke tampilan baru yang setara.
+    if text in ("⚡ Scan Pasar", "🔔 Monitor Pasar", "💥 Cek Big Move (snapshot)",
+                "🔵 Cek RSI Ekstrem (snapshot)", "🚨 Cek Breakout", "📊 Cek Volume Spike"):
+        await scan_pasar_command(update, context)
         return
     if text == "🌅 Ringkasan Pagi":
         await morning_brief_command(update, context)
@@ -725,21 +729,6 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup=kb,
         )
         return
-    if text == "📍 Levels (S/R)":
-        await levels_command(update, context)
-        return
-    if text == "💥 Cek Big Move (snapshot)":
-        await check_big_move_command(update, context)
-        return
-    if text == "🔵 Cek RSI Ekstrem (snapshot)":
-        await check_rsi_extreme_command(update, context)
-        return
-    if text == "🚨 Cek Breakout":
-        await check_breakout_command(update, context)
-        return
-    if text == "📊 Cek Volume Spike":
-        await check_volume_spike_command(update, context)
-        return
     if text == "📌 Snapshot Market":
         await snapshot_command(update, context)
         return
@@ -748,13 +737,13 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text == "💹 Trading":
         await update.message.reply_text(
             "💹 TRADING\n\n"
-            "📍 Dekat Support — coin yang harganya dekat support + konteks tren\n"
+            "📍 Dekat S/R — coin yang dekat support/resistance + konteks tren\n"
             "🔍 Analisis Coin — kartu kondisi per coin (tren, RSI, posisi S/R, funding)",
             reply_markup=_trading_submenu_keyboard(),
         )
         return
     # "🟢 Peluang Spot" = label lama (keyboard ter-cache) → tampilan baru.
-    if text in ("📍 Dekat Support", "🟢 Peluang Spot"):
+    if text in ("📍 Dekat S/R", "📍 Dekat Support", "🟢 Peluang Spot", "📍 Levels (S/R)"):
         await near_support_command(update, context)
         return
     if text == "🔍 Analisis Coin":
@@ -2303,16 +2292,9 @@ async def snapshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Coins : {num_coins}",
             f"Age   : {age}s\n",
         ]
-        for symbol, market in list(data.items())[:10]:
-            price = market.get("price")
-            if price is not None:
-                try:
-                    p = float(price)
-                    lines.append(f"{symbol} {p:.2f}")
-                except (TypeError, ValueError):
-                    lines.append(f"{symbol} —")
-            else:
-                lines.append(f"{symbol} —")
+        for symbol, market in data.items():
+            price = market.get("price") if isinstance(market, dict) else None
+            lines.append(f"{symbol} {_fmt_snapshot_usd(price) if price is not None else '—'}")
         await update.message.reply_text("\n".join(lines))
     except Exception as e:
         logging.error("SNAPSHOT ERROR: %s", e)

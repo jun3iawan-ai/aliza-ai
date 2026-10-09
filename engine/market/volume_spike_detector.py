@@ -208,7 +208,9 @@ async def run_volume_spike_check() -> list[dict[str, Any]]:
         logger.warning("volume_spike_detector: get_market_snapshot failed: %s", e)
         return []
 
-    for symbol in WATCHLIST:
+    # Semua coin di snapshot (dulu hanya WATCHLIST 5 coin); rata-rata volume
+    # di-cache 4 jam per coin.
+    for symbol in list(data.keys()):
         row = data.get(symbol)
         if not row or not isinstance(row, dict):
             continue

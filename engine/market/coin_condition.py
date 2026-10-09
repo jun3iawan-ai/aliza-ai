@@ -195,6 +195,45 @@ def near_support_rows(data: dict[str, Any], max_pct: float = NEAR_SUPPORT_MAX_PC
     return rows
 
 
+def near_resistance_rows(data: dict[str, Any], max_pct: float = NEAR_SUPPORT_MAX_PCT) -> list[dict]:
+    rows = []
+    for sym, md in (data or {}).items():
+        if not isinstance(md, dict) or md.get("error"):
+            continue
+        dr = resistance_distance_pct(md.get("price"), md.get("resistance"))
+        if dr is None or dr < 0 or dr > max_pct:
+            continue
+        rows.append({
+            "coin": sym, "dist": dr, "resistance": md.get("resistance"),
+            "t4": str(md.get("trend_4h") or "UNKNOWN").upper(),
+            "t1": str(md.get("trend_1d") or "UNKNOWN").upper(),
+            "rsi": _f(md.get("rsi")),
+        })
+    rows.sort(key=lambda r: r["dist"])
+    return rows
+
+
+def format_near_levels(sup_rows: list[dict], res_rows: list[dict],
+                       max_pct: float = NEAR_SUPPORT_MAX_PCT, snapshot_ts: str = "—") -> str:
+    """Gabungan dekat support & dekat resistance (pengganti Levels S/R ±1%)."""
+    def _row(r, key, kata):
+        rsi = f"{r['rsi']:.0f}" if r["rsi"] is not None else "—"
+        return (f"{r['coin']:<6} {r['dist']:.1f}% {kata} {fmt_price(r[key])} · "
+                f"4H {_arrow(r['t4'])} 1D {_arrow(r['t1'])} · RSI {rsi}")
+    lines = [f"📍 DEKAT SUPPORT / RESISTANCE (≤{max_pct:.0f}%)", "", "🔻 Dekat support"]
+    lines += [_row(r, "support", "di atas") for r in sup_rows] or ["• tidak ada"]
+    lines += ["", "🔺 Dekat resistance"]
+    lines += [_row(r, "resistance", "di bawah") for r in res_rows] or ["• tidak ada"]
+    lines += [
+        "",
+        "Level = close terendah/tertinggi ~3 hari (20 candle 4H).",
+        "Dekat support saat tren ↓ = rawan jebol; dekat resistance saat tren ↑ = uji breakout.",
+        "ℹ️ Daftar pantau, bukan sinyal. Pilih coin untuk kartu kondisinya 👇",
+        f"🕒 Snapshot: {snapshot_ts}",
+    ]
+    return "\n".join(lines)
+
+
 def format_near_support(rows: list[dict], max_pct: float = NEAR_SUPPORT_MAX_PCT, snapshot_ts: str = "—") -> str:
     head = [f"📍 DEKAT SUPPORT (≤{max_pct:.0f}% di atas support)", ""]
     if not rows:

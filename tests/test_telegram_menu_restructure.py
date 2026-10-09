@@ -56,40 +56,30 @@ class TelegramMenuRestructureTests(IsolatedAsyncioTestCase):
         context = SimpleNamespace(user_data={})
 
         await tb.menu_button_handler(self._update("📊 Market", replies), context)
-        self.assertIn("🔔 Monitor Pasar", _labels(replies[-1][1]))
-        await tb.menu_button_handler(self._update("🔔 Monitor Pasar", replies), context)
-        self.assertIn("📍 Levels (S/R)", _labels(replies[-1][1]))
+        self.assertIn("⚡ Scan Pasar", _labels(replies[-1][1]))
+        self.assertNotIn("🔔 Monitor Pasar", _labels(replies[-1][1]))
         await tb.menu_button_handler(self._update("⬅ Kembali", replies), context)
-        self.assertIn("🔔 Monitor Pasar", _labels(replies[-1][1]))
+        self.assertIn("📊 Market", _labels(replies[-1][1]))
 
         await tb.menu_button_handler(self._update("📈 Analisis", replies), context)
         self.assertIn("🎯 Konteks Market", _labels(replies[-1][1]))
         await tb.menu_button_handler(self._update("⬅ Kembali", replies), context)
         self.assertIn("📈 Analisis", _labels(replies[-1][1]))
 
-    async def test_market_monitor_routes_existing_commands_from_new_location(self):
-        replies = []
+    async def test_old_monitor_labels_route_to_new_views(self):
         context = SimpleNamespace(user_data={})
-        handlers = {
-            "levels_command": AsyncMock(),
-            "check_big_move_command": AsyncMock(),
-            "check_rsi_extreme_command": AsyncMock(),
-            "check_breakout_command": AsyncMock(),
-            "check_volume_spike_command": AsyncMock(),
-            "snapshot_command": AsyncMock(),
-        }
-        routes = {
-            "📍 Levels (S/R)": "levels_command",
-            "💥 Cek Big Move (snapshot)": "check_big_move_command",
-            "🔵 Cek RSI Ekstrem (snapshot)": "check_rsi_extreme_command",
-            "🚨 Cek Breakout": "check_breakout_command",
-            "📊 Cek Volume Spike": "check_volume_spike_command",
-            "📌 Snapshot Market": "snapshot_command",
-        }
-        with patch.multiple(tb, **handlers):
-            for label, handler_name in routes.items():
-                await tb.menu_button_handler(self._update(label, replies), context)
-                getattr(tb, handler_name).assert_awaited_once()
+        with patch.object(tb, "scan_pasar_command", AsyncMock()) as scan, \
+             patch.object(tb, "near_support_command", AsyncMock()) as near, \
+             patch.object(tb, "snapshot_command", AsyncMock()) as snap:
+            for label in ("⚡ Scan Pasar", "🔔 Monitor Pasar", "💥 Cek Big Move (snapshot)",
+                          "🔵 Cek RSI Ekstrem (snapshot)", "🚨 Cek Breakout", "📊 Cek Volume Spike"):
+                await tb.menu_button_handler(self._update(label, []), context)
+            await tb.menu_button_handler(self._update("📍 Levels (S/R)", []), context)
+            await tb.menu_button_handler(self._update("📌 Snapshot Market", []), context)
+        self.assertEqual(scan.await_count, 6)
+        near.assert_awaited_once()
+        snap.assert_awaited_once()
+        self.assertIn("📌 Snapshot Market", _labels(tb._system_submenu_keyboard()))
 
     async def test_post_init_registers_the_new_user_facing_slash_commands(self):
         set_commands = AsyncMock()
@@ -123,7 +113,6 @@ class TelegramMenuRetirementTests(IsolatedAsyncioTestCase):
         keyboards = [
             tb._main_menu_keyboard(), tb._market_submenu_keyboard(), tb._trading_submenu_keyboard(),
             tb._analysis_submenu_keyboard(), tb._macro_submenu_keyboard(),
-            tb._market_monitor_submenu_keyboard(),
             tb._system_submenu_keyboard(),
         ]
         shown = {label for kb in keyboards for label in _labels(kb)}
