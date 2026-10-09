@@ -210,6 +210,33 @@ def evaluate(plan: Plan, ctx: dict[str, Any]) -> dict[str, Any]:
     if not long_ and s1 is not None and 0 < (entry - s1) / entry * 100 < 1:
         c.add(WARN, f"Entry tepat di atas support {fmt_price(s1)} (<1%)")
 
+    # 6b) Timing eksekusi 1H / 15m
+    ex = ctx.get("exec") or {}
+    h1, m15 = ex.get("1h"), ex.get("15m")
+    if h1:
+        a1 = {"BULLISH": "↑", "BEARISH": "↓", "SIDEWAYS": "→"}.get(h1.get("trend"), "?")
+        if h1.get("trend") == against:
+            c.add(WARN, f"1H masih {a1} berlawanan arah {plan.side} — entry sekarang mendahului konfirmasi")
+        elif h1.get("trend") == with_:
+            c.add(OK, f"1H searah {plan.side} ({a1})")
+        swl, swh = _f(h1.get("swing_low")), _f(h1.get("swing_high"))
+        if long_ and swl is not None and swl < entry:
+            if sl > swl:
+                c.add(WARN, f"SL di atas swing low 1H {fmt_price(swl)} — rawan kena sapuan (sweep) sebelum harga jalan")
+            else:
+                c.add(OK, f"SL di bawah swing low 1H {fmt_price(swl)}")
+        if not long_ and swh is not None and swh > entry:
+            if sl < swh:
+                c.add(WARN, f"SL di bawah swing high 1H {fmt_price(swh)} — rawan kena sapuan (sweep) sebelum harga jalan")
+            else:
+                c.add(OK, f"SL di atas swing high 1H {fmt_price(swh)}")
+    r15 = _f((m15 or {}).get("rsi"))
+    if r15 is not None:
+        if long_ and r15 >= 75:
+            c.add(INFO, f"RSI 15m {r15:.0f} — jangka pendek panas; pullback kecil bisa beri entry lebih baik")
+        elif not long_ and r15 <= 25:
+            c.add(INFO, f"RSI 15m {r15:.0f} — jangka pendek jenuh jual; pantulan kecil bisa beri entry lebih baik")
+
     # 7) Funding (keramaian)
     fr = _f(ctx.get("funding_rate"))
     if fr is not None:

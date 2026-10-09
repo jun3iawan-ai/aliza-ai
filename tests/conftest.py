@@ -47,6 +47,15 @@ def _isolate_tokenomics_disk_cache(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _no_live_execution_tf(monkeypatch):
+    """Test tidak boleh mengambil candle 1H/15m sungguhan."""
+    from engine.market import execution_tf as _ex
+    monkeypatch.setattr(_ex, "fetch_ohlc", lambda symbol, interval: None)
+    _ex._cache.clear()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _no_live_positioning(monkeypatch):
     """Test tidak boleh memanggil Binance Futures (OI/LS/ticker) sungguhan."""
     from engine.market import positioning as _pos
