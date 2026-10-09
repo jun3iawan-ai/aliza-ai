@@ -494,7 +494,8 @@ def _futures_trading_submenu_keyboard():
 def _trading_submenu_keyboard():
     return ReplyKeyboardMarkup(
         [
-            ["🧭 Cek Entry", "🧮 Atur Modal"],
+            ["🧭 Cek Entry", "🔔 Alert Saya"],
+            ["🧮 Atur Modal"],
             ["📍 Dekat S/R", "🔍 Analisis Coin"],
             ["⬅ Kembali"],
         ],
@@ -800,6 +801,128 @@ async def modal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+def _alerts_list_text() -> str:
+    from engine.alerts.user_alerts import USAGE, active_alerts, describe
+    from engine.market.coin_condition import fmt_price
+    act = active_alerts()
+    if not act:
+        return "🔔 ALERT SAYA\n\nBelum ada alert aktif.\n\n" + USAGE
+    lines = ["🔔 ALERT SAYA (aktif)", ""]
+    for a in act:
+        lines.append(f"#{a['id']}  {describe(a, fmt_price)}  (harga saat dibuat {fmt_price(a.get('price_at_create'))})")
+    lines += ["", "Hapus: /alert hapus <id>  ·  Tambah: /alert <COIN> <above|below> <harga> [1h|4h|1d]"]
+    return "\n".join(lines)
+
+
+async def _run_alert_text(text: str, reply) -> None:
+    from engine.alerts import user_alerts as ua
+    from engine.market.coin_condition import fmt_price
+    toks = (text or "").split()
+    body = toks[1:] if toks and toks[0].lower().lstrip("/") in ("alert", "alarm") else toks
+    if not body:
+        await reply(_alerts_list_text())
+        return
+    if body[0].lower() in ("hapus", "delete", "del", "rm"):
+        try:
+            aid = int(body[1].lstrip("#"))
+        except (IndexError, ValueError):
+            await reply("Format: /alert hapus <id> — lihat id di /alerts")
+            return
+        await reply(f"🗑️ Alert #{aid} dihapus." if ua.delete_alert(aid) else f"Alert #{aid} tidak ditemukan / sudah tidak aktif.")
+        return
+    spec, err = ua.parse_alert(" ".join(body))
+    if err:
+        await reply(err)
+        return
+    prices = await asyncio.get_running_loop().run_in_executor(None, ua.fetch_prices, [spec["coin"]])
+    a, err = ua.create_alert(spec, prices.get(spec["coin"]))
+    if err:
+        await reply("❌ " + err)
+        return
+    how = ("dicek tiap menit" if not a.get("tf") else
+           f"dicek saat candle {a['tf'].upper()} tutup")
+    await reply(
+        f"✅ Alert #{a['id']} dibuat: {ua.describe(a, fmt_price)}\n"
+        f"Harga sekarang {fmt_price(a['price_at_create'])} · {how} · terpicu sekali lalu nonaktif.\n"
+        "Daftar: /alerts"
+    )
+
+
+async def alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/alert <COIN> <above|below> <harga> [1h|4h|1d] · /alert hapus <id>"""
+    logging.info("COMMAND RECEIVED: /alert")
+    msg = update.effective_message
+    if not msg:
+        return
+    if not _authorized_chat(update):
+        await msg.reply_text("⛔ Unauthorized.")
+        return
+    try:
+        await _run_alert_text("alert " + " ".join(context.args or []), msg.reply_text)
+    except Exception as e:  # noqa: BLE001
+        logging.error("alert_command: %s", e, exc_info=True)
+        await msg.reply_text("Terjadi kesalahan saat membuat alert.")
+
+
+async def alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if not msg:
+        return
+    if not _authorized_chat(update):
+        await msg.reply_text("⛔ Unauthorized.")
+        return
+    await msg.reply_text(_alerts_list_text())
+
+
+async def user_alert_job(context: ContextTypes.DEFAULT_TYPE):
+    """Cek alert level buatan user tiap 60 detik."""
+    from engine.alerts import user_alerts as ua
+    from engine.market.coin_condition import fmt_price
+    try:
+        act = ua.active_alerts()
+        if not act:
+            return
+        now = time_module.time()
+        touch_coins = [a["coin"] for a in act if not a.get("tf")]
+        # alert close: ambil kline hanya ≤5 menit setelah batas candle tutup
+        due = [a for a in act if a.get("tf") and (now % ua.TF_SECONDS[a["tf"]]) < 300]
+        if not touch_coins and not due:
+            return
+
+        def _work():
+            prices = ua.fetch_prices(touch_coins)
+            cache: dict = {}
+
+            def _lc(coin, tf):
+                if (coin, tf) not in cache:
+                    cache[(coin, tf)] = ua.fetch_last_closed(coin, tf)
+                return cache[(coin, tf)]
+            return ua.evaluate([a for a in act if not a.get("tf")] + due, prices, _lc)
+
+        hits = await asyncio.get_running_loop().run_in_executor(None, _work)
+        if not hits:
+            return
+        chat_id = (getattr(context, "bot_data", None) or {}).get("chat_id") or DEFAULT_CHAT_ID
+        sent_ids, values = [], {}
+        for h in hits:
+            a = h["alert"]
+            val = "close" if h["kind"] == "close" else "harga"
+            side_hint = "long" if a["direction"] == "above" else "short"
+            msg = (
+                "🔔 ALERT TERPICU\n"
+                f"{ua.describe(a, fmt_price)}\n"
+                f"{val.capitalize()} sekarang: {fmt_price(h['value'])} "
+                f"(saat dibuat {fmt_price(a.get('price_at_create'))})\n\n"
+                f"Nilai rencana: cek {a['coin'].lower()} {side_hint} now sl <harga>"
+            )
+            if await safe_dispatch(msg, chat_id=chat_id, force=True):
+                sent_ids.append(a["id"])
+                values[a["id"]] = h["value"]
+        ua.mark_triggered(sent_ids, values)
+    except Exception as e:  # noqa: BLE001
+        logging.error("user_alert_job: %s", e, exc_info=True)
+
+
 # Label tombol yang sudah dipensiunkan (dihapus dari keyboard 9 Okt 2026 + alias lama).
 # Slash command terkait tetap terdaftar; hanya tombol menu yang dihapus.
 _RETIRED_MENU_LABELS = frozenset({
@@ -881,6 +1004,7 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(
             "💹 TRADING\n\n"
             "🧭 Cek Entry — nilai rencana entry kamu (RR, SL, tren, event, likuidasi, ukuran posisi)\n"
+            "🔔 Alert Saya — alert level buatanmu (sentuh harga / close 1H-4H-1D)\n"
             "🧮 Atur Modal — modal & risiko per trade untuk hitung ukuran posisi\n"
             "📍 Dekat S/R — coin yang dekat support/resistance + konteks tren\n"
             "🔍 Analisis Coin — kartu kondisi per coin (tren, RSI, posisi S/R, funding)",
@@ -897,6 +1021,12 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"🧮 ATUR MODAL\n\nModal  : {cap:,.2f} USDT\nRisiko : {risk:g}% per trade (≈ {cap * risk / 100:,.2f} USDT)\n\n"
             "Ubah: /modal 1000  ·  /modal 1000 risk 1  ·  /modal risk 0.5"
         )
+        return
+    if text == "🔔 Alert Saya":
+        await update.message.reply_text(_alerts_list_text())
+        return
+    if text.lower().startswith(("alert ", "alarm ")):
+        await _run_alert_text(text, update.message.reply_text)
         return
     # Ketik bebas: "cek btc long 82500 sl 81000 tp 86000 lev 5"
     if text.lower().startswith(("cek ", "check ")):
@@ -8055,6 +8185,8 @@ async def _post_init_set_bot_commands(application):
                 BotCommand("start", "Mulai bot"),
                 BotCommand("cek", "Cek rencana entry: /cek BTC long 82500 sl 81000 tp 86000 lev 5"),
                 BotCommand("modal", "Atur modal & risiko per trade"),
+                BotCommand("alert", "Alert level: /alert ETH above 2553 4h"),
+                BotCommand("alerts", "Daftar alert level aktif"),
                 BotCommand("help", "Panduan command"),
                 BotCommand("market", "Kondisi market coin"),
                 BotCommand("radar", "Radar trend semua coin"),
@@ -8139,6 +8271,8 @@ def main():
     app.add_handler(CommandHandler("levels", levels_command))
     app.add_handler(CommandHandler("cek", cek_command))
     app.add_handler(CommandHandler("modal", modal_command))
+    app.add_handler(CommandHandler("alert", alert_command))
+    app.add_handler(CommandHandler("alerts", alerts_command))
     app.add_handler(CommandHandler("testalert", testalert))
     app.add_handler(CommandHandler("marketdebug", marketdebug))
     app.add_handler(CommandHandler("market_context", market_context_command))
@@ -8198,6 +8332,8 @@ def main():
             name="big_move_checker",
         )
         logging.info("Big move checker job scheduled (every 300s, first in 25s).")
+        app.job_queue.run_repeating(user_alert_job, interval=60, first=40, name="user_alert_checker")
+        logging.info("User level alert job scheduled (every 60s, first in 40s).")
         app.job_queue.run_repeating(watchdog_job, interval=120, first=30)
         logging.info("AI Watchdog job scheduled (every 120s, first in 30s).")
         app.job_queue.run_repeating(

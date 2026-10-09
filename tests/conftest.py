@@ -9,6 +9,17 @@ from engine.market import economic_calendar as _ecal
 from engine.market import news_feed as _news_feed
 from engine.market import key_levels as _key_levels
 from engine import user_config as _user_config
+from engine.alerts import user_alerts as _user_alerts
+
+
+@pytest.fixture(autouse=True)
+def _isolate_user_alerts(tmp_path, monkeypatch):
+    """Test tidak boleh menulis alert produksi (data/user_alerts.json) atau
+    memanggil Binance sungguhan untuk harga alert."""
+    monkeypatch.setattr(_user_alerts, "ALERTS_FILE", str(tmp_path / "user_alerts.json"))
+    monkeypatch.setattr(_user_alerts, "fetch_prices", lambda coins: {})
+    monkeypatch.setattr(_user_alerts, "fetch_last_closed", lambda coin, tf: None)
+    yield
 
 
 @pytest.fixture(autouse=True)
