@@ -523,12 +523,16 @@ def get_upcoming_events(days_ahead: int = 2) -> list[dict[str, str]]:
     now = time.time()
     days = max(1, int(days_ahead))
     try:
+        # Hasil non-live (perkiraan) hanya di-cache 10 menit supaya cepat pulih
+        # begitu sumber live (mis. Forex Factory setelah 429) kembali.
+        ttl = CALENDAR_CACHE_SECONDS if _fmp_calendar_cache.get("source") in LIVE_SOURCES else min(600, CALENDAR_CACHE_SECONDS)
         if (
             float(_fmp_calendar_cache.get("ts", 0)) > 0
             and _fmp_calendar_cache.get("events") is not None
-            and now - float(_fmp_calendar_cache["ts"]) < CALENDAR_CACHE_SECONDS
+            and now - float(_fmp_calendar_cache["ts"]) < ttl
             and int(_fmp_calendar_cache.get("days", 0)) >= days
         ):
+            _last_source["source"] = _fmp_calendar_cache.get("source", "none")
             return list(_fmp_calendar_cache["events"])
 
         events: list[dict[str, str]] = []
@@ -590,6 +594,7 @@ def get_upcoming_events(days_ahead: int = 2) -> list[dict[str, str]]:
         _fmp_calendar_cache["ts"] = now
         _fmp_calendar_cache["days"] = days
         _fmp_calendar_cache["events"] = merged
+        _fmp_calendar_cache["source"] = source_used
         _events_cache["ts"] = now
         _events_cache["days"] = days
         _events_cache["events"] = merged

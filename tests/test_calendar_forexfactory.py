@@ -59,3 +59,25 @@ def test_all_live_sources_down_marks_not_live(monkeypatch):
     monkeypatch.setattr(inv, "fetch_investing_calendar", lambda d: [])
     ec.get_upcoming_events(2)
     assert ec.get_calendar_source() == "rule_based" and not ec.is_calendar_live()
+
+
+def test_non_live_result_is_retried_after_10_minutes_live_cached_1_hour(monkeypatch):
+    _reset()
+    calls = {"n": 0}
+    def ff(url):
+        calls["n"] += 1
+        return (None, 429)
+    monkeypatch.setattr(ec, "_ff_fetch_json", ff)
+    monkeypatch.setattr(ec, "_fetch_serper_events", lambda d: [])
+    import engine.market.investing_calendar as inv
+    monkeypatch.setattr(inv, "fetch_investing_calendar", lambda d: [])
+    ec.get_upcoming_events(2); first = calls["n"]
+    ec.get_upcoming_events(2); assert calls["n"] == first          # masih di cache
+    ec._fmp_calendar_cache["ts"] -= 601
+    monkeypatch.setattr(ec, "_ff_fetch_json", lambda url: ([], 200))
+    ec.get_upcoming_events(2)
+    assert ec.is_calendar_live()                                    # pulih setelah 10 menit
+    ec._fmp_calendar_cache["ts"] -= 601
+    monkeypatch.setattr(ec, "_ff_fetch_json", lambda url: (_ for _ in ()).throw(AssertionError("live di-cache 1 jam")))
+    ec.get_upcoming_events(2)
+    assert ec.get_calendar_source() == "forexfactory"
