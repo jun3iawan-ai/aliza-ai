@@ -8076,13 +8076,18 @@ def main():
             (5, 0),  # 12:00 WIB
             (14, 5),  # 21:00 WIB (14:05 UTC — hindari bentrok evening_calendar 14:00 UTC)
         ]
-        for i, (hour, minute) in enumerate(WIB_TIMES_UTC):
-            app.job_queue.run_daily(
-                spot_signal_job,
-                time=time(hour=hour, minute=minute, second=0, tzinfo=timezone.utc),
-                name=f"spot_signal_{i}",
-            )
-        logging.info("Spot signal jobs scheduled (3x daily: 06/12/21 WIB).")
+        # Spot Signal terjadwal = saran entry otomatis; dimatikan default sejak
+        # arah decision-support (9 Okt 2026). /spot_signal manual tetap ada.
+        if os.getenv("SPOT_SIGNAL_SCHEDULE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}:
+            for i, (hour, minute) in enumerate(WIB_TIMES_UTC):
+                app.job_queue.run_daily(
+                    spot_signal_job,
+                    time=time(hour=hour, minute=minute, second=0, tzinfo=timezone.utc),
+                    name=f"spot_signal_{i}",
+                )
+            logging.info("Spot signal jobs scheduled (3x daily: 06/12/21 WIB).")
+        else:
+            logging.info("Spot signal jobs DISABLED (SPOT_SIGNAL_SCHEDULE_ENABLED=false).")
         app.job_queue.run_repeating(
             breakout_check_job,
             interval=300,
