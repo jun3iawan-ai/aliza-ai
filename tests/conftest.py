@@ -5,6 +5,17 @@ import pytest
 
 from engine.alerts import notification_governor as _ngov
 from engine import state_store as _state_store
+from engine.market import economic_calendar as _ecal
+
+
+@pytest.fixture(autouse=True)
+def _no_live_forexfactory(tmp_path, monkeypatch):
+    """Test tidak boleh memanggil Forex Factory sungguhan (rate-limit 429 dan
+    ikut mengganggu bot produksi) atau menulis cache kalender produksi."""
+    monkeypatch.setattr(_ecal, "_ff_fetch_json", lambda url: (None, None))
+    monkeypatch.setattr(_ecal, "FF_CACHE_DIR", str(tmp_path / "ff_calendar_cache"))
+    _ecal._last_source["source"] = "none"
+    yield
 
 
 @pytest.fixture(scope="session", autouse=True)

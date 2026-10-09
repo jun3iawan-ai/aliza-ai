@@ -2535,6 +2535,12 @@ def _avg_funding_fr_pct_and_bias(funding_rates: dict) -> tuple[str, str]:
 
 
 def _format_events_for_prompt(events: list | None) -> str:
+    try:
+        from engine.market.economic_calendar import is_calendar_live
+        if not is_calendar_live():
+            return "DATA KALENDER LIVE TIDAK TERSEDIA (jangan simpulkan tidak ada event)"
+    except Exception:  # noqa: BLE001
+        pass
     if not events:
         return "tidak ada"
     parts = []
@@ -2550,6 +2556,12 @@ def _format_events_for_prompt(events: list | None) -> str:
 
 def _format_events_for_display(events):
     """Format event untuk display ke user — lebih manusiawi dari ISO timestamp."""
+    try:
+        from engine.market.economic_calendar import is_calendar_live
+        if not is_calendar_live():
+            return "⚠️ data kalender live tidak tersedia — cek manual"
+    except Exception:  # noqa: BLE001
+        pass
     if not events:
         return "tidak ada"
     from datetime import datetime as _dt
@@ -6445,8 +6457,17 @@ async def check_calendar_command(update: Update, context: ContextTypes.DEFAULT_T
         return
     try:
         events = get_upcoming_events(days_ahead=2)
+        from engine.market.economic_calendar import get_calendar_source, is_calendar_live
+        live = is_calendar_live()
+        warn = ("" if live else
+                "⚠️ Data kalender live tidak tersedia — jadwal di bawah hanya PERKIRAAN. "
+                "Cek manual (mis. forexfactory.com) sebelum entry futures.\n\n")
         if not events:
-            await target.reply_text("Tidak ada event ekonomi High/Medium impact dalam 2 hari ke depan.")
+            await target.reply_text(
+                warn + ("Tidak ada event ekonomi US High/Medium impact dalam 2 hari ke depan "
+                        f"(sumber: {get_calendar_source()})." if live else
+                        "Jadwal perkiraan juga tidak menemukan event dalam 2 hari ke depan.")
+            )
             return
 
         grouped: dict[str, list[dict]] = {}
@@ -6458,7 +6479,7 @@ async def check_calendar_command(update: Update, context: ContextTypes.DEFAULT_T
                 day_key = "Tanggal tidak diketahui"
             grouped.setdefault(day_key, []).append(e)
 
-        lines = ["📅 Economic Calendar (2 hari ke depan)", ""]
+        lines = ([warn.strip(), ""] if warn else []) + ["📅 Economic Calendar (2 hari ke depan)", ""]
         for day in sorted(grouped.keys()):
             lines.append(f"{day}:")
             for e in sorted(grouped[day], key=lambda x: str(x.get("datetime_wib", ""))):
