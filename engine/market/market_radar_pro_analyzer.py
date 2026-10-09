@@ -136,6 +136,9 @@ def generate_radar_pro():
                 "coin": coin,
                 "trend": trend,
                 "trend_alignment": alignment,
+                "trend_4h": data.get("trend_4h") or "UNKNOWN",
+                "trend_1d": data.get("trend_1d") or "UNKNOWN",
+                "rsi": rsi,
                 "label": label,
                 "crash_risk": crash_risk_flag,
             }
@@ -163,4 +166,38 @@ def format_radar_pro_report(radar_data):
 
     ts = get_snapshot_timestamp_str()
     lines.append(f"\n🕒 Market Snapshot : {ts}")
+    return "\n".join(lines)
+
+
+_DIR_ARROW = {"BULLISH": "↑", "BEARISH": "↓", "SIDEWAYS": "→"}
+
+
+def format_radar_report(radar_data):
+    """Radar gabungan (pengganti Radar Market + Radar Pro, 9 Okt 2026).
+
+    Satu baris per coin: arah 4H (MA10/MA30), arah 1D (MA20/MA50), RSI 4H,
+    dan label kondisi. ⭐ = 4H & 1D searah (tren kuat)."""
+    if not radar_data:
+        return "📡 ALIZA RADAR\n\nTidak ada data market.\n\n🕒 Snapshot: —"
+    lines = ["📡 ALIZA RADAR", "Kolom: 4H · 1D · RSI 4H · kondisi", ""]
+    for item in radar_data:
+        coin = str(item.get("coin", ""))
+        t4 = str(item.get("trend_4h") or "UNKNOWN").upper()
+        t1 = str(item.get("trend_1d") or "UNKNOWN").upper()
+        a4 = _DIR_ARROW.get(t4, "?")
+        a1 = _DIR_ARROW.get(t1, "?")
+        rsi = item.get("rsi")
+        try:
+            rsi_s = f"{float(rsi):.0f}"
+        except (TypeError, ValueError):
+            rsi_s = "—"
+        label = str(item.get("label") or "")
+        if label.strip() in ("• Neutral", "Neutral", ""):
+            label = "—"
+        star = " ⭐" if t4 == t1 and t4 in ("BULLISH", "BEARISH") else ""
+        lines.append(f"{coin:<6} 4H {a4}  1D {a1}  RSI {rsi_s:>2}  {label}{star}")
+    lines.append("")
+    lines.append("↑ naik · ↓ turun · → sideways · ? data kurang")
+    lines.append("⭐ 4H & 1D searah = tren kuat")
+    lines.append(f"🕒 Snapshot: {get_snapshot_timestamp_str()}")
     return "\n".join(lines)
