@@ -8032,16 +8032,22 @@ def main():
             name="morning_brief",
         )
         logging.info("Morning brief job scheduled (daily 01:00 UTC = 08:00 WIB).")
-        app.job_queue.run_daily(
-            weekly_winrate_summary_job,
-            time=time(hour=1, minute=10, second=0, tzinfo=timezone.utc),
-            days=(0,),
-            name="weekly_winrate_summary",
-        )
-        logging.info(
-            "Weekly winrate summary job scheduled (Monday 01:10 UTC = 08:10 WIB, "
-            "10 minutes after morning brief to avoid dispatch overlap)."
-        )
+        # Weekly winrate dimatikan default (9 Okt 2026): metrik sinyal bot, dan
+        # winrate llm menggelembung karena evaluator tanpa cek fill entry
+        # (lihat audit 03-analisis/23). /weekly_winrate manual tetap ada.
+        if os.getenv("WEEKLY_WINRATE_SCHEDULE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}:
+            app.job_queue.run_daily(
+                weekly_winrate_summary_job,
+                time=time(hour=1, minute=10, second=0, tzinfo=timezone.utc),
+                days=(0,),
+                name="weekly_winrate_summary",
+            )
+            logging.info(
+                "Weekly winrate summary job scheduled (Monday 01:10 UTC = 08:10 WIB, "
+                "10 minutes after morning brief to avoid dispatch overlap)."
+            )
+        else:
+            logging.info("Weekly winrate summary job DISABLED (WEEKLY_WINRATE_SCHEDULE_ENABLED=false).")
         app.job_queue.run_daily(
             evening_summary_job,
             time=time(hour=13, minute=0, second=0, tzinfo=timezone.utc),

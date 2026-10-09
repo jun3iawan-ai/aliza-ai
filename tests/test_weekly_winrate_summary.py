@@ -226,7 +226,33 @@ class TestWeeklyWinrateSummaryJob:
 
 
 class TestJobScheduling:
+    @staticmethod
+    def _weekly_calls(monkeypatch):
+        app_mock = MagicMock()
+        builder_mock = MagicMock()
+        builder_mock.token.return_value = builder_mock
+        builder_mock.post_init.return_value = builder_mock
+        builder_mock.post_shutdown.return_value = builder_mock
+        builder_mock.build.return_value = app_mock
+        monkeypatch.setattr(telegram_bot, "BOT_TOKEN", "fake-token-for-test")
+        monkeypatch.setattr(telegram_bot, "ApplicationBuilder", MagicMock(return_value=builder_mock))
+        monkeypatch.setattr(telegram_bot, "GracefulShutdownController", MagicMock())
+        monkeypatch.setattr(telegram_bot, "init_trade_db", MagicMock())
+        monkeypatch.setattr(telegram_bot, "init_signal_tracking_db", MagicMock())
+        monkeypatch.setattr(telegram_bot, "update_market_snapshot", MagicMock())
+        telegram_bot.main()
+        return [
+            call
+            for call in app_mock.job_queue.run_daily.call_args_list
+            if call.args and call.args[0] is telegram_bot.weekly_winrate_summary_job
+        ]
+
+    def test_weekly_job_disabled_by_default(self, monkeypatch):
+        monkeypatch.delenv("WEEKLY_WINRATE_SCHEDULE_ENABLED", raising=False)
+        assert self._weekly_calls(monkeypatch) == []
+
     def test_weekly_job_registered_monday_0810_utc(self, monkeypatch):
+        monkeypatch.setenv("WEEKLY_WINRATE_SCHEDULE_ENABLED", "true")
         app_mock = MagicMock()
         builder_mock = MagicMock()
         builder_mock.token.return_value = builder_mock
