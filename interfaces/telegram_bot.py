@@ -87,6 +87,11 @@ from engine.market.market_radar_pro_analyzer import (
     format_radar_report,
 )
 from engine.market.market_universe import MAJOR_COINS
+from engine.market.coin_condition import (
+    build_coin_condition,
+    format_near_support,
+    near_support_rows,
+)
 # Trading
 from engine.trading.opportunity_scanner import (
     scan_opportunities,
@@ -487,7 +492,7 @@ def _futures_trading_submenu_keyboard():
 def _trading_submenu_keyboard():
     return ReplyKeyboardMarkup(
         [
-            ["🟢 Peluang Spot", "🔍 Analisis Coin"],
+            ["📍 Dekat Support", "🔍 Analisis Coin"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -585,6 +590,60 @@ def _reply_target(update: Update):
     if getattr(update, "callback_query", None) and getattr(update.callback_query, "message", None):
         return update.callback_query.message
     return getattr(update, "message", None)
+
+
+async def _coin_condition_text(symbol: str) -> str:
+    """Kartu kondisi coin (decision-support) dari snapshot + data pendukung."""
+    symbol = str(symbol or "").upper().strip()
+    snapshot = get_market_snapshot()
+    md = (snapshot.get("data") or {}).get(symbol)
+    if not md:
+        return f"Data tidak tersedia untuk {symbol}."
+
+    def _extras():
+        from engine.market.market_analyzer import _get_binance_klines
+        out = {"c4": [], "c1": [], "fr": None, "label": None}
+        try:
+            out["c4"] = _get_binance_klines(f"{symbol}USDT", "4h", 100) or []
+            out["c1"] = _get_binance_klines(f"{symbol}USDT", "1d", 100) or []
+        except Exception as e:  # noqa: BLE001
+            logging.warning("_coin_condition_text klines %s: %s", symbol, e)
+        try:
+            out["fr"] = ((get_all_funding_data() or {}).get(symbol) or {}).get("funding_rate")
+        except Exception as e:  # noqa: BLE001
+            logging.warning("_coin_condition_text funding %s: %s", symbol, e)
+        try:
+            for item in generate_radar_pro() or []:
+                if item.get("coin") == symbol:
+                    out["label"] = item.get("label")
+                    break
+        except Exception as e:  # noqa: BLE001
+            logging.warning("_coin_condition_text label %s: %s", symbol, e)
+        return out
+
+    ex = await asyncio.get_running_loop().run_in_executor(None, _extras)
+    return build_coin_condition(
+        symbol, md,
+        funding_rate=ex["fr"], closes_4h=ex["c4"], closes_1d=ex["c1"],
+        label=ex["label"], snapshot_ts=get_snapshot_timestamp_str() or "—",
+    )
+
+
+async def near_support_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """📍 Dekat Support: coin yang harganya ≤3% di atas support + konteks tren."""
+    logging.info("COMMAND RECEIVED: near_support (menu)")
+    target = _reply_target(update)
+    if not target:
+        return
+    try:
+        data = (get_market_snapshot() or {}).get("data") or {}
+        rows = near_support_rows(data)
+        text = format_near_support(rows, snapshot_ts=get_snapshot_timestamp_str() or "—")
+        kb = _build_coin_selector("cond", [r["coin"] for r in rows]) if rows else None
+        await target.reply_text(text, reply_markup=kb) if kb else await target.reply_text(text)
+    except Exception as e:  # noqa: BLE001
+        logging.error("NEAR SUPPORT ERROR: %s", e)
+        await target.reply_text("Terjadi kesalahan memuat daftar dekat support.")
 
 
 # Label tombol yang sudah dipensiunkan (dihapus dari keyboard 9 Okt 2026 + alias lama).
@@ -689,18 +748,19 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text == "💹 Trading":
         await update.message.reply_text(
             "💹 TRADING\n\n"
-            "🟢 Peluang Spot — daftar coin kondisi BUY\n"
-            "🔍 Analisis Coin — analisa per coin",
+            "📍 Dekat Support — coin yang harganya dekat support + konteks tren\n"
+            "🔍 Analisis Coin — kartu kondisi per coin (tren, RSI, posisi S/R, funding)",
             reply_markup=_trading_submenu_keyboard(),
         )
         return
-    if text == "🟢 Peluang Spot":
-        await spot_command(update, context)
+    # "🟢 Peluang Spot" = label lama (keyboard ter-cache) → tampilan baru.
+    if text in ("📍 Dekat Support", "🟢 Peluang Spot"):
+        await near_support_command(update, context)
         return
     if text == "🔍 Analisis Coin":
-        kb = _build_coin_selector("spot", MAJOR_COINS)
+        kb = _build_coin_selector("cond", MAJOR_COINS)
         await update.message.reply_text(
-            "🔍 ANALISIS COIN\n\nPilih coin untuk analisa spot.",
+            "🔍 ANALISIS COIN\n\nPilih coin untuk melihat kartu kondisinya.",
             reply_markup=kb,
         )
         return
@@ -838,6 +898,8 @@ async def coin_selector_callback(update: Update, context: ContextTypes.DEFAULT_T
         elif prefix == "spot":
             context.args = [symbol]
             await spot_command(update, context)
+        elif prefix == "cond":
+            await msg.reply_text(await _coin_condition_text(symbol))
         elif prefix == "info":
             text, err = _format_info_coin_message(symbol)
             if err:
