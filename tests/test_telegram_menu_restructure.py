@@ -111,3 +111,38 @@ class TelegramMenuRestructureTests(IsolatedAsyncioTestCase):
                 "shadow_promotion_check",
             }.issubset(names)
         )
+
+
+class TelegramMenuRetirementTests(IsolatedAsyncioTestCase):
+    def _update(self, text, replies):
+        async def reply_text(message, **kwargs):
+            replies.append((message, kwargs.get("reply_markup")))
+
+        message = SimpleNamespace(text=text, reply_text=reply_text)
+        return SimpleNamespace(message=message, effective_message=message)
+
+    def test_retired_buttons_absent_from_every_keyboard(self):
+        keyboards = [
+            tb._main_menu_keyboard(), tb._market_submenu_keyboard(), tb._trading_submenu_keyboard(),
+            tb._analysis_submenu_keyboard(), tb._macro_submenu_keyboard(),
+            tb._market_monitor_submenu_keyboard(), tb._performance_submenu_keyboard(),
+            tb._system_submenu_keyboard(),
+        ]
+        shown = {label for kb in keyboards for label in _labels(kb)}
+        self.assertFalse(shown & tb._RETIRED_MENU_LABELS, shown & tb._RETIRED_MENU_LABELS)
+
+    async def test_retired_button_from_cached_keyboard_returns_main_menu(self):
+        handlers = {
+            "spot_signal_command": AsyncMock(), "predict": AsyncMock(),
+            "shadow_stats_command": AsyncMock(), "check_whale_command": AsyncMock(),
+        }
+        with patch.multiple(tb, **handlers):
+            for label in ("📈 Saran Spot", "🔮 Prediksi Market", "🧪 Riset Shadow E3",
+                          "🐋 Monitor Whale", "📈 Open Position"):
+                replies = []
+                await tb.menu_button_handler(self._update(label, replies), SimpleNamespace(user_data={}))
+                self.assertEqual(len(replies), 1, label)
+                self.assertIn("sudah tidak tersedia", replies[0][0])
+                self.assertIn("💹 Trading", _labels(replies[0][1]))
+            for name in handlers:
+                getattr(tb, name).assert_not_awaited()
