@@ -494,6 +494,7 @@ def _futures_trading_submenu_keyboard():
 def _trading_submenu_keyboard():
     return ReplyKeyboardMarkup(
         [
+            ["🧭 Cek Entry", "🧮 Atur Modal"],
             ["📍 Dekat S/R", "🔍 Analisis Coin"],
             ["⬅ Kembali"],
         ],
@@ -676,6 +677,129 @@ async def near_support_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await target.reply_text("Terjadi kesalahan memuat daftar dekat support.")
 
 
+def _risk_settings() -> tuple[float, float]:
+    """(modal USDT, risiko % per trade) — modal dari /set_balance//modal,
+    risiko dari /modal ... risk X, default RISK_PER_TRADE (.env)."""
+    from engine.user_config import get_balance, get_config
+    from engine.position_sizer import DEFAULT_RISK_PER_TRADE
+    cap = 0.0
+    try:
+        cap = float(get_balance() or 0)
+    except Exception as e:  # noqa: BLE001
+        logging.warning("_risk_settings balance: %s", e)
+    risk = DEFAULT_RISK_PER_TRADE * 100
+    try:
+        raw = get_config("risk_pct")
+        if raw:
+            risk = float(raw)
+    except Exception:  # noqa: BLE001
+        pass
+    return cap, risk
+
+
+def _gather_entry_context(symbol: str) -> dict | None:
+    """Data untuk /cek (blocking — jalankan di executor)."""
+    from engine.market.key_levels import key_levels
+    from engine.market.market_analyzer import _get_binance_klines
+    from engine.market.economic_calendar import get_upcoming_events, is_calendar_live
+    md = ((get_market_snapshot() or {}).get("data") or {}).get(symbol)
+    if not isinstance(md, dict) or md.get("error"):
+        return None
+    ctx = {k: md.get(k) for k in ("price", "trend_4h", "trend_1d", "rsi")}
+    for key, fn in (
+        ("levels", lambda: key_levels(symbol, md.get("price"))),
+        ("closes_4h", lambda: _get_binance_klines(f"{symbol}USDT", "4h", 100) or []),
+        ("funding_rate", lambda: ((get_all_funding_data() or {}).get(symbol) or {}).get("funding_rate")),
+        ("events", lambda: get_upcoming_events(days_ahead=2)),
+        ("calendar_live", is_calendar_live),
+        ("label", lambda: next((i.get("label") for i in (generate_radar_pro() or []) if i.get("coin") == symbol), None)),
+    ):
+        try:
+            ctx[key] = fn()
+        except Exception as e:  # noqa: BLE001
+            logging.warning("_gather_entry_context %s %s: %s", symbol, key, e)
+            ctx[key] = None
+    if ctx.get("calendar_live") is None:
+        ctx["calendar_live"] = False
+    cap, risk = _risk_settings()
+    ctx["capital"] = cap if cap > 0 else None
+    ctx["risk_pct_default"] = risk
+    return ctx
+
+
+async def _run_entry_check(text: str, reply) -> None:
+    from engine.trading.entry_check import evaluate, format_result, parse_plan
+    plan, err = parse_plan(text)
+    if err:
+        await reply(err)
+        return
+    if plan.coin not in ((get_market_snapshot() or {}).get("data") or {}):
+        await reply(f"{plan.coin} tidak ada di daftar coin yang dipantau Aliza.")
+        return
+    ctx = await asyncio.get_running_loop().run_in_executor(None, _gather_entry_context, plan.coin)
+    if not ctx:
+        await reply(f"Data market {plan.coin} belum tersedia.")
+        return
+    res = evaluate(plan, ctx)
+    await reply(format_result(plan, res, label=ctx.get("label"), snapshot_ts=get_snapshot_timestamp_str() or "—"))
+
+
+async def cek_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/cek <COIN> <long|short> <entry|now> sl <x> [tp <x>] [lev <x>] [risk <%>]"""
+    logging.info("COMMAND RECEIVED: /cek")
+    msg = update.effective_message
+    if not msg:
+        return
+    if not _authorized_chat(update):
+        await msg.reply_text("⛔ Unauthorized.")
+        return
+    try:
+        await _run_entry_check("cek " + " ".join(context.args or []), msg.reply_text)
+    except Exception as e:  # noqa: BLE001
+        logging.error("cek_command: %s", e, exc_info=True)
+        await msg.reply_text("Terjadi kesalahan saat cek rencana.")
+
+
+async def modal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/modal [jumlah] [risk <%>] — atur modal & risiko per trade untuk /cek."""
+    logging.info("COMMAND RECEIVED: /modal")
+    msg = update.effective_message
+    if not msg:
+        return
+    if not _authorized_chat(update):
+        await msg.reply_text("⛔ Unauthorized.")
+        return
+    from engine.user_config import set_config
+    args = [a.lower().replace(",", "").rstrip("%") for a in (context.args or [])]
+    try:
+        i = 0
+        while i < len(args):
+            if args[i] in ("risk", "r") and i + 1 < len(args):
+                r = float(args[i + 1])
+                if not 0 < r <= 10:
+                    await msg.reply_text("Risiko per trade harus 0–10%.")
+                    return
+                set_config("risk_pct", f"{r:g}")
+                i += 2
+            else:
+                cap = float(args[i].rstrip("k")) * (1000 if args[i].endswith("k") else 1)
+                if cap <= 0:
+                    raise ValueError
+                set_config("account_balance", f"{cap:g}")
+                set_config("auto_balance", "false")
+                i += 1
+    except ValueError:
+        await msg.reply_text("Format: /modal 1000  atau  /modal 1000 risk 1  atau  /modal risk 0.5")
+        return
+    cap, risk = _risk_settings()
+    await msg.reply_text(
+        f"🧮 Pengaturan risiko\n"
+        f"Modal  : {cap:,.2f} USDT\n"
+        f"Risiko : {risk:g}% per trade (≈ {cap * risk / 100:,.2f} USDT)\n\n"
+        "Ubah: /modal <jumlah> [risk <%>] — dipakai otomatis oleh /cek."
+    )
+
+
 # Label tombol yang sudah dipensiunkan (dihapus dari keyboard 9 Okt 2026 + alias lama).
 # Slash command terkait tetap terdaftar; hanya tombol menu yang dihapus.
 _RETIRED_MENU_LABELS = frozenset({
@@ -756,10 +880,27 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text == "💹 Trading":
         await update.message.reply_text(
             "💹 TRADING\n\n"
+            "🧭 Cek Entry — nilai rencana entry kamu (RR, SL, tren, event, likuidasi, ukuran posisi)\n"
+            "🧮 Atur Modal — modal & risiko per trade untuk hitung ukuran posisi\n"
             "📍 Dekat S/R — coin yang dekat support/resistance + konteks tren\n"
             "🔍 Analisis Coin — kartu kondisi per coin (tren, RSI, posisi S/R, funding)",
             reply_markup=_trading_submenu_keyboard(),
         )
+        return
+    if text == "🧭 Cek Entry":
+        from engine.trading.entry_check import USAGE
+        await update.message.reply_text("🧭 CEK RENCANA ENTRY\n\nKetik rencanamu, Aliza menilai terhadap kondisi saat ini.\n\n" + USAGE)
+        return
+    if text == "🧮 Atur Modal":
+        cap, risk = _risk_settings()
+        await update.message.reply_text(
+            f"🧮 ATUR MODAL\n\nModal  : {cap:,.2f} USDT\nRisiko : {risk:g}% per trade (≈ {cap * risk / 100:,.2f} USDT)\n\n"
+            "Ubah: /modal 1000  ·  /modal 1000 risk 1  ·  /modal risk 0.5"
+        )
+        return
+    # Ketik bebas: "cek btc long 82500 sl 81000 tp 86000 lev 5"
+    if text.lower().startswith(("cek ", "check ")):
+        await _run_entry_check(text, update.message.reply_text)
         return
     # "🟢 Peluang Spot" = label lama (keyboard ter-cache) → tampilan baru.
     if text in ("📍 Dekat S/R", "📍 Dekat Support", "🟢 Peluang Spot", "📍 Levels (S/R)"):
@@ -7912,6 +8053,8 @@ async def _post_init_set_bot_commands(application):
         await application.bot.set_my_commands(
             [
                 BotCommand("start", "Mulai bot"),
+                BotCommand("cek", "Cek rencana entry: /cek BTC long 82500 sl 81000 tp 86000 lev 5"),
+                BotCommand("modal", "Atur modal & risiko per trade"),
                 BotCommand("help", "Panduan command"),
                 BotCommand("market", "Kondisi market coin"),
                 BotCommand("radar", "Radar trend semua coin"),
@@ -7994,6 +8137,8 @@ def main():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("alert_stats", alert_stats_command))
     app.add_handler(CommandHandler("levels", levels_command))
+    app.add_handler(CommandHandler("cek", cek_command))
+    app.add_handler(CommandHandler("modal", modal_command))
     app.add_handler(CommandHandler("testalert", testalert))
     app.add_handler(CommandHandler("marketdebug", marketdebug))
     app.add_handler(CommandHandler("market_context", market_context_command))
