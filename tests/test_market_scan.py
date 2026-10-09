@@ -25,8 +25,7 @@ def test_scan_sections_and_no_cooldown_side_effects():
     assert "▲ OM +3.4% · BTC +0.3%" in out
     assert "▼ SOL -1.2%" in out
     assert "💥 Big move (≥3%): OM +3.4%" in out
-    assert "SOL di bawah support harian" in out and "sudah jebol" in out
-    assert "OM di atas resistance harian" in out and "sudah ditembus" in out
+    assert "SOL jebol ke bawah" in out and "OM tembus ke atas" in out
     assert "Spike: SOL 5.0×" in out
     assert "Oversold (<30): SOL 28" in out and "Overbought (>70): OM 72" in out
     assert "OM 1.0% →" in out
@@ -43,3 +42,20 @@ def test_evaluate_breakout_matches_check_breakout_core():
     assert bd.evaluate_breakout(100.0, {"resistance": [99.0], "support": [80.0]})["direction"] == "UP"
     assert bd.evaluate_breakout(105.0, {"resistance": [99.0], "support": [80.0]}) is None  # >2% dari level
     assert bd.evaluate_breakout(90.0, {"resistance": [99.0], "support": [80.0]}) is None
+
+
+
+def test_unified_breakout_requires_cross_from_previous_close():
+    lv = {"levels": [99.0, 110.0], "prev_close": 98.0}
+    assert bd.evaluate_breakout(100.0, lv)["direction"] == "UP"            # kemarin 98 < 99, kini 100
+    assert bd.evaluate_breakout(100.0, dict(lv, prev_close=99.5)) is None   # sudah di atas sejak kemarin
+    down = bd.evaluate_breakout(108.5, {"levels": [110.0], "prev_close": 111.0})
+    assert down["direction"] == "DOWN" and down["level"] == 110.0
+    assert bd.evaluate_breakout(105.0, {"levels": [99.0], "prev_close": 98.0}) is None  # >2% dari level
+
+
+def test_scan_near_resistance_uses_levels_map():
+    data = {"BTC": {"price": 100.0, "resistance": 150.0}}
+    scan = ms.collect_scan(data, {}, lambda c: None, lambda c: None,
+                           levels_map={"BTC": {"resistance": 102.0}})
+    assert scan["near_res"][0][2] == 102.0

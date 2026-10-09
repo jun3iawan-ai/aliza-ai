@@ -7,6 +7,16 @@ from engine.alerts import notification_governor as _ngov
 from engine import state_store as _state_store
 from engine.market import economic_calendar as _ecal
 from engine.market import news_feed as _news_feed
+from engine.market import key_levels as _key_levels
+
+
+@pytest.fixture(autouse=True)
+def _no_live_key_levels(monkeypatch):
+    """Test tidak boleh mengambil kline harian Binance sungguhan untuk level S/R
+    (fallback ke level snapshot, perilaku lama)."""
+    monkeypatch.setattr(_key_levels, "_fetch_daily", lambda symbol: None)
+    _key_levels._cache.clear()
+    yield
 
 
 @pytest.fixture(autouse=True)

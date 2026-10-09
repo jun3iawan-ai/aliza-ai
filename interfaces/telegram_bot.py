@@ -569,6 +569,25 @@ def _reply_target(update: Update):
     return getattr(update, "message", None)
 
 
+def _key_levels_map(data: dict) -> dict:
+    """{coin: level terpadu (pivot harian 90 hari) | None} untuk semua coin snapshot.
+    Dipanggil di executor (request Binance, cache 1 jam per coin)."""
+    from engine.market.key_levels import key_levels
+    out: dict = {}
+    for coin, md in (data or {}).items():
+        if not isinstance(md, dict) or md.get("error"):
+            continue
+        try:
+            out[coin] = key_levels(coin, md.get("price"))
+        except Exception as e:  # noqa: BLE001
+            logging.warning("_key_levels_map %s: %s", coin, e)
+            out[coin] = None
+    return out
+
+
+_UNIFIED_LEVEL_NOTE = "Level = pivot harian 90 hari (support/resistance terdekat, sama di semua menu)."
+
+
 async def _coin_condition_text(symbol: str) -> str:
     """Kartu kondisi coin (decision-support) dari snapshot + data pendukung."""
     symbol = str(symbol or "").upper().strip()
@@ -579,7 +598,12 @@ async def _coin_condition_text(symbol: str) -> str:
 
     def _extras():
         from engine.market.market_analyzer import _get_binance_klines
-        out = {"c4": [], "c1": [], "fr": None, "label": None}
+        out = {"c4": [], "c1": [], "fr": None, "label": None, "levels": None}
+        try:
+            from engine.market.key_levels import key_levels
+            out["levels"] = key_levels(symbol, md.get("price"))
+        except Exception as e:  # noqa: BLE001
+            logging.warning("_coin_condition_text levels %s: %s", symbol, e)
         try:
             out["c4"] = _get_binance_klines(f"{symbol}USDT", "4h", 100) or []
             out["c1"] = _get_binance_klines(f"{symbol}USDT", "1d", 100) or []
@@ -603,6 +627,7 @@ async def _coin_condition_text(symbol: str) -> str:
         symbol, md,
         funding_rate=ex["fr"], closes_4h=ex["c4"], closes_1d=ex["c1"],
         label=ex["label"], snapshot_ts=get_snapshot_timestamp_str() or "—",
+        levels=ex["levels"],
     )
 
 
@@ -620,7 +645,8 @@ async def scan_pasar_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         def _work():
             changes = fetch_1h_changes(list(data.keys()))
-            return collect_scan(data, changes, get_sr_levels, get_avg_volume)
+            return collect_scan(data, changes, get_sr_levels, get_avg_volume,
+                                levels_map=_key_levels_map(data))
 
         scan = await asyncio.get_running_loop().run_in_executor(None, _work)
         await target.reply_text(format_market_scan(scan, snapshot_ts=get_snapshot_timestamp_str() or "—"))
@@ -637,9 +663,11 @@ async def near_support_command(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     try:
         data = (get_market_snapshot() or {}).get("data") or {}
-        sup_rows = near_support_rows(data)
-        res_rows = near_resistance_rows(data)
-        text = format_near_levels(sup_rows, res_rows, snapshot_ts=get_snapshot_timestamp_str() or "—")
+        lmap = await asyncio.get_running_loop().run_in_executor(None, _key_levels_map, data)
+        sup_rows = near_support_rows(data, levels_map=lmap)
+        res_rows = near_resistance_rows(data, levels_map=lmap)
+        text = format_near_levels(sup_rows, res_rows, snapshot_ts=get_snapshot_timestamp_str() or "—",
+                                  level_note=_UNIFIED_LEVEL_NOTE)
         coins = list(dict.fromkeys([r["coin"] for r in sup_rows] + [r["coin"] for r in res_rows]))
         kb = _build_coin_selector("cond", coins) if coins else None
         await target.reply_text(text, reply_markup=kb) if kb else await target.reply_text(text)
@@ -1231,12 +1259,21 @@ def _info_coin_nearest_levels(symbol: str, price, fallback_support, fallback_res
     sebagai level cluster yang sama.
     """
     try:
+        from engine.market.key_levels import key_levels
+        kl = key_levels(symbol, price)
+    except Exception as e:  # noqa: BLE001
+        logging.debug("_info_coin_nearest_levels: key_levels(%s) gagal: %s", symbol, e)
+        kl = None
+    if kl and (kl.get("support") is not None or kl.get("resistance") is not None):
+        # Level terpadu (pivot harian 90 hari) — sama dengan kartu Analisis Coin.
+        return kl.get("support"), kl.get("resistance"), ""
+    try:
         levels = get_sr_levels(symbol)
     except Exception as e:
         logging.debug("_info_coin_nearest_levels: get_sr_levels(%s) gagal: %s", symbol, e)
         levels = None
 
-    if isinstance(levels, dict) and levels.get("support") and levels.get("resistance"):
+    if isinstance(levels, dict) and levels.get("support") and levels.get("resistance") and not levels.get("levels"):
         sup_list = [float(x) for x in levels["support"]]
         res_list = [float(x) for x in levels["resistance"]]
         try:
@@ -3721,8 +3758,16 @@ def _build_coin_details_for_brief(brief_data: dict) -> tuple[dict[str, Any], str
 
     coin_details: dict[str, Any] = {}
     detail_lines: list[str] = []
+    _lmap = brief_data.get("levels_map") or {}
     for _coin in ("BTC", "ETH", "BNB", "SOL", "XRP"):
         _cd = snapshot_data.get(_coin, {})
+        _klv = _lmap.get(_coin)
+        if isinstance(_cd, dict) and _cd and _klv:
+            # Level terpadu (pivot harian 90 hari) untuk prompt & level pagi.
+            _cd = dict(_cd)
+            for _k in ("support", "resistance"):
+                if _klv.get(_k) is not None:
+                    _cd[_k] = _klv[_k]
         _fr_raw = None
         if isinstance(funding_map.get(_coin), dict):
             _fr_raw = (funding_map.get(_coin) or {}).get("funding_rate")
@@ -5709,8 +5754,16 @@ async def morning_brief_job(context: ContextTypes.DEFAULT_TYPE):
 
     ts = get_snapshot_timestamp_str() or "—"
     ev_preview = _format_events_for_display(events_tm)
+    try:
+        _lmap = await asyncio.get_running_loop().run_in_executor(
+            None, _key_levels_map, (snapshot or {}).get("data") or {}
+        )
+    except Exception as _e:  # noqa: BLE001
+        logging.warning("brief key levels: %s", _e)
+        _lmap = {}
+    brief_data["levels_map"] = _lmap
     near_level_section = _format_near_levels_section(
-        get_coins_near_levels(snapshot=snapshot),
+        get_coins_near_levels(snapshot=snapshot, levels_map=_lmap),
         NEAR_LEVEL_DEFAULT_TOLERANCE_PCT,
     )
 
@@ -5852,8 +5905,16 @@ async def evening_summary_job(context: ContextTypes.DEFAULT_TYPE):
 
     ts = get_snapshot_timestamp_str() or "—"
     ev_preview = _format_events_for_display(events_tm)
+    try:
+        _lmap = await asyncio.get_running_loop().run_in_executor(
+            None, _key_levels_map, (snapshot or {}).get("data") or {}
+        )
+    except Exception as _e:  # noqa: BLE001
+        logging.warning("brief key levels: %s", _e)
+        _lmap = {}
+    brief_data["levels_map"] = _lmap
     near_level_section = _format_near_levels_section(
-        get_coins_near_levels(snapshot=snapshot),
+        get_coins_near_levels(snapshot=snapshot, levels_map=_lmap),
         NEAR_LEVEL_DEFAULT_TOLERANCE_PCT,
     )
     brief_data["near_levels_text"] = near_level_section
@@ -6692,7 +6753,8 @@ NEAR_LEVEL_PUSH_ENABLED = os.getenv("NEAR_LEVEL_PUSH_ENABLED", "false").strip().
 }
 
 
-def get_coins_near_levels(tolerance_pct: float = NEAR_LEVEL_DEFAULT_TOLERANCE_PCT, snapshot: dict | None = None) -> list[dict]:
+def get_coins_near_levels(tolerance_pct: float = NEAR_LEVEL_DEFAULT_TOLERANCE_PCT, snapshot: dict | None = None,
+                          levels_map: dict | None = None) -> list[dict]:
     """Return near support/resistance rows from one snapshot without dispatching.
 
     Passing ``snapshot`` makes this deterministic for callers/tests. The
@@ -6721,6 +6783,10 @@ def get_coins_near_levels(tolerance_pct: float = NEAR_LEVEL_DEFAULT_TOLERANCE_PC
         price = _snapshot_float(coin_data.get("price"))
         support = _snapshot_float(coin_data.get("support"))
         resistance = _snapshot_float(coin_data.get("resistance"))
+        _klv = (levels_map or {}).get(coin)
+        if _klv:  # level terpadu (pivot harian 90 hari) bila tersedia
+            support = _snapshot_float(_klv.get("support"))
+            resistance = _snapshot_float(_klv.get("resistance"))
         if price is None:
             continue
         if support is not None and support > 0 and resistance is not None and resistance > 0:

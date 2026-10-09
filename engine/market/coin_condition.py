@@ -28,7 +28,11 @@ def fmt_price(v) -> str:
         return f"${x:,.0f}" if a >= 10000 else f"${x:,.2f}"
     if a >= 1:
         return f"${x:,.4f}".rstrip("0").rstrip(".")
-    return f"${x:.8f}".rstrip("0").rstrip(".")
+    if a == 0:
+        return "$0"
+    import math
+    dec = max(4, -int(math.floor(math.log10(a))) + 3)  # ±4 angka penting
+    return f"${x:.{dec}f}".rstrip("0").rstrip(".")
 
 
 def _arrow(t) -> str:
@@ -93,19 +97,28 @@ def build_coin_condition(
     closes_1d=None,
     label: str | None = None,
     snapshot_ts: str = "—",
+    levels: dict[str, Any] | None = None,
 ) -> str:
     """Kartu kondisi satu coin. funding_rate = fraksi mentah (0.0001 = 0,01%)."""
     if not isinstance(md, dict) or not md:
         return f"🔍 {symbol} — data tidak tersedia."
     price = _f(md.get("price"))
     rsi = _f(md.get("rsi"))
-    sup, res = _f(md.get("support")), _f(md.get("resistance"))
+    short_sup, short_res = _f(md.get("support")), _f(md.get("resistance"))
+    if levels:
+        # Level terpadu (pivot harian 90 hari) — sama dengan semua menu lain.
+        sup, res = _f(levels.get("support")), _f(levels.get("resistance"))
+        sup2, res2 = _f(levels.get("support2")), _f(levels.get("resistance2"))
+    else:
+        sup, res, sup2, res2 = short_sup, short_res, None, None
     t4 = str(md.get("trend_4h") or "UNKNOWN").upper()
     t1 = str(md.get("trend_1d") or "UNKNOWN").upper()
 
     ds = support_distance_pct(price, sup)
     dr = resistance_distance_pct(price, res)
-    if ds is None:
+    if ds is None and levels:
+        pos = "di bawah semua level 90 hari (support belum terbentuk)"
+    elif ds is None:
         pos = "—"
     elif ds >= 0:
         pos = f"{ds:.1f}% di atas support {fmt_price(sup)}"
@@ -114,6 +127,8 @@ def build_coin_condition(
     if dr is not None:
         pos += (f" · {dr:.1f}% di bawah resistance {fmt_price(res)}" if dr >= 0
                 else f" · {abs(dr):.1f}% DI ATAS resistance {fmt_price(res)} (tembus)")
+    elif levels:
+        pos += " · di atas semua level 90 hari"
 
     vol = avg_move_pct(closes_4h)
     fr = _f(funding_rate)
@@ -141,6 +156,8 @@ def build_coin_condition(
         f"Funding : {fr_s}",
         f"Kondisi : {lbl}",
     ]
+    if levels and (short_sup is not None or short_res is not None):
+        lines.insert(5, f"Range 3 hari: {fmt_price(short_sup)} – {fmt_price(short_res)}")
 
     notes: list[str] = []
     support_30d = resistance_30d = None
@@ -151,16 +168,20 @@ def build_coin_condition(
 
     # Skenario level jika-maka (pengganti "Trigger berikutnya" di Penjelasan AI).
     scen: list[str] = []
+    if levels:
+        resistance_30d, support_30d = res2, sup2  # lapis 2 level terpadu
     if res is not None and price is not None:
         if price < res:
-            nxt = (f" → level 30-hari berikutnya ~{fmt_price(resistance_30d)}"
+            kata = "level berikutnya" if levels else "level 30-hari berikutnya"
+            nxt = (f" → {kata} ~{fmt_price(resistance_30d)}"
                    if resistance_30d is not None and resistance_30d > res * 1.005 else " → ruang naik terbuka")
             scen.append(f"▲ Tembus resistance {fmt_price(res)}{nxt}")
         else:
             scen.append(f"▲ Bertahan di atas {fmt_price(res)} → breakout terkonfirmasi")
     if sup is not None and price is not None:
         if price >= sup:
-            nxt = (f" → level 30-hari berikutnya ~{fmt_price(support_30d)}"
+            kata = "level berikutnya" if levels else "level 30-hari berikutnya"
+            nxt = (f" → {kata} ~{fmt_price(support_30d)}"
                    if support_30d is not None and support_30d < sup * 0.995 else " → ruang turun terbuka")
             scen.append(f"▼ Jebol support {fmt_price(sup)}{nxt}")
         else:
@@ -196,21 +217,25 @@ def build_coin_condition(
         lines.append("Yang perlu dicatat:")
         lines.extend(f"• {n}" for n in notes[:4])
     lines.append("")
+    if levels:
+        lines.append(f"Level S/R: {levels.get('source', 'pivot harian 90 hari')}")
     lines.append("ℹ️ Info kondisi, bukan saran entry.")
     lines.append(f"🕒 Snapshot: {snapshot_ts}")
     return "\n".join(lines)
 
 
-def near_support_rows(data: dict[str, Any], max_pct: float = NEAR_SUPPORT_MAX_PCT) -> list[dict]:
+def near_support_rows(data: dict[str, Any], max_pct: float = NEAR_SUPPORT_MAX_PCT,
+                      levels_map: dict | None = None) -> list[dict]:
     rows = []
     for sym, md in (data or {}).items():
         if not isinstance(md, dict) or md.get("error"):
             continue
-        ds = support_distance_pct(md.get("price"), md.get("support"))
+        sup_v = _lv(levels_map, sym, md, "support")
+        ds = support_distance_pct(md.get("price"), sup_v)
         if ds is None or ds < 0 or ds > max_pct:
             continue
         rows.append({
-            "coin": sym, "dist": ds, "support": md.get("support"),
+            "coin": sym, "dist": ds, "support": sup_v,
             "t4": str(md.get("trend_4h") or "UNKNOWN").upper(),
             "t1": str(md.get("trend_1d") or "UNKNOWN").upper(),
             "rsi": _f(md.get("rsi")),
@@ -219,16 +244,26 @@ def near_support_rows(data: dict[str, Any], max_pct: float = NEAR_SUPPORT_MAX_PC
     return rows
 
 
-def near_resistance_rows(data: dict[str, Any], max_pct: float = NEAR_SUPPORT_MAX_PCT) -> list[dict]:
+def _lv(levels_map, sym, md, key):
+    if levels_map is not None:
+        lv = levels_map.get(sym)
+        if lv:
+            return lv.get(key)
+    return md.get(key)
+
+
+def near_resistance_rows(data: dict[str, Any], max_pct: float = NEAR_SUPPORT_MAX_PCT,
+                         levels_map: dict | None = None) -> list[dict]:
     rows = []
     for sym, md in (data or {}).items():
         if not isinstance(md, dict) or md.get("error"):
             continue
-        dr = resistance_distance_pct(md.get("price"), md.get("resistance"))
+        res_v = _lv(levels_map, sym, md, "resistance")
+        dr = resistance_distance_pct(md.get("price"), res_v)
         if dr is None or dr < 0 or dr > max_pct:
             continue
         rows.append({
-            "coin": sym, "dist": dr, "resistance": md.get("resistance"),
+            "coin": sym, "dist": dr, "resistance": res_v,
             "t4": str(md.get("trend_4h") or "UNKNOWN").upper(),
             "t1": str(md.get("trend_1d") or "UNKNOWN").upper(),
             "rsi": _f(md.get("rsi")),
@@ -238,7 +273,8 @@ def near_resistance_rows(data: dict[str, Any], max_pct: float = NEAR_SUPPORT_MAX
 
 
 def format_near_levels(sup_rows: list[dict], res_rows: list[dict],
-                       max_pct: float = NEAR_SUPPORT_MAX_PCT, snapshot_ts: str = "—") -> str:
+                       max_pct: float = NEAR_SUPPORT_MAX_PCT, snapshot_ts: str = "—",
+                       level_note: str = "Level = close terendah/tertinggi ~3 hari (20 candle 4H).") -> str:
     """Gabungan dekat support & dekat resistance (pengganti Levels S/R ±1%)."""
     def _row(r, key, kata):
         rsi = f"{r['rsi']:.0f}" if r["rsi"] is not None else "—"
@@ -250,7 +286,7 @@ def format_near_levels(sup_rows: list[dict], res_rows: list[dict],
     lines += [_row(r, "resistance", "di bawah") for r in res_rows] or ["• tidak ada"]
     lines += [
         "",
-        "Level = close terendah/tertinggi ~3 hari (20 candle 4H).",
+        level_note,
         "Dekat support saat tren ↓ = rawan jebol; dekat resistance saat tren ↑ = uji breakout.",
         "ℹ️ Daftar pantau, bukan sinyal. Pilih coin untuk kartu kondisinya 👇",
         f"🕒 Snapshot: {snapshot_ts}",
