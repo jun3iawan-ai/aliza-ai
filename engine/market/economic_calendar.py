@@ -56,6 +56,115 @@ MEDIUM_IMPACT = [
 
 _events_cache: dict[str, Any] = {"ts": 0.0, "days": 0, "events": []}
 
+# Sumber yang dipakai pada pengambilan terakhir. "rule_based"/"none" = data
+# live TIDAK tersedia (jadwal hanya perkiraan) — tampilan wajib memberi tahu.
+_last_source: dict[str, str] = {"source": "none"}
+LIVE_SOURCES = {"forexfactory", "fmp", "investing_com"}
+
+FF_URLS = (
+    "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+    "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
+)
+
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+FF_CACHE_DIR = os.path.join(_ROOT, "data", "ff_calendar_cache")
+FF_FRESH_SEC = 3600          # pakai cache tanpa request bila < 1 jam
+FF_STALE_MAX_SEC = 24 * 3600  # saat 429/gagal, cache s/d 24 jam masih dipakai
+
+
+def _ff_fetch_json(url: str) -> tuple[Any, int | None]:
+    """Request jaringan ke Forex Factory. Return (rows|None, http_status|None)."""
+    try:
+        with httpx.Client(timeout=TIMEOUT, follow_redirects=True) as client:
+            resp = client.get(url, headers={"User-Agent": "Mozilla/5.0 (AlizaAI)"})
+        if resp.status_code != 200:
+            return None, resp.status_code
+        return resp.json(), 200
+    except Exception as e:  # noqa: BLE001
+        logger.warning("economic_calendar: ForexFactory fetch failed: %s", e)
+        return None, None
+
+
+def _ff_rows(url: str) -> Any:
+    """Rows Forex Factory dengan cache disk bersama antar-proses (feed ini
+    rate-limit ketat → HTTP 429). Return rows atau None bila tidak tersedia."""
+    name = url.rsplit("/", 1)[-1]
+    path = os.path.join(FF_CACHE_DIR, name)
+    cached, age = None, None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            cached = json.load(fh)
+        age = time.time() - os.path.getmtime(path)
+    except (OSError, ValueError):
+        pass
+    if cached is not None and age is not None and age < FF_FRESH_SEC:
+        return cached
+    rows, status = _ff_fetch_json(url)
+    if rows is not None:
+        try:
+            os.makedirs(FF_CACHE_DIR, exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(rows, fh)
+            os.replace(tmp, path)
+        except OSError as e:
+            logger.warning("economic_calendar: gagal simpan cache FF: %s", e)
+        return rows
+    if cached is not None and age is not None and age < FF_STALE_MAX_SEC:
+        logger.warning("economic_calendar: ForexFactory HTTP %s — pakai cache %.0f menit", status, age / 60)
+        return cached
+    if not name.endswith("nextweek.json") or status not in (404,):
+        logger.warning("economic_calendar: ForexFactory %s tidak tersedia (HTTP %s, tanpa cache)", name, status)
+    return None
+
+
+def get_calendar_source() -> str:
+    """Sumber kalender terakhir: forexfactory/fmp/investing_com (live) atau rule_based/none."""
+    return _last_source.get("source", "none")
+
+
+def is_calendar_live() -> bool:
+    return get_calendar_source() in LIVE_SOURCES
+
+
+def _fetch_forexfactory(days_ahead: int) -> tuple[bool, list[dict[str, str]]]:
+    """Kalender Forex Factory (JSON publik, gratis). Return (ok, events USD High/Medium).
+
+    ok=True berarti sumber berhasil dibaca — daftar kosong = memang tidak ada
+    event (BUKAN kegagalan). Minggu depan sering belum terbit (404) → diabaikan.
+    """
+    now_utc = datetime.now(timezone.utc)
+    end_utc = now_utc + timedelta(days=max(1, days_ahead))
+    ok = False
+    out: list[dict[str, str]] = []
+    for i, url in enumerate(FF_URLS):
+        if i == 1 and end_utc.isocalendar()[1] == now_utc.isocalendar()[1]:
+            break  # jendela tidak melewati minggu ini
+        rows = _ff_rows(url)
+        if rows is None:
+            continue
+        if i == 0:
+            ok = True
+        for row in rows if isinstance(rows, list) else []:
+            if str(row.get("country", "")).upper() != "USD":
+                continue
+            impact = {"high": "HIGH", "medium": "MEDIUM"}.get(str(row.get("impact", "")).lower())
+            if not impact:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(row.get("date"))).astimezone(timezone.utc)
+            except (TypeError, ValueError):
+                continue
+            if not (now_utc - timedelta(hours=1) <= dt <= end_utc):
+                continue
+            out.append(_make_event(
+                str(row.get("title") or "—"), dt, impact,
+                previous=str(row.get("previous") or "—"),
+                forecast=str(row.get("forecast") or "—"),
+            ))
+    return ok, out
+
 # Approximate 2026 FOMC decision schedule (UTC 18:00).
 _FOMC_DATES_UTC_2026 = [
     "2026-01-28T18:00:00+00:00",
@@ -424,8 +533,15 @@ def get_upcoming_events(days_ahead: int = 2) -> list[dict[str, str]]:
 
         events: list[dict[str, str]] = []
         source_used = "none"
+        live_ok = False
+        # 1) Forex Factory (gratis). Berhasil dibaca = sumber sah walau kosong.
+        ff_ok, ff_events = _fetch_forexfactory(days)
+        if ff_ok:
+            events, source_used, live_ok = ff_events, "forexfactory", True
         fmp_key = (os.getenv("FMP_API_KEY") or "").strip()
-        if fmp_key and _fmp_calendar_enabled():
+        if live_ok:
+            pass
+        elif fmp_key and _fmp_calendar_enabled():
             events = _fetch_from_fmp(days, fmp_key)
             if events:
                 source_used = "fmp"
@@ -435,7 +551,7 @@ def get_upcoming_events(days_ahead: int = 2) -> list[dict[str, str]]:
                 "(FMP_CALENDAR_ENABLED=false)"
             )
 
-        if not events:
+        if not events and not live_ok:
             try:
                 from engine.market.investing_calendar import fetch_investing_calendar
 
@@ -447,14 +563,15 @@ def get_upcoming_events(days_ahead: int = 2) -> list[dict[str, str]]:
             except Exception as e:
                 logger.warning("economic_calendar: Investing.com failed: %s", e)
 
-        if not events:
+        if not events and not live_ok:
             events = _generate_rule_events(days)
             source_used = "rule_based"
-            logger.info("economic_calendar: using rule-based calendar (FMP/Investing empty)")
-        else:
+            logger.warning("economic_calendar: semua sumber live gagal — jadwal PERKIRAAN (rule-based)")
+            # Serper hanya sebagai pelengkap saat sumber live gagal (berbayar/kredit).
+            events.extend(_fetch_serper_events(days))
+        elif source_used != "forexfactory":
             events = _merge_fomc_events(events, days)
-
-        events.extend(_fetch_serper_events(days))
+        _last_source["source"] = source_used
 
         dedup: dict[tuple[str, str], dict[str, str]] = {}
         for e in events:
