@@ -137,7 +137,7 @@ class TelegramMenuRetirementTests(IsolatedAsyncioTestCase):
         }
         with patch.multiple(tb, **handlers):
             for label in ("📈 Saran Spot", "🔮 Prediksi Market", "🧪 Riset Shadow E3",
-                          "🐋 Monitor Whale", "📈 Open Position",
+                          "🐋 Monitor Whale", "📈 Open Position", "🌐 Kondisi Global",
                           "📂 Posisi Aktif", "📊 Performance"):
                 replies = []
                 await tb.menu_button_handler(self._update(label, replies), SimpleNamespace(user_data={}))
