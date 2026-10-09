@@ -78,11 +78,17 @@ def test_predict_and_quant_keep_their_existing_non_tie_directions():
         assert f"Market Bias : {expected_bias}" in _quant_message(snapshot)
 
 
-def _market_score(monkeypatch, global_data):
+_BULL_SNAPSHOT = {"data": {
+    "BTC": {"trend_4h": "BULLISH", "trend_1d": "BULLISH"},
+    "ETH": {"trend_4h": "BULLISH", "trend_1d": "SIDEWAYS"},
+}}
+
+
+def _market_score(monkeypatch, global_data, snapshot=_BULL_SNAPSHOT):
+    monkeypatch.setattr(context_engine, "_get_snapshot", lambda: snapshot)
     monkeypatch.setattr(context_engine, "get_global_market_data", lambda: global_data)
     monkeypatch.setattr(context_engine, "get_all_funding_data", lambda: {coin: {"funding_rate": 0.0} for coin in ("BTC", "ETH", "BNB", "SOL", "XRP")})
     monkeypatch.setattr(context_engine, "get_macro_data", lambda code, _kind: {"change": -1.0} if code == "CPIAUCSL" else {"value": 5.0, "change": 0.0})
-    monkeypatch.setattr(context_engine, "scan_for_signals", lambda: {"confidence": 80})
     return context_engine.calculate_market_score()
 
 
@@ -91,10 +97,10 @@ def test_failed_global_statuses_exclude_fallback_values_from_market_score(monkey
     failed_fear_greed = _market_score(monkeypatch, {"fear_greed": 50.0, "fear_greed_status": "failed", "btc_dominance": 55.0, "btc_dominance_status": "ok"})
     failed_dominance = _market_score(monkeypatch, {"fear_greed": 50.0, "fear_greed_status": "ok", "btc_dominance": 55.0, "btc_dominance_status": "failed"})
     both_failed = _market_score(monkeypatch, {"fear_greed": 50.0, "fear_greed_status": "failed", "btc_dominance": 55.0, "btc_dominance_status": "failed"})
-    assert normal["total_score"] == 88
-    assert failed_fear_greed["total_score"] == 85
-    assert failed_dominance["total_score"] == 86
-    assert both_failed["total_score"] == 83
+    assert normal["total_score"] == 84
+    assert failed_fear_greed["total_score"] == 82
+    assert failed_dominance["total_score"] == 83
+    assert both_failed["total_score"] == 81
     assert failed_fear_greed["components"]["fear_greed"]["value"] is None
     assert failed_dominance["components"]["btc_dominance"]["value"] is None
 
@@ -104,6 +110,18 @@ def test_brief_format_is_stable_for_ok_status_and_valid_when_status_failed(monke
     normal_brief = context_engine.format_context_for_brief()
     failed = _market_score(monkeypatch, {"fear_greed": 50.0, "fear_greed_status": "failed", "btc_dominance": 55.0, "btc_dominance_status": "failed"})
     failed_brief = context_engine.format_context_for_brief()
-    assert normal["total_score"] == 88
+    assert normal["total_score"] == 84
     assert "F&G    : 50 (Neutral) | BTC.D: 55.0%" in normal_brief
-    assert failed["total_score"] == 83
+    assert failed["total_score"] == 81
+
+
+def test_falling_prices_pull_score_down_even_with_good_sentiment(monkeypatch):
+    """Regresi 9 Okt 2026: dulu skor 72 'Strong Bullish' saat semua coin 4H turun."""
+    bear = {"data": {c: {"trend_4h": "BEARISH", "trend_1d": "SIDEWAYS"} for c in ("BTC", "ETH", "SOL", "BNB")}}
+    good_sentiment = {"fear_greed": 59.0, "fear_greed_status": "ok", "btc_dominance": 59.0, "btc_dominance_status": "ok"}
+    r = _market_score(monkeypatch, good_sentiment, snapshot=bear)
+    pt = r["components"]["price_trend"]
+    assert pt["score"] == 5 and pt["down"] == 4 and pt["n"] == 4
+    assert r["total_score"] == 5 + 20 + 13 + 8 + 6
+    assert r["label"] in ("Neutral", "Weak")
+    assert "entry" not in r["summary"].lower()
