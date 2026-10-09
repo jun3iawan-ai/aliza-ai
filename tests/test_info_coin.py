@@ -401,7 +401,8 @@ def _labels(markup):
 
 
 class TestInfoCoinTelegramWiring(IsolatedAsyncioTestCase):
-    async def test_menu_button_shows_coin_selector_with_info_prefix(self):
+    # Info Coin digabung ke Analisis Coin (9 Okt 2026).
+    async def test_old_menu_label_opens_analisis_coin_selector(self):
         replies = []
 
         async def reply_text(message, **kwargs):
@@ -415,22 +416,21 @@ class TestInfoCoinTelegramWiring(IsolatedAsyncioTestCase):
 
         assert len(replies) == 1
         _, markup = replies[0]
-        assert markup is not None
         callback_datas = [btn.callback_data for row in markup.inline_keyboard for btn in row]
-        assert "info_BTC" in callback_datas
+        assert "cond_BTC" in callback_datas
 
-    async def test_info_coin_button_reachable_from_market_submenu(self):
+    async def test_info_coin_button_removed_from_market_submenu(self):
         labels = [
             getattr(btn, "text", btn)
             for row in tb._market_submenu_keyboard().keyboard
             for btn in row
         ]
-        assert "ℹ️ Info Coin" in labels
+        assert "ℹ️ Info Coin" not in labels
 
-    async def test_callback_info_prefix_calls_formatter_and_replies(self):
+    async def test_old_info_callback_renders_condition_card(self):
         with patch.object(tb, "_authorized_chat", return_value=True), patch.object(
-            tb, "_format_info_coin_message", return_value=("PESAN INFO COIN BTC", None)
-        ) as mock_fmt:
+            tb, "_coin_condition_text", AsyncMock(return_value="KARTU BTC")
+        ) as mock_card:
             reply_mock = AsyncMock()
             callback_query = SimpleNamespace(
                 data="info_BTC",
@@ -438,26 +438,7 @@ class TestInfoCoinTelegramWiring(IsolatedAsyncioTestCase):
                 message=SimpleNamespace(reply_text=reply_mock),
             )
             update = SimpleNamespace(callback_query=callback_query)
-            context = SimpleNamespace()
+            await tb.coin_selector_callback(update, SimpleNamespace())
 
-            await tb.coin_selector_callback(update, context)
-
-        mock_fmt.assert_called_once_with("BTC")
-        reply_mock.assert_awaited_once_with("PESAN INFO COIN BTC")
-
-    async def test_callback_info_prefix_shows_error_without_crashing(self):
-        with patch.object(tb, "_authorized_chat", return_value=True), patch.object(
-            tb, "_format_info_coin_message", return_value=(None, "Coin tidak tersedia.")
-        ):
-            reply_mock = AsyncMock()
-            callback_query = SimpleNamespace(
-                data="info_NOPE",
-                answer=AsyncMock(),
-                message=SimpleNamespace(reply_text=reply_mock),
-            )
-            update = SimpleNamespace(callback_query=callback_query)
-            context = SimpleNamespace()
-
-            await tb.coin_selector_callback(update, context)
-
-        reply_mock.assert_awaited_once_with("Coin tidak tersedia.")
+        mock_card.assert_awaited_once_with("BTC")
+        reply_mock.assert_awaited_once_with("KARTU BTC")

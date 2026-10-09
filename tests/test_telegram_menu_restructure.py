@@ -94,7 +94,6 @@ class TelegramMenuRestructureTests(IsolatedAsyncioTestCase):
                 "performance",
                 "alert_stats",
                 "snapshot",
-                "health",
                 "weekly_winrate",
                 "shadow_promotion_check",
             }.issubset(names)

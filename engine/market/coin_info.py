@@ -13,6 +13,7 @@ Read-only: no signal generation, no alert queueing, no writes to any tracker.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -27,7 +28,14 @@ logger = logging.getLogger(__name__)
 
 MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
 TIMEOUT = 15.0
-TOKENOMICS_CACHE_SEC = int(os.getenv("TOKENOMICS_CACHE_SEC", "3600"))
+TOKENOMICS_CACHE_SEC = int(os.getenv("TOKENOMICS_CACHE_SEC", "21600"))
+# Cache disk: tokenomics jarang berubah; dipakai saat CoinGecko rate-limit (429)
+# dan cache memori kosong (mis. tepat setelah restart).
+DISK_CACHE_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data", "tokenomics_cache.json",
+)
+DISK_CACHE_MAX_AGE_SEC = 7 * 86400
 
 _tokenomics_cache: dict[str, Any] = {"data": None, "ts": 0.0}
 
@@ -104,6 +112,29 @@ def _fetch_tokenomics_batch() -> tuple[dict[str, dict[str, Any]] | None, str | N
     return out, None
 
 
+def _disk_save(batch: dict, now: float) -> None:
+    try:
+        os.makedirs(os.path.dirname(DISK_CACHE_FILE), exist_ok=True)
+        tmp = DISK_CACHE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"ts": now, "data": batch}, f)
+        os.replace(tmp, DISK_CACHE_FILE)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("coin_info: simpan cache disk gagal: %s", e)
+
+
+def _disk_load(now: float) -> tuple[dict | None, float]:
+    try:
+        with open(DISK_CACHE_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        ts = float(d.get("ts") or 0)
+        if isinstance(d.get("data"), dict) and now - ts <= DISK_CACHE_MAX_AGE_SEC:
+            return d["data"], ts
+    except Exception:  # noqa: BLE001
+        pass
+    return None, 0.0
+
+
 def get_tokenomics(symbol: str, now: float | None = None) -> dict[str, Any]:
     """
     Return tokenomics for one symbol.
@@ -125,9 +156,16 @@ def get_tokenomics(symbol: str, now: float | None = None) -> dict[str, Any]:
         batch = _tokenomics_cache["data"]
     else:
         batch, err = _fetch_tokenomics_batch()
+        if batch is None and _tokenomics_cache["data"] is None:
+            disk, disk_ts = _disk_load(now)
+            if disk is not None:
+                logger.warning("coin_info: tokenomics fetch gagal (%s), pakai cache disk", err)
+                _tokenomics_cache["data"] = disk
+                _tokenomics_cache["ts"] = disk_ts
         if batch is not None:
             _tokenomics_cache["data"] = batch
             _tokenomics_cache["ts"] = now
+            _disk_save(batch, now)
         elif _tokenomics_cache["data"] is not None:
             # Fetch gagal tapi masih ada cache lama (walau sudah lewat TTL) --
             # lebih baik data agak basi (jelas ditandai stale oleh caller lewat

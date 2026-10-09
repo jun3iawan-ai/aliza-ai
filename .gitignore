@@ -40,3 +40,4 @@ dist/
 *.sqlite-shm
 data/ff_calendar_cache/
 data/user_alerts.json
+data/tokenomics_cache.json
