@@ -95,3 +95,35 @@ def test_card_scenario_when_support_already_broken():
 def test_both_sideways_reads_as_range_not_misaligned():
     out = cc.build_coin_condition("BTC", dict(BTC, trend_4h="SIDEWAYS", trend_1d="SIDEWAYS"))
     assert "4H → · 1D →  (sama-sama sideways — range)" in out
+
+
+
+def test_card_uses_unified_levels_when_given():
+    lv = {"support": 81375.74, "support2": 79663.33, "resistance": 87204.93, "resistance2": None,
+          "source": "pivot harian 90 hari"}
+    out = cc.build_coin_condition("BTC", BTC, levels=lv)
+    assert "1.4% di atas support $81,376" in out
+    assert "5.7% di bawah resistance $87,205" in out
+    assert "Range 3 hari: $81,038 – $86,242" in out
+    assert "▼ Jebol support $81,376 → level berikutnya ~$79,663" in out
+    assert "▲ Tembus resistance $87,205 → ruang naik terbuka" in out
+    assert "Level S/R: pivot harian 90 hari" in out
+
+
+def test_card_price_below_all_levels():
+    out = cc.build_coin_condition("BTC", BTC, levels={"support": None, "resistance": 90000.0})
+    assert "di bawah semua level 90 hari" in out
+
+
+def test_near_rows_use_levels_map_with_snapshot_fallback():
+    data = {"BTC": BTC, "ETH": {"price": 100.0, "support": 99.0}}
+    rows = cc.near_support_rows(data, levels_map={"BTC": {"support": 81375.74}, "ETH": None})
+    got = {r["coin"]: r["support"] for r in rows}
+    assert got == {"BTC": 81375.74, "ETH": 99.0}
+
+
+def test_fmt_price_keeps_about_four_significant_digits():
+    assert cc.fmt_price(0.52726667) == "$0.5273"
+    assert cc.fmt_price(0.085285) == "$0.08528"  # 0.0852849... dalam biner
+    assert cc.fmt_price(0.00000388) == "$0.00000388"
+    assert cc.fmt_price(81375.74) == "$81,376"

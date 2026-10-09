@@ -58,6 +58,7 @@ def collect_scan(
     changes_1h: dict[str, float],
     sr_fn: Callable[[str], Any],
     avg_vol_fn: Callable[[str], Any],
+    levels_map: dict | None = None,
 ) -> dict[str, Any]:
     breakouts, vol_ratios, oversold, overbought, near_res = [], [], [], [], []
     for coin, md in (data or {}).items():
@@ -83,9 +84,10 @@ def collect_scan(
             oversold.append((coin, rsi))
         elif rsi is not None and rsi > 70:
             overbought.append((coin, rsi))
-        dr = resistance_distance_pct(price, md.get("resistance"))
+        res_v = (levels_map.get(coin) or {}).get("resistance") if levels_map and levels_map.get(coin) else md.get("resistance")
+        dr = resistance_distance_pct(price, res_v)
         if dr is not None and 0 <= dr <= NEAR_RES_PCT:
-            near_res.append((coin, dr, md.get("resistance")))
+            near_res.append((coin, dr, res_v))
     vol_ratios.sort(key=lambda x: -x[1])
     oversold.sort(key=lambda x: x[1])
     overbought.sort(key=lambda x: -x[1])
@@ -113,15 +115,15 @@ def format_market_scan(scan: dict[str, Any], snapshot_ts: str = "—") -> str:
     lines.append("")
 
     bo = scan.get("breakouts") or []
-    lines.append("🚨 Breakout / breakdown level harian (90 hari)")
+    lines.append("🚨 Tembus level hari ini (vs close kemarin)")
     if bo:
         for b in bo:
             if b["direction"] == "UP":
-                txt = f"di atas resistance harian {fmt_price(b['level'])} ({b['pct_from_level']:+.1f}%) — sudah ditembus"
+                txt = f"tembus ke atas {fmt_price(b['level'])} ({b['pct_from_level']:+.1f}%)"
             else:
-                txt = f"di bawah support harian {fmt_price(b['level'])} ({b['pct_from_level']:+.1f}%) — sudah jebol"
+                txt = f"jebol ke bawah {fmt_price(b['level'])} ({b['pct_from_level']:+.1f}%)"
             lines.append(f"• {b['coin']} {txt}")
-        lines.append("  (level cluster harian, beda dari S/R ~3 hari di 📍 Dekat S/R)")
+        lines.append("  (level: pivot harian 90 hari — sama dengan menu lain)")
     else:
         lines.append("• tidak ada")
     lines.append("")
@@ -144,7 +146,9 @@ def format_market_scan(scan: dict[str, Any], snapshot_ts: str = "—") -> str:
 
     nr = scan.get("near_res") or []
     lines.append(f"🔺 Dekat resistance (≤{NEAR_RES_PCT:.0f}%)")
-    lines.append("• " + (", ".join(f"{c} {d:.1f}% → {fmt_price(r)}" for c, d, r in nr) if nr else "tidak ada"))
+    shown = ", ".join(f"{c} {d:.1f}% → {fmt_price(r)}" for c, d, r in nr[:6])
+    more = f" (+{len(nr) - 6} lagi, lihat 📍 Dekat S/R)" if len(nr) > 6 else ""
+    lines.append("• " + (shown + more if nr else "tidak ada"))
     lines.append("")
     lines.append("ℹ️ Pemantauan, bukan sinyal. Detail per coin: 🔍 Analisis Coin")
     return "\n".join(lines)

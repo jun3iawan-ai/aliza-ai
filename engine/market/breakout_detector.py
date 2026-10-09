@@ -116,7 +116,21 @@ def _fetch_daily_high_low(symbol: str, limit: int = KLINES_LIMIT) -> tuple[list[
         return None
 
 
-def get_sr_levels(symbol: str) -> dict[str, list[float]] | None:
+def get_sr_levels(symbol: str) -> dict[str, Any] | None:
+    """Level S/R untuk breakout — kini dari mesin level terpadu (pivot harian
+    90 hari, engine/market/key_levels.py). Fallback ke cluster ekstrem lama."""
+    try:
+        from engine.market.key_levels import levels_for
+        unified = levels_for(symbol)
+        if unified:
+            return {"levels": unified["levels"], "prev_close": unified["prev_close"],
+                    "resistance": unified["levels"], "support": unified["levels"]}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("breakout_detector: key_levels %s gagal: %s", symbol, e)
+    return _legacy_sr_levels(symbol)
+
+
+def _legacy_sr_levels(symbol: str) -> dict[str, list[float]] | None:
     """
     Resistance: 3 level tertinggi (cluster), Support: 3 level terendah (cluster).
     Cache TTL 4 jam per coin.
@@ -147,16 +161,35 @@ def get_sr_levels(symbol: str) -> dict[str, list[float]] | None:
     return {"resistance": res_levels, "support": sup_levels}
 
 
-def evaluate_breakout(price: float, sr: dict[str, list[float]] | None) -> dict[str, Any] | None:
+def evaluate_breakout(price: float, sr: dict[str, Any] | None) -> dict[str, Any] | None:
     """Inti deteksi breakout TANPA state (tanpa cooldown/level memory).
-    UP: harga > resistance*(1+margin); DOWN: harga < support*(1-margin);
-    diabaikan bila harga sudah >=MAX_BREAKOUT_DISTANCE_PCT dari level."""
+
+    Format terpadu (key_levels): {"levels": [...], "prev_close": c} →
+    UP bila close harian kemarin DI BAWAH level dan harga kini > level*(1+margin);
+    DOWN bila close kemarin DI ATAS level dan harga kini < level*(1-margin).
+    Format lama {"resistance","support"} tetap didukung.
+    Diabaikan bila harga sudah >= MAX_BREAKOUT_DISTANCE_PCT dari level."""
     try:
         price = float(price)
     except (TypeError, ValueError):
         return None
     if price <= 0 or not sr:
         return None
+    if sr.get("levels") is not None and sr.get("prev_close"):
+        prev = float(sr["prev_close"])
+        lv = [float(x) for x in sr["levels"] if x and x > 0]
+        ups = [L for L in lv if prev < L and price > L * (1 + MARGIN_BREAKOUT)]
+        downs = [L for L in lv if prev > L and price < L * (1 - MARGIN_BREAKOUT)]
+        if ups:
+            direction, level = "UP", max(ups)
+        elif downs:
+            direction, level = "DOWN", min(downs)
+        else:
+            return None
+        pct_from = (price - level) / level * 100.0
+        if abs(pct_from) / 100.0 >= MAX_BREAKOUT_DISTANCE_PCT:
+            return None
+        return {"direction": direction, "level": float(level), "price": price, "pct_from_level": float(pct_from)}
     resistances = [r for r in sr.get("resistance") or [] if r and r > 0]
     supports = [s for s in sr.get("support") or [] if s and s > 0]
     if not resistances or not supports:
