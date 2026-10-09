@@ -8,6 +8,14 @@ from engine import state_store as _state_store
 from engine.market import economic_calendar as _ecal
 from engine.market import news_feed as _news_feed
 from engine.market import key_levels as _key_levels
+from engine import user_config as _user_config
+
+
+@pytest.fixture(autouse=True)
+def _isolate_user_config(tmp_path, monkeypatch):
+    """Test tidak boleh mengubah modal/risiko produksi (data/user_config.db)."""
+    monkeypatch.setattr(_user_config, "DB_PATH", str(tmp_path / "user_config.db"))
+    yield
 
 
 @pytest.fixture(autouse=True)
