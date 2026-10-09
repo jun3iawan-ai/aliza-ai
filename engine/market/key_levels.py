@@ -19,6 +19,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 KLINES_URL = "https://api.binance.com/api/v3/klines"
+FUTURES_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
 DAYS = 90
 PIVOT_K = 3            # pivot = high/low tertinggi/terendah di jendela ±3 hari (swing)
 CLUSTER_PCT = 0.012    # level berjarak ≤1,2% digabung
@@ -42,6 +43,16 @@ def _fetch_daily(symbol: str) -> dict[str, list[float]] | None:
         logger.warning("key_levels: fetch %s gagal: %s", sym, e)
         return None
     rows = [x for x in rows if isinstance(x, (list, tuple)) and len(x) >= 5][:-1]
+    if len(rows) < DAYS * 0.6:
+        # Histori spot pendek (coin baru listing spot) → coba candle futures USDT-M.
+        try:
+            rf = requests.get(FUTURES_KLINES_URL, params={"symbol": sym, "interval": "1d", "limit": DAYS + 1}, timeout=12)
+            if rf.status_code == 200:
+                fut = [x for x in rf.json() if isinstance(x, (list, tuple)) and len(x) >= 5][:-1]
+                if len(fut) > len(rows):
+                    rows = fut
+        except Exception as e:  # noqa: BLE001
+            logger.debug("key_levels: futures fallback %s gagal: %s", sym, e)
     if len(rows) < 2 * PIVOT_K + 5:
         return None
     return {

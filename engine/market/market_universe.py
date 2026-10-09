@@ -16,9 +16,10 @@ CORE_COINS = [
     "BTC", "ETH", "BNB", "SOL", "XRP",
     "ADA", "SUI", "ARB", "PEPE", "JTO",
     "ETHFI", "WLD", "OM", "ASTER", "XPL",
-    "TAO", "BONE", "FARTCOIN", "HYPE", "ZEREBRO",
-    "XAUT",
+    "TAO", "HYPE", "XAUT",
 ]
+# 9 Okt 2026: BONE (tidak ada di Binance), FARTCOIN & ZEREBRO (futures-only,
+# ZEREBRO tidak likuid) dihapus dari watchlist.
 
 # Tidak dipakai lagi — dynamic universe dinonaktifkan
 DEFAULT_DYNAMIC_COINS = []
