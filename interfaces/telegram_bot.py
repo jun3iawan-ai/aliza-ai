@@ -467,10 +467,8 @@ def _market_submenu_keyboard():
     return ReplyKeyboardMarkup(
         [
             ["🌅 Ringkasan Pagi", "🌙 Ringkasan Malam"],
-            ["📡 Radar"],
-            ["🌐 Kondisi Global"],
+            ["📡 Radar", "ℹ️ Info Coin"],
             ["🔔 Monitor Pasar"],
-            ["ℹ️ Info Coin"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -594,7 +592,7 @@ def _reply_target(update: Update):
 _RETIRED_MENU_LABELS = frozenset({
     "📈 Saran Spot", "🔎 Scan Futures", "🔮 Prediksi Market", "🐋 Monitor Whale",
     "📊 Akurasi Sinyal", "🧪 Riset Shadow E3", "🧪 Cek Promosi Shadow",
-    "📂 Posisi Aktif", "📈 Buka Posisi", "📉 Tutup Posisi",
+    "📂 Posisi Aktif", "📈 Buka Posisi", "📉 Tutup Posisi", "🌐 Kondisi Global",
     "📊 Performance", "📈 Kinerja Trade (RR/PF)", "📅 Ringkasan Mingguan",
     "🟢 Spot Trading", "📊 Futures Trading", "🎯 Sinyal & Trading", "🔎 Scan Peluang",
     "📂 Portofolio", "📈 Analisis & Skor", "📊 Performa Sinyal", "📊 Performa Trading",
@@ -638,7 +636,8 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             "🌅 Ringkasan Pagi — Ringkasan harian\n"
             "🌙 Ringkasan Malam — Ringkasan sore\n"
             "📡 Radar — arah 4H/1D, RSI & kondisi semua coin\n"
-            "🌐 Kondisi Global — Kondisi market global",
+            "ℹ️ Info Coin — teknikal, tokenomics, on-chain per coin\n"
+            "🔔 Monitor Pasar — levels S/R, big move, RSI, breakout, volume",
             reply_markup=_market_submenu_keyboard(),
         )
         return
@@ -659,9 +658,6 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Radar gabungan; label lama tetap diarahkan ke sini (keyboard ter-cache).
     if text in ("📡 Radar", "📡 Radar Market", "📡 Radar Pro"):
         await radar(update, context)
-        return
-    if text == "🌐 Kondisi Global":
-        await marketstate_command(update, context)
         return
     if text == "ℹ️ Info Coin":
         kb = _build_coin_selector("info", MAJOR_COINS)
