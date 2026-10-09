@@ -488,8 +488,7 @@ def _futures_trading_submenu_keyboard():
 def _trading_submenu_keyboard():
     return ReplyKeyboardMarkup(
         [
-            ["📈 Saran Spot", "🟢 Peluang Spot"],
-            ["🔎 Scan Futures", "🔍 Analisis Coin"],
+            ["🟢 Peluang Spot", "🔍 Analisis Coin"],
             ["📂 Posisi Aktif", "📈 Buka Posisi"],
             ["📉 Tutup Posisi"],
             ["⬅ Kembali"],
@@ -502,9 +501,8 @@ def _trading_submenu_keyboard():
 def _analysis_submenu_keyboard():
     return ReplyKeyboardMarkup(
         [
-            ["🎯 Konteks Market", "🔮 Prediksi Market"],
-            ["📊 Skor Quant", "🔎 Penjelasan AI"],
-            ["📊 Performance"],
+            ["🎯 Konteks Market", "📊 Skor Quant"],
+            ["🔎 Penjelasan AI", "📊 Performance"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -517,7 +515,6 @@ def _macro_submenu_keyboard():
         [
             ["🌐 Data Makro", "🔄 Funding Rate & OI"],
             ["📊 CFRA", "📅 Kalender Ekonomi"],
-            ["🐋 Monitor Whale"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -542,8 +539,7 @@ def _market_monitor_submenu_keyboard():
 def _performance_submenu_keyboard():
     return ReplyKeyboardMarkup(
         [
-            ["📊 Akurasi Sinyal", "📈 Kinerja Trade (RR/PF)"],
-            ["📅 Ringkasan Mingguan", "🧪 Riset Shadow E3"],
+            ["📈 Kinerja Trade (RR/PF)", "📅 Ringkasan Mingguan"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -556,7 +552,7 @@ def _system_submenu_keyboard():
         [
             ["⚙️ Status Sistem", "🏥 Health Sistem"],
             ["📊 Alert Stats", "🧪 Test Alert"],
-            ["🛠 Debug Market", "🧪 Cek Promosi Shadow"],
+            ["🛠 Debug Market"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -602,6 +598,22 @@ def _reply_target(update: Update):
     if getattr(update, "callback_query", None) and getattr(update.callback_query, "message", None):
         return update.callback_query.message
     return getattr(update, "message", None)
+
+
+# Label tombol yang sudah dipensiunkan (dihapus dari keyboard 9 Okt 2026 + alias lama).
+# Slash command terkait tetap terdaftar; hanya tombol menu yang dihapus.
+_RETIRED_MENU_LABELS = frozenset({
+    "📈 Saran Spot", "🔎 Scan Futures", "🔮 Prediksi Market", "🐋 Monitor Whale",
+    "📊 Akurasi Sinyal", "🧪 Riset Shadow E3", "🧪 Cek Promosi Shadow",
+    "🟢 Spot Trading", "📊 Futures Trading", "🎯 Sinyal & Trading", "🔎 Scan Peluang",
+    "📂 Portofolio", "📈 Analisis & Skor", "📊 Performa Sinyal", "📊 Performa Trading",
+    "📉 Near Support", "📈 Near Resistance", "🔵 RSI Extreme", "💥 Big Move",
+    "📊 Market Coin", "📡 Radar", "🌐 Market State", "🎯 Trading",
+    "🔎 Scan Opportunities", "📈 Open Position", "📉 Close Position", "📂 Portfolio",
+    "🧠 AI Intelligence", "🔮 Market Prediction", "📊 Quant Score", "🔎 Trade Explanation",
+    "📈 Analytics", "📊 Trading Performance", "⚙️ System", "⚙️ System Status",
+    "🛠 Market Debug", "📊 Spot Opportunities", "🔍 Analyze Coin",
+})
 
 
 async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -700,44 +712,15 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text == "💹 Trading":
         await update.message.reply_text(
             "💹 TRADING\n\n"
-            "📈 Saran Spot — saran swing entry 21 coin (3x/hari)\n"
-            "🟢 Peluang Spot — daftar coin BUY\n"
-            "🔎 Scan Futures — scan peluang futures\n"
+            "🟢 Peluang Spot — daftar coin kondisi BUY\n"
             "🔍 Analisis Coin — analisa per coin\n"
-            "📂 Posisi Aktif — posisi terbuka",
+            "📂 Posisi Aktif — posisi terbuka\n"
+            "📈 Buka Posisi / 📉 Tutup Posisi — catat posisi",
             reply_markup=_trading_submenu_keyboard(),
-        )
-        return
-    # Fallback cache lama — redirect ke Trading baru
-    if text in ("🟢 Spot Trading", "📊 Futures Trading"):
-        await update.message.reply_text(
-            "Menu sudah digabung ke 💹 Trading.",
-            reply_markup=_trading_submenu_keyboard(),
-        )
-        return
-    # Keyboard cache lama
-    if text == "🎯 Sinyal & Trading":
-        await update.message.reply_text(
-            "Menu dipisah: pilih 💹 Trading di menu utama.",
-            reply_markup=_main_menu_keyboard(),
         )
         return
     if text == "📂 Posisi Aktif":
         await portfolio(update, context)
-        return
-    if text == "🔎 Scan Futures":
-        kb = _build_coin_selector("scan", MAJOR_COINS)
-        await update.message.reply_text(
-            "🔎 SCAN FUTURES\n\nPilih coin untuk melihat peluang futures.",
-            reply_markup=kb,
-        )
-        return
-    if text == "🔎 Scan Peluang":
-        kb = _build_coin_selector("scan", MAJOR_COINS)
-        await update.message.reply_text(
-            "🔎 SCAN PELUANG\n\nPilih coin untuk melihat peluang trading.",
-            reply_markup=kb,
-        )
         return
     if text == "🟢 Peluang Spot":
         await spot_command(update, context)
@@ -762,9 +745,6 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         kb = _build_coin_selector("close", coins)
         await update.message.reply_text("Pilih posisi yang akan ditutup:", reply_markup=kb)
         return
-    if text == "📂 Portofolio":
-        await portfolio(update, context)
-        return
 
     # 📈 Analisis (baru) + fallback cache lama
     if text == "📈 Analisis":
@@ -772,25 +752,14 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(
             "📈 ANALISIS\n\n"
             "🎯 Konteks Market — skor kondisi market\n"
-            "🔮 Prediksi Market — probabilitas bullish/bearish\n"
             "📊 Skor Quant — market strength score\n"
             "🔎 Penjelasan AI — analisa AI per coin\n"
-            "📊 Performance — akurasi sinyal dan kinerja trade",
+            "📊 Performance — kinerja trade dan ringkasan mingguan",
             reply_markup=_analysis_submenu_keyboard(),
         )
         return
-    if text == "📈 Analisis & Skor":
-        if update.message:
-            await update.message.reply_text(
-                "📈 ANALISIS",
-                reply_markup=_analysis_submenu_keyboard(),
-            )
-        return
     if text == "🎯 Konteks Market":
         await market_context_command(update, context)
-        return
-    if text == "🔮 Prediksi Market":
-        await predict(update, context)
         return
     if text == "📊 Skor Quant":
         await quant_command(update, context)
@@ -806,12 +775,9 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         _set_menu_parent(context, "performance")
         await update.message.reply_text(
             "📊 PERFORMANCE\n\n"
-            "Akurasi sinyal produksi, kinerja trade, ringkasan mingguan, dan riset Shadow E3.",
+            "Kinerja trade (RR/PF) dan ringkasan mingguan.",
             reply_markup=_performance_submenu_keyboard(),
         )
-        return
-    if text == "📊 Akurasi Sinyal":
-        await signal_stats_command(update, context)
         return
     if text == "📈 Kinerja Trade (RR/PF)":
         await performance_command(update, context)
@@ -819,25 +785,12 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text == "📅 Ringkasan Mingguan":
         await weekly_winrate_summary_command(update, context)
         return
-    if text == "🧪 Riset Shadow E3":
-        await shadow_stats_command(update, context)
-        return
-    # Label Performance lama untuk keyboard client yang masih ter-cache.
-    if text == "📊 Performa Sinyal":
-        await signal_stats_command(update, context)
-        return
-    if text == "📊 Performa Trading":
-        await performance_command(update, context)
-        return
-    if text == "📈 Saran Spot":
-        await spot_signal_command(update, context)
-        return
 
     # 🌍 Makro & Sentimen
     if text == "🌍 Makro & Sentimen":
         await update.message.reply_text(
             "🌍 MAKRO & SENTIMEN\n\n"
-            "Data makro, funding, kalender ekonomi, dan whale monitor.",
+            "Data makro, funding & OI, CFRA, dan kalender ekonomi.",
             reply_markup=_macro_submenu_keyboard(),
         )
         return
@@ -853,16 +806,13 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text == "📅 Kalender Ekonomi":
         await check_calendar_command(update, context)
         return
-    if text == "🐋 Monitor Whale":
-        await check_whale_command(update, context)
-        return
 
     # ⚙️ Sistem
     if text == "⚙️ Sistem":
         _set_menu_parent(context, "system")
         await update.message.reply_text(
             "⚙️ SISTEM\n\n"
-            "Status, health, observability alert, test, debug, dan administrasi riset.",
+            "Status, health, observability alert, test, dan debug.",
             reply_markup=_system_submenu_keyboard(),
         )
         return
@@ -881,119 +831,16 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text == "🛠 Debug Market":
         await marketdebug(update, context)
         return
-    if text == "🧪 Cek Promosi Shadow":
-        await shadow_promotion_check_command(update, context)
-        return
 
-    # Tombol Sistem lama (keyboard cache) — tetap kompatibel, tetapi tidak lagi aktif.
-    if text == "📉 Near Support":
-        await check_near_support_command(update, context)
-        return
-    if text == "📈 Near Resistance":
-        await check_near_resistance_command(update, context)
-        return
-    if text == "🔵 RSI Extreme":
-        await check_rsi_extreme_command(update, context)
-        return
-    if text == "💥 Big Move":
-        await check_big_move_command(update, context)
-        return
-
-    # Tombol lama (keyboard cache) — tetap dirutekan ke handler yang sama
-    if text == "📊 Market Coin":
-        kb = _build_coin_selector("market", ALLOWED_COINS)
-        await update.message.reply_text("Pilih coin untuk melihat market:", reply_markup=kb)
-        return
-    if text == "📡 Radar":
-        await radar(update, context)
-        return
-    if text == "🌐 Market State":
-        await marketstate_command(update, context)
-        return
-    if text == "🎯 Trading":
+    # Tombol yang sudah dipensiunkan (keyboard lama masih ter-cache di client):
+    # beri tahu user dan tampilkan menu utama terbaru, jangan diam.
+    if text in _RETIRED_MENU_LABELS:
+        _set_menu_parent(context, None)
         await update.message.reply_text(
-            "🎯 TRADING\n\n"
-            "Menu ini sudah dipisah: 🟢 Spot Trading • 📊 Futures Trading",
+            "Menu ini sudah tidak tersedia — tampilan menu sudah diperbarui.",
             reply_markup=_main_menu_keyboard(),
         )
         return
-    if text == "🔎 Scan Opportunities":
-        kb = _build_coin_selector("scan", MAJOR_COINS)
-        await update.message.reply_text(
-            "🔎 SCAN PELUANG\n\nPilih coin untuk melihat peluang trading.",
-            reply_markup=kb,
-        )
-        return
-    if text == "📈 Open Position":
-        kb = _build_coin_selector("entry", ALLOWED_COINS)
-        await update.message.reply_text("Pilih coin untuk buka posisi:", reply_markup=kb)
-        return
-    if text == "📉 Close Position":
-        trades = get_active_trades()
-        coins = [t[0] for t in trades] if trades else []
-        if not coins:
-            await update.message.reply_text("Belum ada posisi aktif.")
-            return
-        kb = _build_coin_selector("close", coins)
-        await update.message.reply_text("Pilih posisi yang akan ditutup:", reply_markup=kb)
-        return
-    if text == "📂 Portfolio":
-        await portfolio(update, context)
-        return
-    if text == "🧠 AI Intelligence":
-        await update.message.reply_text(
-            "📈 ANALISIS & SKOR\n\n"
-            "Menu ini sudah dipindah ke: 📈 Analisis & Skor",
-            reply_markup=_analysis_submenu_keyboard(),
-        )
-        return
-    if text == "🔮 Market Prediction":
-        await predict(update, context)
-        return
-    if text == "📊 Quant Score":
-        await quant_command(update, context)
-        return
-    if text == "🔎 Trade Explanation":
-        kb = _build_coin_selector("why", MAJOR_COINS)
-        await update.message.reply_text(
-            "🔎 PENJELASAN AI\n\nPilih coin untuk melihat analisa AI.",
-            reply_markup=kb,
-        )
-        return
-    if text == "📈 Analytics":
-        await update.message.reply_text(
-            "📈 ANALISIS & SKOR\n\n"
-            "Menu ini sudah dipindah ke: 📈 Analisis & Skor",
-            reply_markup=_analysis_submenu_keyboard(),
-        )
-        return
-    if text == "📊 Trading Performance":
-        await performance_command(update, context)
-        return
-    if text == "⚙️ System":
-        await update.message.reply_text(
-            "⚙️ SISTEM\n\n"
-            "Menu ini sudah dipindah ke: ⚙️ Sistem",
-            reply_markup=_system_submenu_keyboard(),
-        )
-        return
-    if text == "⚙️ System Status":
-        await status(update, context)
-        return
-    if text == "🛠 Market Debug":
-        await marketdebug(update, context)
-        return
-    if text == "📊 Spot Opportunities":
-        await spot_command(update, context)
-        return
-    if text == "🔍 Analyze Coin":
-        kb = _build_coin_selector("spot", MAJOR_COINS)
-        await update.message.reply_text(
-            "🔍 ANALISIS COIN\n\nPilih coin untuk analisa spot.",
-            reply_markup=kb,
-        )
-        return
-
 
 async def coin_selector_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle inline coin selector: market, entry, close, scan, why, spot, info."""
