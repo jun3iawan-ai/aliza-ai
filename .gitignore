@@ -39,3 +39,4 @@ dist/
 *.sqlite-wal
 *.sqlite-shm
 data/ff_calendar_cache/
+data/user_alerts.json
