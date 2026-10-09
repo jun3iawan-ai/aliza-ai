@@ -489,8 +489,6 @@ def _trading_submenu_keyboard():
     return ReplyKeyboardMarkup(
         [
             ["🟢 Peluang Spot", "🔍 Analisis Coin"],
-            ["📂 Posisi Aktif", "📈 Buka Posisi"],
-            ["📉 Tutup Posisi"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -502,7 +500,7 @@ def _analysis_submenu_keyboard():
     return ReplyKeyboardMarkup(
         [
             ["🎯 Konteks Market", "📊 Skor Quant"],
-            ["🔎 Penjelasan AI", "📊 Performance"],
+            ["🔎 Penjelasan AI"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -535,16 +533,6 @@ def _market_monitor_submenu_keyboard():
         one_time_keyboard=False,
     )
 
-
-def _performance_submenu_keyboard():
-    return ReplyKeyboardMarkup(
-        [
-            ["📈 Kinerja Trade (RR/PF)", "📅 Ringkasan Mingguan"],
-            ["⬅ Kembali"],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=False,
-    )
 
 
 def _system_submenu_keyboard():
@@ -605,6 +593,8 @@ def _reply_target(update: Update):
 _RETIRED_MENU_LABELS = frozenset({
     "📈 Saran Spot", "🔎 Scan Futures", "🔮 Prediksi Market", "🐋 Monitor Whale",
     "📊 Akurasi Sinyal", "🧪 Riset Shadow E3", "🧪 Cek Promosi Shadow",
+    "📂 Posisi Aktif", "📈 Buka Posisi", "📉 Tutup Posisi",
+    "📊 Performance", "📈 Kinerja Trade (RR/PF)", "📅 Ringkasan Mingguan",
     "🟢 Spot Trading", "📊 Futures Trading", "🎯 Sinyal & Trading", "🔎 Scan Peluang",
     "📂 Portofolio", "📈 Analisis & Skor", "📊 Performa Sinyal", "📊 Performa Trading",
     "📉 Near Support", "📈 Near Resistance", "🔵 RSI Extreme", "💥 Big Move",
@@ -630,13 +620,6 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text(
                 "📊 MARKET",
                 reply_markup=_market_submenu_keyboard(),
-            )
-            return
-        if parent == "performance":
-            _set_menu_parent(context, "analysis")
-            await update.message.reply_text(
-                "📈 ANALISIS",
-                reply_markup=_analysis_submenu_keyboard(),
             )
             return
         _set_menu_parent(context, None)
@@ -713,14 +696,9 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(
             "💹 TRADING\n\n"
             "🟢 Peluang Spot — daftar coin kondisi BUY\n"
-            "🔍 Analisis Coin — analisa per coin\n"
-            "📂 Posisi Aktif — posisi terbuka\n"
-            "📈 Buka Posisi / 📉 Tutup Posisi — catat posisi",
+            "🔍 Analisis Coin — analisa per coin",
             reply_markup=_trading_submenu_keyboard(),
         )
-        return
-    if text == "📂 Posisi Aktif":
-        await portfolio(update, context)
         return
     if text == "🟢 Peluang Spot":
         await spot_command(update, context)
@@ -732,19 +710,6 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup=kb,
         )
         return
-    if text == "📈 Buka Posisi":
-        kb = _build_coin_selector("entry", ALLOWED_COINS)
-        await update.message.reply_text("Pilih coin untuk buka posisi:", reply_markup=kb)
-        return
-    if text == "📉 Tutup Posisi":
-        trades = get_active_trades()
-        coins = [t[0] for t in trades] if trades else []
-        if not coins:
-            await update.message.reply_text("Belum ada posisi aktif.")
-            return
-        kb = _build_coin_selector("close", coins)
-        await update.message.reply_text("Pilih posisi yang akan ditutup:", reply_markup=kb)
-        return
 
     # 📈 Analisis (baru) + fallback cache lama
     if text == "📈 Analisis":
@@ -753,8 +718,7 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             "📈 ANALISIS\n\n"
             "🎯 Konteks Market — skor kondisi market\n"
             "📊 Skor Quant — market strength score\n"
-            "🔎 Penjelasan AI — analisa AI per coin\n"
-            "📊 Performance — kinerja trade dan ringkasan mingguan",
+            "🔎 Penjelasan AI — analisa AI per coin",
             reply_markup=_analysis_submenu_keyboard(),
         )
         return
@@ -770,20 +734,6 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             "🔎 PENJELASAN AI\n\nPilih coin untuk melihat analisa AI.",
             reply_markup=kb,
         )
-        return
-    if text == "📊 Performance":
-        _set_menu_parent(context, "performance")
-        await update.message.reply_text(
-            "📊 PERFORMANCE\n\n"
-            "Kinerja trade (RR/PF) dan ringkasan mingguan.",
-            reply_markup=_performance_submenu_keyboard(),
-        )
-        return
-    if text == "📈 Kinerja Trade (RR/PF)":
-        await performance_command(update, context)
-        return
-    if text == "📅 Ringkasan Mingguan":
-        await weekly_winrate_summary_command(update, context)
         return
 
     # 🌍 Makro & Sentimen
