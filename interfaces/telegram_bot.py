@@ -4230,10 +4230,233 @@ Jawab HANYA dengan section 📊 SARAN FUTURES di atas, tanpa pembuka, tanpa penu
     )
 
 
-async def _generate_brief_analysis(brief_data: dict) -> str:
+_BRIEF_MAP_HEADERS_PAGI = (
+    "🧭 KONDISI HARI INI", "🗺️ SKENARIO BTC", "👀 COIN LAYAK DIPANTAU",
+    "⚠️ YANG HARUS DIHINDARI", "🚨 CATALYST",
+)
+_BRIEF_MAP_HEADERS_MALAM = (
+    "🔄 APA YANG BERUBAH", "📊 SKENARIO YANG TERJADI",
+    "🗺️ SKENARIO BESOK", "⚠️ PERHATIKAN BESOK", "📅 EVENT BESOK",
+)
+# Penanda format lama/sinyal — kalau LLM membocorkannya, potong dari situ.
+_BRIEF_MAP_LEAK_MARKERS = ("KEPUTUSAN HARI INI", "SARAN SPOT", "SARAN FUTURES", "DISCLAIMER", "Action:")
+_BRIEF_MAP_STATE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "brief_map_state.json"
+)
+_HARI_ID = ("Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu")
+_BULAN_ID = ("Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des")
+
+
+def _now_wib() -> datetime:
+    return datetime.now(timezone.utc) + timedelta(hours=7)
+
+
+def _tanggal_wib_str(now: datetime | None = None) -> str:
+    n = now or _now_wib()
+    return f"{_HARI_ID[n.weekday()]}, {n.day} {_BULAN_ID[n.month - 1]} {n.year}"
+
+
+def _clean_brief_map(raw: str, headers: tuple) -> str:
+    """Rapikan output LLM peta kondisi: buang pembuka sebelum section pertama,
+    buang blok duplikat (section pertama muncul >1x), potong kebocoran format
+    lama/sinyal. Kosongkan bila section yang dikenali < 3 (format rusak)."""
+    text = str(raw or "").strip().strip("-").strip()
+    if not text:
+        return ""
+    first = headers[0]
+    if first in text:
+        text = text[text.index(first):]
+        second = text.find(first, len(first))
+        if second != -1:
+            text = text[:second].rstrip()
+    out_lines = []
+    for line in text.split("\n"):
+        if any(m in line for m in _BRIEF_MAP_LEAK_MARKERS):
+            break
+        out_lines.append(line)
+    text = "\n".join(out_lines).strip()
+    found = sum(1 for h in headers if h in text)
+    return text if found >= 3 else ""
+
+
+def _insert_level_section(text: str, level_section: str) -> str:
+    """Buang section LEVEL buatan LLM (jika tetap ditulis) lalu sisipkan versi
+    hitungan kode sebelum '📊 SKENARIO YANG TERJADI' (atau di akhir)."""
+    import re as _re
+    text = _re.sub(r"📍 LEVEL YANG TERUJI.*?(?=\n(?:📊|🗺️|⚠️|📅)|\Z)", "", text, flags=_re.S).strip()
+    marker = "📊 SKENARIO YANG TERJADI"
+    if marker in text:
+        i = text.index(marker)
+        return text[:i].rstrip() + "\n\n" + level_section + "\n\n" + text[i:]
+    return text.rstrip() + "\n\n" + level_section
+
+
+def _wrap_brief_map(mode: str, body: str) -> str:
+    title = "🌅 PETA KONDISI" if mode == "pagi" else "🌙 REVIEW HARI INI"
+    return (
+        f"{title} — {_tanggal_wib_str()}\n\n"
+        f"{body.strip()}\n\n"
+        "ℹ️ Peta kondisi, bukan saran entry — keputusan tetap di kamu."
+    )
+
+
+def _brief_map_fallback(mode: str, brief_data: dict) -> str:
+    score = brief_data.get("market_score")
+    label = brief_data.get("market_label") or "—"
+    score_s = f"{score}/100 — {label}" if score is not None else "—"
+    if mode == "pagi":
+        body = (
+            "🧭 KONDISI HARI INI\n"
+            f"Konteks Market: {score_s}\n"
+            "Analisis AI tidak tersedia untuk sesi ini — gunakan data di pesan sebelumnya "
+            "(konteks, funding, level S/R) sebagai acuan.\n\n"
+            "⚠️ YANG HARUS DIHINDARI\n"
+            "• Entry tanpa konfirmasi struktur dan volume\n"
+            "• Leverage tinggi menjelang event makro"
+        )
+    else:
+        body = (
+            "🔄 APA YANG BERUBAH\n"
+            f"Konteks Market sekarang: {score_s}\n"
+            "Review AI tidak tersedia untuk sesi ini — gunakan data di pesan sebelumnya sebagai acuan.\n\n"
+            "⚠️ PERHATIKAN BESOK\n"
+            "• Cek kalender ekonomi dan level S/R sebelum entry"
+        )
+    return _wrap_brief_map(mode, body)
+
+
+_BRIEF_COINS = ("BTC", "ETH", "BNB", "SOL", "XRP")
+
+
+def _intraday_ranges_since_morning(coins=_BRIEF_COINS) -> dict:
+    """{coin: {open, high, low, last}} sejak 08:00 WIB hari ini (kline 1H Binance)."""
+    import requests as _rq
+    now = datetime.now(timezone.utc)
+    start = now.replace(hour=1, minute=0, second=0, microsecond=0)  # 08:00 WIB
+    if start > now:
+        start -= timedelta(days=1)
+    out: dict = {}
+    for coin in coins:
+        try:
+            r = _rq.get(
+                "https://api.binance.com/api/v3/klines",
+                params={"symbol": f"{coin}USDT", "interval": "1h",
+                        "startTime": int(start.timestamp() * 1000), "limit": 24},
+                timeout=8,
+            )
+            r.raise_for_status()
+            rows = r.json()
+            if not rows:
+                continue
+            out[coin] = {
+                "open": float(rows[0][1]),
+                "high": max(float(x[2]) for x in rows),
+                "low": min(float(x[3]) for x in rows),
+                "last": float(rows[-1][4]),
+            }
+        except Exception as e:  # noqa: BLE001
+            logging.warning("_intraday_ranges_since_morning %s: %s", coin, e)
+    return out
+
+
+def _format_intraday_ranges(ranges: dict) -> str:
+    if not ranges:
+        return "Range harga tidak tersedia."
+    return "\n".join(
+        f"{c} | open 08:00: {r['open']:,.2f} | high: {r['high']:,.2f} | "
+        f"low: {r['low']:,.2f} | terakhir: {r['last']:,.2f}"
+        for c, r in ranges.items()
+    )
+
+
+def _levels_from_coin_details(coin_details) -> dict:
+    out: dict = {}
+    if not isinstance(coin_details, dict):
+        return out
+    for coin, d in coin_details.items():
+        if not isinstance(d, dict):
+            continue
+        lv = {}
+        for k in ("support", "resistance"):
+            try:
+                if d.get(k) is not None:
+                    lv[k] = float(d.get(k))
+            except (TypeError, ValueError):
+                pass
+        if lv:
+            out[coin] = lv
+    return out
+
+
+def _level_test_lines(levels: dict, ranges: dict) -> list:
+    """Uji level S/R terhadap range harga — deterministik, tanpa LLM.
+    Resistance: high >= R → ⚡ tembus (close di atas) / ❌ disentuh, gagal tembus.
+    Support   : low  <= S → ⚡ jebol (close di bawah) / ✅ disentuh, bertahan.
+    Level yang tidak tersentuh tidak dicantumkan."""
+    lines = []
+    for coin in _BRIEF_COINS:
+        lv, rg = levels.get(coin) or {}, ranges.get(coin)
+        if not rg:
+            continue
+        r_ = lv.get("resistance")
+        if r_ is not None and rg["high"] >= r_:
+            if rg["last"] >= r_:
+                lines.append(f"• {coin} resistance {r_:,.2f} ⚡ tembus (terakhir {rg['last']:,.2f})")
+            else:
+                lines.append(f"• {coin} resistance {r_:,.2f} ❌ disentuh, gagal tembus (high {rg['high']:,.2f})")
+        s_ = lv.get("support")
+        if s_ is not None and rg["low"] <= s_:
+            if rg["last"] < s_:
+                lines.append(f"• {coin} support {s_:,.2f} ⚡ jebol (terakhir {rg['last']:,.2f})")
+            else:
+                lines.append(f"• {coin} support {s_:,.2f} ✅ disentuh, bertahan (low {rg['low']:,.2f})")
+    return lines
+
+
+def _save_morning_map(text: str, levels: dict | None = None) -> None:
+    """Simpan peta pagi + level S/R pagi (hari WIB) untuk review malam."""
+    import json as _json
+    try:
+        os.makedirs(os.path.dirname(_BRIEF_MAP_STATE_PATH), exist_ok=True)
+        payload = {"date_wib": _now_wib().strftime("%Y-%m-%d"), "text": str(text),
+                   "levels": levels or {}}
+        tmp = _BRIEF_MAP_STATE_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            _json.dump(payload, fh, ensure_ascii=False)
+        os.replace(tmp, _BRIEF_MAP_STATE_PATH)
+    except Exception as e:  # noqa: BLE001
+        logging.warning("_save_morning_map: %s", e)
+
+
+def _load_morning_state_today() -> dict:
+    import json as _json
+    try:
+        with open(_BRIEF_MAP_STATE_PATH, encoding="utf-8") as fh:
+            payload = _json.load(fh)
+        if payload.get("date_wib") == _now_wib().strftime("%Y-%m-%d"):
+            return payload
+    except FileNotFoundError:
+        return {}
+    except Exception as e:  # noqa: BLE001
+        logging.warning("_load_morning_state_today: %s", e)
+    return {}
+
+
+def _load_morning_map_today() -> str:
+    return str(_load_morning_state_today().get("text") or "")
+
+
+async def _generate_brief_analysis(brief_data: dict, mode: str = "pagi") -> str:
     """
-    Bangun prompt dari brief_data: 6 section utama + spot + futures (3x LLM paralel).
+    Peta kondisi (decision-support), 1 panggilan LLM.
+
+    mode="pagi"  → PETA KONDISI: kondisi, skenario jika-maka, coin dipantau,
+                   yang dihindari, catalyst.
+    mode="malam" → REVIEW HARI INI: membandingkan dengan peta pagi tersimpan,
+                   level yang teruji, skenario besok.
+    Sengaja TIDAK berisi Action/Entry/SL/TP dan TIDAK dicatat sebagai sinyal.
     """
+    mode = "malam" if mode == "malam" else "pagi"
     coin_details, detail_block = _build_coin_details_for_brief(brief_data)
     brief_data["coin_details"] = coin_details
 
@@ -4244,31 +4467,7 @@ async def _generate_brief_analysis(brief_data: dict) -> str:
     cross_bundle = _format_cross_asset_strings(cross_asset)
 
     if ask_aliza is None:
-        return (
-            "⚡ KEPUTUSAN HARI INI\n"
-            "Regime: —\n"
-            "Bias: —\n"
-            "Conviction: —/10 — Modul AI tidak tersedia.\n"
-            "Action: ⏸️ TAHAN\n"
-            "Catalyst: —\n\n"
-            "📊 KONTEKS MARKET\n"
-            "Modul AI tidak tersedia — gunakan data di brief sebagai acuan.\n"
-            "Cross-asset: data tidak tersedia (cek sumber eksternal).\n\n"
-            "🎯 STRATEGI HARI INI\n"
-            "Pantau harga dan manajemen risiko; tunggu konfirmasi sebelum menambah exposure.\n\n"
-            "⚠️ YANG HARUS DIHINDARI\n"
-            "Over-leverage tanpa konfirmasi.\n\n"
-            "🚨 LEVEL & CATALYST PENTING\n"
-            "Pantau level SL/TP dan rilis data makro sesuai kalender.\n\n"
-            "🟢 SARAN SPOT (Swing 1-7 hari)\n"
-            "Tidak ada setup spot yang layak — tunggu pullback ke support.\n\n"
-            "📊 SARAN FUTURES (Swing 1-7 hari)\n"
-            "Kondisi tidak mendukung futures saat ini.\n\n"
-            "⚠️ DISCLAIMER\n"
-            "Analisis teknikal swing trading dari sistem Aliza, bukan saran investasi.\n"
-            "Selalu pasang SL dan gunakan sizing sesuai risk tolerance.\n"
-            "(Modul AI tidak tersedia — analisis otomatis dilewati.)"
-        )
+        return _brief_map_fallback(mode, brief_data)
 
     sp500_str = cross_bundle["sp500_str"]
     vix_str = cross_bundle["vix_str"]
@@ -4389,270 +4588,150 @@ async def _generate_brief_analysis(brief_data: dict) -> str:
         "Gunakan data ini untuk memperkuat analisis sentimen institusional."
     )
 
-    # Hitung conviction di kode — LLM wajib pakai nilai ini (prompt utama saja)
-    try:
-        _score = int(score) if score is not None else 50
-        _fg = int(float(fg)) if fg is not None else 50
-        _has_signal = bool(sig and isinstance(sig, dict))
-        if _score >= 70:
-            _conviction = 7
-        elif _score >= 55:
-            _conviction = 5
-        elif _score >= 45:
-            _conviction = 4
-        elif _score >= 30:
-            _conviction = 3
-        else:
-            _conviction = 2
-        if _fg < 25:
-            _conviction = max(1, _conviction - 2)
-        elif _fg < 35:
-            _conviction = max(1, _conviction - 1)
-        if _has_signal:
-            _conviction = min(9, _conviction + 1)
-        conviction_preset = _conviction
-    except Exception:
-        conviction_preset = 4
-
-    main_prompt = f"""---
-Kamu adalah Aliza, AI trading assistant untuk swing trading (1-7 hari).
-Berikan analisis dalam Bahasa Indonesia yang KONSISTEN INTERNAL.
-
-DATA MARKET:
+    data_block = f"""DATA MARKET:
 Market Score: {score}/100 — {label}
 Fear & Greed: {fg_s} ({fg_label})
 BTC Dominance: {dom_s}%
 Funding Rate avg: {avg_fr}% ({fr_bias})
 CPI YoY: {cpi_s}% | Fed Rate: {fed_s}%
-Sinyal aktif: {sig_txt}
-Event besok: {ev_txt}
+Kalender ekonomi: {ev_txt}
 Konteks: {ctx_sum}
 
 BERITA TERBARU (24 jam):
 {news_block}
 
-Gunakan BERITA TERBARU untuk memperkuat analisis di KONTEKS MARKET dan LEVEL & CATALYST PENTING. Jika ada berita yang sangat relevan, sebutkan secara eksplisit.
-
 CROSS-ASSET:
-S&P 500: {sp500_str}
-VIX: {vix_str}
-Gold: {gold_str}
-Oil WTI: {oil_str}
-DXY: {dxy_str}
+S&P 500: {sp500_str} | VIX: {vix_str} | Gold: {gold_str} | Oil WTI: {oil_str} | DXY: {dxy_str}
 
 {market_intel_prompt}
 
 {institutional_prompt}
 
-DETAIL PER COIN:
+DETAIL PER COIN (harga, 24h, RSI, tren, support/resistance, funding):
 {detail_block}
 
-VALIDATION RULES — WAJIB DIIKUTI:
-RULE 1: Jika market_score < 40 ATAU fear_greed < 25 ATAU label Bearish/Weak:
-  → ACTION harus TAHAN atau KURANGI EXPOSURE
-  → Conviction maksimal 4/10
-  → Entry spot HANYA di level support, bukan harga sekarang
+COIN DEKAT SUPPORT/RESISTANCE:
+{brief_data.get("near_levels_text") or "—"}"""
 
-RULE 1A: Jika fear_greed < 25 (Extreme Fear):
-  → WAJIB sebutkan implikasi kontrarian secara eksplisit sebelum menyimpulkan bias:
-    fear ekstrem historis sering berada dekat area jenuh jual, namun tunggu konfirmasi reversal sebelum menaikkan keyakinan.
-  → Rule ACTION defensif, Conviction maksimal 4/10, dan entry hanya di level support dari RULE 1 tetap berlaku.
+    rules = """ATURAN WAJIB:
+- Kamu MEMETAKAN KONDISI untuk trader yang memutuskan entry SENDIRI.
+- JANGAN memberi perintah beli/jual/tahan, JANGAN menulis Action, Entry, SL, TP, leverage, atau ukuran posisi.
+- JANGAN menilai apakah kondisi "mendukung/layak entry" — cukup deskripsikan market apa adanya.
+- Semua level harga HARUS diambil dari DATA (harga/support/resistance) — jangan mengarang angka.
+- Kejelasan 1-10 = seberapa jelas arah market dari data. Sinyal campur/bertentangan → maksimal 5.
+- Bahasa Indonesia, ringkas, tiap poin maksimal 1-2 baris. Jika data terbatas, katakan apa adanya.
+- Jawab HANYA dengan section di FORMAT OUTPUT, urutan sama, tanpa pembuka/penutup."""
 
-RULE 1B: Jika fear_greed > 75 (Extreme Greed):
-  → WAJIB sebutkan risiko euforia/blow-off top secara eksplisit sebelum menyimpulkan bias.
-  → ACTION condong defensif untuk ENTRY BARU, bukan untuk profit-taking posisi existing.
-  → Conviction untuk entry baru maksimal 4/10.
+    if mode == "pagi":
+        prompt = f"""---
+Kamu adalah Aliza, asisten analisis market crypto. Buat PETA KONDISI pagi.
 
-RULE 2: Jika ada rekomendasi BELI/LONG tapi sinyal aktif = tidak ada:
-  → Wajib tulis "Entry HANYA jika harga pullback ke [support]"
-  → JANGAN entry di harga sekarang jika jauh dari support >3%
+{rules}
 
-RULE 3: market_score 40-60 (Neutral):
-  → ACTION: SELEKTIF — hanya coin terbaik, sizing kecil
-  → Conviction maksimal 6/10
+{data_block}
 
-RULE 4: Jika market_score > 60 (Bullish):
-  → ACTION boleh BELI BERTAHAP
-  → Conviction bisa sampai 8/10
+FORMAT OUTPUT:
 
-RULE 5: Jika >2 rekomendasi LONG bersamaan:
-  → Tambahkan: "⚠️ Korelasi tinggi — jangan buka semua sekaligus"
+🧭 KONDISI HARI INI
+Regime : [TREND NAIK / TREND TURUN / RANGE / RISK-OFF] + konteks singkat (deskripsi market, bukan penilaian entry)
+Bias   : [Bullish / Netral-Bullish / Netral / Netral-Bearish / Bearish]
+Kejelasan: [1-10]/10 — [alasan singkat]
+Kenapa : [1-2 kalimat dari data]
 
-FORMAT OUTPUT (6 section saja — JANGAN tulis saran spot atau futures):
+🗺️ SKENARIO BTC
+▲ Jika [konfirmasi naik, mis. close 4H di atas resistance + volume naik]
+   → [level tujuan dari data]
+▬ Jika [tetap di range]
+   → [implikasinya]
+▼ Jika [konfirmasi turun, mis. close 4H di bawah support]
+   → [level waspada dari data]
 
-⚡ KEPUTUSAN HARI INI
-Regime: [Trending Bullish / Ranging / Risk-Off Sideways / Trending Bearish]
-Bias: [Bullish / Neutral-Bullish / Neutral / Neutral-Bearish / Bearish]
-Conviction: {conviction_preset}/10 — [1 kalimat justifikasi, JANGAN ubah angka {conviction_preset}]
-Action: [🟢 BELI BERTAHAP / 🟡 SELEKTIF / ⏸️ TAHAN / 🔴 KURANGI EXPOSURE]
-Catalyst: [event terdekat dengan estimasi waktu]
-
-📊 KONTEKS MARKET
-[2-3 kalimat kondisi market]
-Cross-asset: [ringkasan DXY/VIX/Gold/SPX — risk-on atau risk-off]
-
-🎯 STRATEGI HARI INI
-[1-2 kalimat, HARUS konsisten dengan Action di atas]
+👀 COIN LAYAK DIPANTAU
+• [COIN] — [kondisi spesifik: dekat level / RSI / funding / tren]
+(maksimal 3 coin; jika tidak ada yang menonjol tulis "Tidak ada yang menonjol hari ini")
 
 ⚠️ YANG HARUS DIHINDARI
-[1-2 kalimat, termasuk warning korelasi jika >2 LONG]
+• [2-3 poin konkret sesuai kondisi hari ini]
 
-🚨 LEVEL & CATALYST PENTING
-[Level kunci + event dengan jam rilis]
-
-
-📋 SKENARIO MINGGU INI
-Bull case (prob [X]%): [kondisi yang harus terjadi] → target [level]
-Base case (prob [X]%): [kondisi paling mungkin] → ekspektasi [range]
-Bear case (prob [X]%): [kondisi bearish] → risiko ke [level]
-Invalidasi bull: [kondisi yang membatalkan skenario bull]
-
-Jawab HANYA dengan 6 section (⚡ sampai 🚨), tanpa pembuka, tanpa penutup. Jangan saran spot/futures.
-Total probabilitas Bull+Base+Bear harus = 100%.
+🚨 CATALYST
+• [event + jam WIB dari kalender/berita; jika tidak ada tulis "Tidak ada event high-impact terjadwal"]
 ---"""
-
-    main_out = ""
-    spot_raw = ""
-    fut_raw = ""
-    try:
-        main_out, spot_raw, fut_raw = await asyncio.gather(
-            _call_llm_async(main_prompt),
-            _generate_spot_analysis(brief_data, coin_details, _cross_bundle=cross_bundle),
-            _generate_futures_analysis(brief_data, coin_details, _cross_bundle=cross_bundle),
-        )
-    except Exception as e:  # noqa: BLE001
-        logging.warning("_generate_brief_analysis: gather failed: %s", e)
-        if not main_out:
-            main_out = await _call_llm_async(main_prompt)
-        if not spot_raw:
-            spot_raw = await _generate_spot_analysis(
-                brief_data, coin_details, _cross_bundle=cross_bundle
+        headers = _BRIEF_MAP_HEADERS_PAGI
+    else:
+        morning_map = _load_morning_map_today()
+        morning_txt = morning_map or "TIDAK TERSEDIA (peta pagi tidak tersimpan hari ini)."
+        try:
+            ranges = await asyncio.get_running_loop().run_in_executor(
+                None, _intraday_ranges_since_morning
             )
-        if not fut_raw:
-            fut_raw = await _generate_futures_analysis(
-                brief_data, coin_details, _cross_bundle=cross_bundle
+        except Exception as e:  # noqa: BLE001
+            logging.warning("_generate_brief_analysis(malam) range: %s", e)
+            ranges = {}
+        range_txt = _format_intraday_ranges(ranges)
+        morning_levels = (_load_morning_state_today().get("levels") or {})
+        levels_src = "level S/R pagi"
+        if not morning_levels:
+            morning_levels = _levels_from_coin_details(coin_details)
+            levels_src = "level S/R saat ini (level pagi tidak tersimpan)"
+        if ranges:
+            _tested = _level_test_lines(morning_levels, ranges)
+            level_section = "📍 LEVEL YANG TERUJI\n" + (
+                "\n".join(_tested) if _tested else "• Tidak ada level kunci yang tersentuh hari ini"
             )
-
-    if not main_out.strip():
-        main_out = (
-            "⚡ KEPUTUSAN HARI INI\n"
-            "Regime: —\n"
-            "Bias: —\n"
-            "Conviction: —/10 — Analisis AI sementara tidak tersedia (timeout atau error).\n"
-            "Action: ⏸️ TAHAN\n"
-            "Catalyst: —\n\n"
-            "📊 KONTEKS MARKET\n"
-            "LLM tidak merespons — gunakan data di brief sebagai acuan; hindari over-leverage.\n"
-            "Cross-asset: tinjau manual dari sumber eksternal jika diperlukan.\n\n"
-            "🎯 STRATEGI HARI INI\n"
-            "Review posisi, set alert harga, dan cek kalender makro sebelum menambah exposure.\n\n"
-            "⚠️ YANG HARUS DIHINDARI\n"
-            "Chasing tanpa konfirmasi volume/struktur.\n\n"
-            "🚨 LEVEL & CATALYST PENTING\n"
-            "Pantau level SL/TP dan event ekonomi besok."
-        )
-
-    spot_section = _reorder_section_by_rr(spot_raw, is_spot=True).strip()
-    if not spot_section:
-        spot_section = spot_raw.strip() if spot_raw.strip() else (
-            "🟢 SARAN SPOT (Swing 1-7 hari)\n"
-            "Tidak ada setup spot yang layak — tunggu pullback ke support."
-        )
-
-    # Dedup: kalau fut_raw sudah mengandung section futures, gunakan langsung
-    futures_section = _reorder_section_by_rr(fut_raw).strip()
-    if not futures_section:
-        futures_section = fut_raw.strip() if fut_raw.strip() else (
-            "📊 SARAN FUTURES (Swing 1-7 hari)\n"
-            "Kondisi tidak mendukung futures saat ini.\n\n"
-            "⚠️ Futures berisiko tinggi. Gunakan leverage rendah dan selalu pasang SL."
-        )
-
-    disclaimer = (
-        "⚠️ DISCLAIMER\n"
-        "Analisis teknikal swing trading dari sistem Aliza, bukan saran investasi.\n"
-        "Selalu pasang SL dan gunakan sizing sesuai risk tolerance."
-    )
-    # Dedup: kalau LLM mengulang seluruh format 6-section dari awal (mengabaikan
-    # instruksi "Jawab HANYA dengan 6 section"), main_out bisa berisi >1 blok
-    # "⚡ KEPUTUSAN HARI INI" berurutan — potong di sini, sebelum dedup marker
-    # SARAN SPOT/FUTURES/DISCLAIMER di bawah, supaya kalau blok kedua juga
-    # mengandung section-section itu, ikut terpotong bersih bersama blok kedua.
-    _keputusan_marker = "⚡ KEPUTUSAN HARI INI"
-    if main_out.count(_keputusan_marker) > 1:
-        _lines = main_out.split("\n")
-        _hits = [i for i, l in enumerate(_lines) if _keputusan_marker in l]
-        main_out = "\n".join(_lines[: _hits[1]]).strip()
-    # Hapus duplikasi section futures di main_out
-    for _marker in ("SARAN SPOT", "SARAN FUTURES", "DISCLAIMER"):
-        if _marker in main_out:
-            _lines = main_out.split("\n")
-            _cut = next((i for i, l in enumerate(_lines) if _marker in l), None)
-            if _cut is not None:
-                main_out = "\n".join(_lines[:_cut]).strip()
-                break
-    # Fallback kedua: jika dedup membuat main_out kosong, gunakan fallback.
-    # Catatan: ini HANYA soal main_out (section 6 KEPUTUSAN HARI INI) — spot_section
-    # dan futures_section datang dari panggilan LLM terpisah (_generate_spot_analysis/
-    # _generate_futures_analysis di atas, dijalankan paralel via asyncio.gather) dan
-    # tetap dikirim apa adanya di bawah fallback ini kalau berhasil, karena
-    # kegagalannya independen dari kegagalan main_out. Pesannya sengaja tidak
-    # menyebut detail implementasi ("LLM tidak mengikuti format", dst) ke user.
-    if not main_out.strip():
-        logging.warning("_generate_brief_analysis: main_out kosong setelah dedup — pakai fallback")
-        main_out = (
-            "⚡ KEPUTUSAN HARI INI\n"
-            "Regime: —\n"
-            "Bias: —\n"
-            f"Conviction: {conviction_preset}/10 — Analisis makro harian gagal diproses untuk sesi ini.\n"
-            "Action: ⏸️ TAHAN\n"
-            "Catalyst: Pantau event makro dan price action.\n\n"
-            "📊 KONTEKS MARKET\n"
-            "Ringkasan makro tidak tersedia untuk sesi ini — gunakan data snapshot di atas, "
-            "serta SARAN SPOT/FUTURES di bawah, sebagai acuan.\n"
-            "Cross-asset: tinjau manual dari data yang tersedia di brief.\n\n"
-            "🎯 STRATEGI HARI INI\n"
-            "Tahan posisi, set alert di level support/resistance, dan pantau kalender ekonomi.\n\n"
-            "⚠️ YANG HARUS DIHINDARI\n"
-            "Entry tanpa konfirmasi struktur dan volume.\n\n"
-            "🚨 LEVEL & CATALYST PENTING\n"
-            "Pantau level SL/TP aktif dan event besok."
-        )
-    # Dedup spot_section jika mengandung lebih dari satu header SARAN SPOT
-    if spot_section.count("SARAN SPOT") > 1:
-        _sp_lines = spot_section.split("\n")
-        _second = next((i for i, l in enumerate(_sp_lines) if "SARAN SPOT" in l and i > 0), None)
-        if _second:
-            spot_section = "\n".join(_sp_lines[:_second]).strip()
-    _output = "\n\n".join(
-        [
-            main_out.strip(),
-            spot_section,
-            futures_section,
-            disclaimer,
-        ]
-    )
-    # Final safety dedup: hapus blok SARAN SPOT duplikat di output gabungan
-    _lines = _output.split("\n")
-    _spot_headers = [i for i, l in enumerate(_lines) if l.strip().startswith("🟢 SARAN SPOT")]
-    if len(_spot_headers) > 1:
-        _second = _spot_headers[1]
-        _next_section = next(
-            (
-                j
-                for j in range(_second + 1, len(_lines))
-                if _lines[j].strip() and _lines[j].strip()[0] in ("📊", "⚠️", "⚡", "🎯", "🚨", "📋", "☀️", "📈")
-            ),
-            None,
-        )
-        if _next_section is not None:
-            _lines = _lines[:_second] + _lines[_next_section:]
         else:
-            _lines = _lines[:_second]
-        while _lines and not _lines[-1].strip():
-            _lines.pop()
-        _output = "\n".join(_lines)
-    return _output
+            level_section = "📍 LEVEL YANG TERUJI\n• Data range harga tidak tersedia"
+        prompt = f"""---
+Kamu adalah Aliza, asisten analisis market crypto. Buat REVIEW HARI INI (malam).
+
+{rules}
+- Bandingkan dengan PETA KONDISI PAGI di bawah. Jika peta pagi TIDAK TERSEDIA, isi
+  "📍 LEVEL YANG TERUJI" dan "📊 SKENARIO YANG TERJADI" dari data saat ini dan sebutkan
+  bahwa peta pagi tidak tersedia.
+
+- FAKTA LEVEL di bawah sudah dihitung sistem dan PASTI benar — gunakan untuk menilai
+  skenario mana yang terjadi. JANGAN menulis section level sendiri.
+
+PETA KONDISI PAGI (dikirim 08:00 WIB):
+{morning_txt}
+
+RANGE HARGA SEJAK 08:00 WIB (Binance 1H):
+{range_txt}
+
+FAKTA LEVEL (dihitung sistem dari {levels_src}):
+{level_section}
+
+{data_block}
+
+FORMAT OUTPUT:
+
+🔄 APA YANG BERUBAH
+Regime : [pagi] → [sekarang]
+Bias   : [pagi] → [sekarang] + penyebab singkat
+Kejelasan: [pagi]/10 → [sekarang]/10
+
+📊 SKENARIO YANG TERJADI
+[skenario pagi mana (▲/▬/▼) yang berjalan, 1-2 kalimat]
+
+🗺️ SKENARIO BESOK
+▲ Jika [konfirmasi naik] → [level dari data]
+▼ Jika [konfirmasi turun] → [level dari data]
+
+⚠️ PERHATIKAN BESOK
+• [1-3 poin]
+
+📅 EVENT BESOK
+• [event + jam WIB; jika tidak ada tulis "Tidak ada event high-impact terjadwal"]
+---"""
+        headers = _BRIEF_MAP_HEADERS_MALAM
+
+    raw = await _call_llm_async(prompt)
+    cleaned = _clean_brief_map(raw, headers)
+    if cleaned and mode == "malam":
+        cleaned = _insert_level_section(cleaned, level_section)
+    if not cleaned:
+        logging.warning("_generate_brief_analysis(%s): output LLM kosong/tidak sesuai format — pakai fallback", mode)
+        return _brief_map_fallback(mode, brief_data)
+    return _wrap_brief_map(mode, cleaned)
 
 
 
@@ -5685,6 +5764,7 @@ async def morning_brief_job(context: ContextTypes.DEFAULT_TYPE):
         "Hindari entry besar. Waspadai volatilitas tak terduga di Asia session.\n"
     ) if _is_weekend else ""
 
+    brief_data["near_levels_text"] = near_level_section
     brief_header = (
         "☀️ MORNING BRIEF\n"
         f"🕒 Snapshot: {ts}\n"
@@ -5709,7 +5789,7 @@ async def morning_brief_job(context: ContextTypes.DEFAULT_TYPE):
         logging.error("morning_brief dispatch header: %s", e)
 
     try:
-        analysis = await _generate_brief_analysis(brief_data)
+        analysis = await _generate_brief_analysis(brief_data, mode="pagi")
     except Exception as e:
         logging.warning("morning_brief _generate_brief_analysis: %s", e)
         return
@@ -5725,12 +5805,9 @@ async def morning_brief_job(context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logging.error("morning_brief dispatch analysis: %s", e)
+    # Peta kondisi sengaja TIDAK dicatat sebagai sinyal (arah decision-support, 9 Okt 2026).
     if analysis_sent:
-        try:
-            _ms = result.get("total_score", 0) if result else 0
-            _parse_and_record_signals(str(analysis), market_score=_ms)
-        except Exception:
-            pass
+        _save_morning_map(str(analysis), levels=_levels_from_coin_details(brief_data.get("coin_details")))
 
 
 async def morning_brief_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5818,6 +5895,7 @@ async def evening_summary_job(context: ContextTypes.DEFAULT_TYPE):
         get_coins_near_levels(snapshot=snapshot),
         NEAR_LEVEL_DEFAULT_TOLERANCE_PCT,
     )
+    brief_data["near_levels_text"] = near_level_section
     brief_header = (
         "🌙 EVENING SUMMARY\n"
         f"🕒 Snapshot: {ts}\n"
@@ -5841,7 +5919,7 @@ async def evening_summary_job(context: ContextTypes.DEFAULT_TYPE):
         logging.error("evening_summary dispatch header: %s", e)
 
     try:
-        analysis = await _generate_brief_analysis(brief_data)
+        analysis = await _generate_brief_analysis(brief_data, mode="malam")
     except Exception as e:
         logging.warning("evening_summary _generate_brief_analysis: %s", e)
         return
@@ -5857,12 +5935,9 @@ async def evening_summary_job(context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logging.error("evening_summary dispatch analysis: %s", e)
-    if analysis_sent:
-        try:
-            _ms = result.get("total_score", 0) if result else 0
-            _parse_and_record_signals(str(analysis), market_score=_ms)
-        except Exception:
-            pass
+    # Review malam sengaja TIDAK dicatat sebagai sinyal (arah decision-support, 9 Okt 2026).
+    if not analysis_sent:
+        logging.warning("evening_summary: review tidak terkirim")
 
 
 async def evening_summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
