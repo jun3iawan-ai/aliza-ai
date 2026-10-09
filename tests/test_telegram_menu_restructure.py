@@ -146,3 +146,34 @@ class TelegramMenuRetirementTests(IsolatedAsyncioTestCase):
                 self.assertIn("💹 Trading", _labels(replies[0][1]))
             for name in handlers:
                 getattr(tb, name).assert_not_awaited()
+
+
+class UnifiedRadarTests(IsolatedAsyncioTestCase):
+    def _update(self, text, replies):
+        async def reply_text(message, **kwargs):
+            replies.append((message, kwargs.get("reply_markup")))
+
+        message = SimpleNamespace(text=text, reply_text=reply_text)
+        return SimpleNamespace(message=message, effective_message=message)
+
+    def test_format_shows_both_timeframes_rsi_label_and_star(self):
+        from engine.market import market_radar_pro_analyzer as rp
+        with patch.object(rp, "get_snapshot_timestamp_str", return_value="14:02:08"):
+            out = rp.format_radar_report([
+                {"coin": "BTC", "trend_4h": "BEARISH", "trend_1d": "SIDEWAYS", "rsi": 25.2, "label": "⚡ Breakdown Risk"},
+                {"coin": "OM", "trend_4h": "BULLISH", "trend_1d": "BULLISH", "rsi": 61, "label": "📈 Strong Trend"},
+                {"coin": "ADA", "trend_4h": "BEARISH", "trend_1d": "UNKNOWN", "rsi": None, "label": "• Neutral"},
+            ])
+        self.assertIn("BTC    4H ↓  1D →  RSI 25  ⚡ Breakdown Risk", out)
+        self.assertIn("4H ↑  1D ↑  RSI 61  📈 Strong Trend ⭐", out)
+        self.assertIn("ADA    4H ↓  1D ?  RSI  —  —", out)
+        self.assertNotIn("Neutral", out)
+        self.assertIn("14:02:08", out)
+
+    async def test_market_menu_has_single_radar_and_old_labels_route_to_it(self):
+        self.assertIn("📡 Radar", _labels(tb._market_submenu_keyboard()))
+        self.assertNotIn("📡 Radar Pro", _labels(tb._market_submenu_keyboard()))
+        with patch.object(tb, "radar", AsyncMock()) as radar_mock:
+            for label in ("📡 Radar", "📡 Radar Market", "📡 Radar Pro"):
+                await tb.menu_button_handler(self._update(label, []), SimpleNamespace(user_data={}))
+        self.assertEqual(radar_mock.await_count, 3)

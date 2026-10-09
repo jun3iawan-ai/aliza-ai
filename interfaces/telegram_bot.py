@@ -84,6 +84,7 @@ from engine.market.market_report_formatter import format_market_report
 from engine.market.market_radar_pro_analyzer import (
     generate_radar_pro,
     format_radar_pro_report,
+    format_radar_report,
 )
 from engine.market.market_universe import MAJOR_COINS
 # Trading
@@ -466,7 +467,7 @@ def _market_submenu_keyboard():
     return ReplyKeyboardMarkup(
         [
             ["🌅 Ringkasan Pagi", "🌙 Ringkasan Malam"],
-            ["📡 Radar Market", "📡 Radar Pro"],
+            ["📡 Radar"],
             ["🌐 Kondisi Global"],
             ["🔔 Monitor Pasar"],
             ["ℹ️ Info Coin"],
@@ -598,7 +599,7 @@ _RETIRED_MENU_LABELS = frozenset({
     "🟢 Spot Trading", "📊 Futures Trading", "🎯 Sinyal & Trading", "🔎 Scan Peluang",
     "📂 Portofolio", "📈 Analisis & Skor", "📊 Performa Sinyal", "📊 Performa Trading",
     "📉 Near Support", "📈 Near Resistance", "🔵 RSI Extreme", "💥 Big Move",
-    "📊 Market Coin", "📡 Radar", "🌐 Market State", "🎯 Trading",
+    "📊 Market Coin", "🌐 Market State", "🎯 Trading",
     "🔎 Scan Opportunities", "📈 Open Position", "📉 Close Position", "📂 Portfolio",
     "🧠 AI Intelligence", "🔮 Market Prediction", "📊 Quant Score", "🔎 Trade Explanation",
     "📈 Analytics", "📊 Trading Performance", "⚙️ System", "⚙️ System Status",
@@ -636,8 +637,7 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             "📊 MARKET\n\n"
             "🌅 Ringkasan Pagi — Ringkasan harian\n"
             "🌙 Ringkasan Malam — Ringkasan sore\n"
-            "📡 Radar Market — Trend semua coin\n"
-            "📡 Radar Pro — Radar dengan label AI\n"
+            "📡 Radar — arah 4H/1D, RSI & kondisi semua coin\n"
             "🌐 Kondisi Global — Kondisi market global",
             reply_markup=_market_submenu_keyboard(),
         )
@@ -656,11 +656,9 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text == "🌙 Ringkasan Malam":
         await evening_summary_command(update, context)
         return
-    if text == "📡 Radar Market":
+    # Radar gabungan; label lama tetap diarahkan ke sini (keyboard ter-cache).
+    if text in ("📡 Radar", "📡 Radar Market", "📡 Radar Pro"):
         await radar(update, context)
-        return
-    if text == "📡 Radar Pro":
-        await radarpro_command(update, context)
         return
     if text == "🌐 Kondisi Global":
         await marketstate_command(update, context)
@@ -1429,14 +1427,7 @@ async def radar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not radar_data:
             await update.message.reply_text("Radar market tidak tersedia.")
             return
-        lines = ["📡 ALIZA MARKET RADAR\n"]
-        for item in radar_data:
-            coin = item.get("coin", "")
-            alignment = item.get("trend_alignment", "UNKNOWN")
-            label = _format_alignment_label(alignment)
-            lines.append(f"{coin} → {label}")
-        lines.append(f"\n🕒 Market Snapshot : {get_snapshot_timestamp_str()}")
-        await update.message.reply_text("\n".join(lines))
+        await update.message.reply_text(format_radar_report(radar_data))
     except Exception as e:
         logging.error("RADAR ERROR: %s", e)
         await update.message.reply_text("Terjadi kesalahan scan market.")
@@ -1446,7 +1437,7 @@ async def radarpro_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info("COMMAND RECEIVED: /radarpro")
     try:
         radar = generate_radar_pro()
-        message = format_radar_pro_report(radar)
+        message = format_radar_report(radar)
         await update.message.reply_text(message)
     except Exception as e:
         logging.error("RADARPRO ERROR: %s", e)
