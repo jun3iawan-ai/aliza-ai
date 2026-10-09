@@ -601,7 +601,12 @@ async def _coin_condition_text(symbol: str) -> str:
     def _extras():
         from engine.market.market_analyzer import _get_binance_klines
         out = {"c4": [], "c1": [], "fr": None, "label": None, "levels": None,
-               "pos": None, "tok": None}
+               "pos": None, "tok": None, "exec": None}
+        try:
+            from engine.market.execution_tf import execution_view
+            out["exec"] = execution_view(symbol, md.get("price"))
+        except Exception as e:  # noqa: BLE001
+            logging.warning("_coin_condition_text exec %s: %s", symbol, e)
         try:
             from engine.market.positioning import fetch_coin
             out["pos"] = fetch_coin(symbol)
@@ -639,6 +644,12 @@ async def _coin_condition_text(symbol: str) -> str:
         levels=ex["levels"],
     )
     extra = []
+    if ex.get("exec"):
+        from engine.market.execution_tf import format_section
+        from engine.market.coin_condition import fmt_price as _fp
+        sec = format_section(md.get("trend_4h"), ex["exec"], _fp)
+        if sec:
+            extra.append(sec)
     if ex.get("pos"):
         from engine.market.positioning import coin_line
         extra.append("━ 🔄 Positioning futures\n" + coin_line(ex["pos"]))
@@ -768,6 +779,7 @@ def _gather_entry_context(symbol: str) -> dict | None:
         ("events", lambda: get_upcoming_events(days_ahead=2)),
         ("calendar_live", is_calendar_live),
         ("label", lambda: next((i.get("label") for i in (generate_radar_pro() or []) if i.get("coin") == symbol), None)),
+        ("exec", lambda: __import__("engine.market.execution_tf", fromlist=["x"]).execution_view(symbol, md.get("price"))),
     ):
         try:
             ctx[key] = fn()
