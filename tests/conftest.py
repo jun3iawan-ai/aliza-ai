@@ -39,6 +39,23 @@ def _no_live_key_levels(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_tokenomics_disk_cache(monkeypatch, tmp_path):
+    """Cache disk tokenomics tidak boleh menulis/membaca data/ produksi."""
+    from engine.market import coin_info as _ci
+    monkeypatch.setattr(_ci, "DISK_CACHE_FILE", str(tmp_path / "tokenomics_cache.json"))
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _no_live_positioning(monkeypatch):
+    """Test tidak boleh memanggil Binance Futures (OI/LS/ticker) sungguhan."""
+    from engine.market import positioning as _pos
+    monkeypatch.setattr(_pos, "fetch_coin", lambda coin: None)
+    _pos._cache.clear()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _no_live_rss(monkeypatch):
     """Test tidak boleh mengambil RSS berita sungguhan."""
     monkeypatch.setattr(_news_feed, "_fetch_feed", lambda source, url: [])

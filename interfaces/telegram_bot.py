@@ -475,7 +475,7 @@ def _market_submenu_keyboard():
         [
             ["🌅 Ringkasan Pagi", "🌙 Ringkasan Malam"],
             ["🎯 Konteks Market", "📡 Radar"],
-            ["ℹ️ Info Coin", "⚡ Scan Pasar"],
+            ["⚡ Scan Pasar"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -509,7 +509,7 @@ def _macro_submenu_keyboard():
     return ReplyKeyboardMarkup(
         [
             ["🌐 Data Makro", "🔄 Funding Rate & OI"],
-            ["📊 CFRA", "📅 Kalender Ekonomi"],
+            ["📅 Kalender Ekonomi"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -521,9 +521,9 @@ def _macro_submenu_keyboard():
 def _system_submenu_keyboard():
     return ReplyKeyboardMarkup(
         [
-            ["⚙️ Status Sistem", "🏥 Health Sistem"],
-            ["📊 Alert Stats", "🧪 Test Alert"],
-            ["🛠 Debug Market", "📌 Snapshot Market"],
+            ["⚙️ Status Sistem", "📊 Alert Stats"],
+            ["🧪 Test Alert", "🛠 Debug Market"],
+            ["📌 Snapshot Market"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -600,7 +600,14 @@ async def _coin_condition_text(symbol: str) -> str:
 
     def _extras():
         from engine.market.market_analyzer import _get_binance_klines
-        out = {"c4": [], "c1": [], "fr": None, "label": None, "levels": None}
+        out = {"c4": [], "c1": [], "fr": None, "label": None, "levels": None,
+               "pos": None, "tok": None}
+        try:
+            from engine.market.positioning import fetch_coin
+            out["pos"] = fetch_coin(symbol)
+        except Exception as e:  # noqa: BLE001
+            logging.warning("_coin_condition_text positioning %s: %s", symbol, e)
+        out["tok"] = _tokenomics_section(symbol)
         try:
             from engine.market.key_levels import key_levels
             out["levels"] = key_levels(symbol, md.get("price"))
@@ -625,12 +632,59 @@ async def _coin_condition_text(symbol: str) -> str:
         return out
 
     ex = await asyncio.get_running_loop().run_in_executor(None, _extras)
-    return build_coin_condition(
+    card = build_coin_condition(
         symbol, md,
         funding_rate=ex["fr"], closes_4h=ex["c4"], closes_1d=ex["c1"],
         label=ex["label"], snapshot_ts=get_snapshot_timestamp_str() or "—",
         levels=ex["levels"],
     )
+    extra = []
+    if ex.get("pos"):
+        from engine.market.positioning import coin_line
+        extra.append("━ 🔄 Positioning futures\n" + coin_line(ex["pos"]))
+    if ex.get("tok"):
+        extra.append(ex["tok"])
+    if not extra:
+        return card
+    # Sisipkan sebelum footer (baris "Level S/R:" / "ℹ️ Info kondisi").
+    lines = card.split("\n")
+    cut = next((i for i, ln in enumerate(lines)
+                if ln.startswith("Level S/R:") or ln.startswith("ℹ️ Info kondisi")), len(lines))
+    return "\n".join(lines[:cut] + ["\n\n".join(extra), ""] + lines[cut:])
+
+
+def _tokenomics_section(symbol: str) -> str | None:
+    """Seksi tokenomics ringkas (dari CoinGecko via get_tokenomics); None jika gagal."""
+    try:
+        tok = get_tokenomics(symbol)
+    except Exception as e:  # noqa: BLE001
+        logging.warning("_tokenomics_section %s: %s", symbol, e)
+        return None
+    if not tok or tok.get("status") != "ok":
+        return None
+    mcap, fdv, rank = tok.get("market_cap"), tok.get("fully_diluted_valuation"), tok.get("market_cap_rank")
+    circ, total, maxs = tok.get("circulating_supply"), tok.get("total_supply"), tok.get("max_supply")
+    mcap_s = f"${_brief_fmt_vol(mcap)}" if mcap is not None else "—"
+    fdv_s = f"${_brief_fmt_vol(fdv)}" if fdv is not None else "—"
+    rank_s = f"#{int(rank)}" if rank is not None else "—"
+    line2 = ""
+    if circ is not None and maxs:
+        try:
+            line2 = f"\nBeredar {float(circ) / float(maxs) * 100:.0f}% dari max supply"
+        except (TypeError, ValueError, ZeroDivisionError):
+            line2 = ""
+    elif circ is not None and total:
+        try:
+            line2 = f"\nBeredar {float(circ) / float(total) * 100:.0f}% dari total supply (tanpa max)"
+        except (TypeError, ValueError, ZeroDivisionError):
+            line2 = ""
+    dil = ""
+    try:
+        if mcap and fdv and float(fdv) / float(mcap) >= 1.5:
+            dil = f" — FDV {float(fdv) / float(mcap):.1f}× MCap, potensi tekanan unlock"
+    except (TypeError, ValueError, ZeroDivisionError):
+        dil = ""
+    return f"━ 🪙 Tokenomics\nMCap {mcap_s} (rank {rank_s}) · FDV {fdv_s}{dil}{line2}"
 
 
 async def scan_pasar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -967,7 +1021,6 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             "🌙 Ringkasan Malam — Ringkasan sore\n"
             "🎯 Konteks Market — skor kondisi market (tren harga, makro, sentimen, funding)\n"
             "📡 Radar — arah 4H/1D, RSI & kondisi semua coin\n"
-            "ℹ️ Info Coin — teknikal, tokenomics, on-chain per coin\n"
             "⚡ Scan Pasar — gerak 1 jam, breakout, volume spike, RSI ekstrem, dekat resistance",
             reply_markup=_market_submenu_keyboard(),
         )
@@ -987,13 +1040,6 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Radar gabungan; label lama tetap diarahkan ke sini (keyboard ter-cache).
     if text in ("📡 Radar", "📡 Radar Market", "📡 Radar Pro"):
         await radar(update, context)
-        return
-    if text == "ℹ️ Info Coin":
-        kb = _build_coin_selector("info", MAJOR_COINS)
-        await update.message.reply_text(
-            "ℹ️ INFO COIN\n\nPilih coin untuk melihat ringkasan Teknikal, Tokenomics, On-chain, dan Makro & Sentimen.",
-            reply_markup=kb,
-        )
         return
     if text == "📌 Snapshot Market":
         await snapshot_command(update, context)
@@ -1036,7 +1082,8 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text in ("📍 Dekat S/R", "📍 Dekat Support", "🟢 Peluang Spot", "📍 Levels (S/R)"):
         await near_support_command(update, context)
         return
-    if text == "🔍 Analisis Coin":
+    # Info Coin digabung ke Analisis Coin (tokenomics ikut di kartu kondisi).
+    if text in ("🔍 Analisis Coin", "ℹ️ Info Coin"):
         kb = _build_coin_selector("cond", MAJOR_COINS)
         await update.message.reply_text(
             "🔍 ANALISIS COIN\n\nPilih coin untuk melihat kartu kondisinya.",
@@ -1053,7 +1100,7 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text == "🌍 Makro & Sentimen":
         await update.message.reply_text(
             "🌍 MAKRO & SENTIMEN\n\n"
-            "Data makro, funding & OI, CFRA, dan kalender ekonomi.",
+            "Data makro, funding & open interest (positioning futures), dan kalender ekonomi.",
             reply_markup=_macro_submenu_keyboard(),
         )
         return
@@ -1063,8 +1110,9 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text == "🔄 Funding Rate & OI":
         await check_funding_command(update, context)
         return
+    # CFRA digabung ke Funding Rate & OI (zona ekstrem + jadwal funding).
     if text == "📊 CFRA":
-        await cfra_command(update, context)
+        await check_funding_command(update, context)
         return
     if text == "📅 Kalender Ekonomi":
         await check_calendar_command(update, context)
@@ -1075,7 +1123,7 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         _set_menu_parent(context, "system")
         await update.message.reply_text(
             "⚙️ SISTEM\n\n"
-            "Status, health, observability alert, test, dan debug.",
+            "Status sistem (snapshot, kalender, alert, job), statistik alert, test, dan debug.",
             reply_markup=_system_submenu_keyboard(),
         )
         return
@@ -1086,7 +1134,7 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await testalert(update, context)
         return
     if text == "🏥 Health Sistem":
-        await health_command(update, context)
+        await status(update, context)
         return
     if text == "📊 Alert Stats":
         await alert_stats_command(update, context)
@@ -1160,11 +1208,8 @@ async def coin_selector_callback(update: Update, context: ContextTypes.DEFAULT_T
         elif prefix == "cond":
             await msg.reply_text(await _coin_condition_text(symbol))
         elif prefix == "info":
-            text, err = _format_info_coin_message(symbol)
-            if err:
-                await msg.reply_text(err)
-            else:
-                await msg.reply_text(text)
+            # Tombol inline lama Info Coin → kartu Analisis Coin (sudah termasuk tokenomics).
+            await msg.reply_text(await _coin_condition_text(symbol))
     except Exception as e:
         logging.error("Coin selector callback error: %s", e)
         if update.callback_query and update.callback_query.message:
@@ -2327,25 +2372,69 @@ async def marketstate_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # ========== STATUS ==========
 
+_PROCESS_START = time_module.time()
+
+
+def _system_status_text(context=None) -> str:
+    """Status + health digabung: snapshot, cakupan coin, sumber kalender, alert, job, uptime."""
+    snapshot = get_market_snapshot() or {}
+    data = snapshot.get("data") or {}
+    ts = snapshot.get("timestamp")
+    age = None
+    if ts:
+        try:
+            age = int((datetime.utcnow() - ts).total_seconds())
+        except (TypeError, ValueError, AttributeError):
+            age = None
+    universe = list(MAJOR_COINS)
+    n = len(data)
+    missing = [c for c in universe if c not in data]
+    if age is None or age > 300:
+        state = "🔴 STALE — snapshot tidak diperbarui"
+    elif n < 5 or "BTC" not in data:
+        state = "🟡 WARNING — data coin kurang"
+    else:
+        state = "🟢 OK"
+    lines = ["⚙️ STATUS SISTEM", "", f"Status   : {state}",
+             f"Snapshot : {n}/{len(universe)} coin, umur {age if age is not None else '—'}s, "
+             f"BTC {'✅' if data.get('BTC') else '❌'}"]
+    if missing:
+        lines.append(f"Tidak ada di snapshot: {', '.join(missing)}")
+    try:
+        from engine.market.economic_calendar import get_calendar_source, is_calendar_live
+        src = get_calendar_source()
+        src = "belum dicek sejak start" if not src or src == "none" else src
+        lines.append(f"Kalender : {src} {'(live ✅)' if is_calendar_live() else '(tidak live ⚠️)'}")
+    except Exception as e:  # noqa: BLE001
+        logging.debug("status calendar: %s", e)
+    try:
+        from engine.alerts.user_alerts import active_alerts
+        lines.append(f"Alert level aktif: {len(active_alerts())}")
+    except Exception as e:  # noqa: BLE001
+        logging.debug("status alerts: %s", e)
+    jq = getattr(context, "job_queue", None) if context is not None else None
+    if jq is not None:
+        try:
+            names = sorted({j.name for j in jq.jobs() if j.name})
+            lines.append(f"Job jalan: {len(names)}")
+        except Exception as e:  # noqa: BLE001
+            logging.debug("status jobs: %s", e)
+    up = int(time_module.time() - _PROCESS_START)
+    lines.append(f"Uptime   : {up // 86400}h {up % 86400 // 3600}j {up % 3600 // 60}m")
+    lines.append(f"Server   : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    return "\n".join(lines)
+
+
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info("COMMAND RECEIVED: /status")
+    target = _reply_target(update)
+    if not target:
+        return
     try:
-        trades = get_active_trades()
-        n_trades = len(trades)
-        n_coins = len(ALLOWED_COINS)
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        msg = (
-            "⚙️ ALIZA SYSTEM STATUS\n\n"
-            "Engine    : AKTIF\n"
-            "Bot       : AKTIF\n\n"
-            f"Posisi aktif : {n_trades}\n"
-            f"Coins pantau : {n_coins}\n\n"
-            f"Server time  : {now}"
-        )
-        await update.message.reply_text(msg)
+        await target.reply_text(_system_status_text(context))
     except Exception as e:
-        logging.error("STATUS ERROR: %s", e)
-        await update.message.reply_text("Gagal memuat status.")
+        logging.error("STATUS ERROR: %s", e, exc_info=True)
+        await target.reply_text("Gagal memuat status.")
 
 
 # ========== ALERT STATS ==========
@@ -2590,42 +2679,9 @@ async def snapshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== HEALTH ==========
 
 async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Check Aliza system health from snapshot (read-only)."""
+    """/health lama: digabung ke Status Sistem."""
     logging.info("COMMAND RECEIVED: /health")
-    try:
-        snapshot = get_market_snapshot()
-        data = snapshot.get("data", {})
-        ts = snapshot.get("timestamp")
-
-        num_coins = len(data)
-
-        age = None
-        if ts:
-            try:
-                age = int((datetime.utcnow() - ts).total_seconds())
-            except (TypeError, ValueError, AttributeError):
-                pass
-
-        status = "OK"
-        if num_coins < 5:
-            status = "WARNING"
-        if age is None or age > 300:
-            status = "STALE"
-
-        btc_present = "YES" if "BTC" in data and data.get("BTC") else "NO"
-        age_str = f"{age}s" if age is not None else "—"
-
-        msg = (
-            "🏥 ALIZA SYSTEM HEALTH\n\n"
-            f"Status          : {status}\n"
-            f"Snapshot coins  : {num_coins}\n"
-            f"Snapshot age    : {age_str}\n\n"
-            f"BTC present     : {btc_present}"
-        )
-        await update.message.reply_text(msg)
-    except Exception as e:
-        logging.error("HEALTH ERROR: %s", e)
-        await update.message.reply_text("Terjadi kesalahan cek health.")
+    await status(update, context)
 
 
 def _brief_wib_date_header() -> str:
@@ -6479,76 +6535,28 @@ async def funding_alert_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def check_funding_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🔄 Funding & OI: funding, ΔOI 24j, L/S, tafsiran harga vs OI (read-only; menggantikan CFRA)."""
     logging.info("COMMAND RECEIVED: /check_funding")
     target = update.effective_message
     if not target:
         return
     try:
-        table = format_funding_table_for_command()
-        extremes = check_funding_extremes()
-        chat_id = None
-        if context and getattr(context, "bot_data", None):
-            chat_id = context.bot_data.get("chat_id")
-        if not chat_id:
-            chat_id = DEFAULT_CHAT_ID
-        for item in extremes:
-            await safe_dispatch(format_funding_alert_message(item), chat_id=chat_id, force=False)
-        if extremes:
-            suffix = f"\n\n⚠️ Kondisi ekstrem: {len(extremes)} alert dikirim."
-        else:
-            suffix = "\n\n✅ Tidak ada kondisi ekstrem — |FR| tidak melebihi 0.1%."
-        await target.reply_text(table + suffix)
+        from engine.market.positioning import collect, format_positioning
+        data = (get_market_snapshot() or {}).get("data") or {}
+        universe = list(data.keys()) or list(MAJOR_COINS)
+        rows = await asyncio.get_running_loop().run_in_executor(None, collect, universe)
+        got = {r["coin"] for r in rows}
+        missing = [c for c in universe if c not in got]
+        await target.reply_text(format_positioning(rows, _wib_now_label(), missing))
     except Exception as e:
         logging.error("check_funding_command: %s", e, exc_info=True)
-        await target.reply_text("Terjadi kesalahan saat cek funding.")
+        await target.reply_text("Terjadi kesalahan saat cek funding & OI.")
 
 
 async def cfra_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """On-demand CFRA: tampilkan zona FR semua coin."""
+    """/cfra lama: kini digabung ke tampilan Funding & OI."""
     logging.info("COMMAND RECEIVED: /cfra")
-    target = _reply_target(update)
-    if not target:
-        return
-    try:
-        from engine.market.funding_rate_monitor import get_cfra_analysis
-        results = get_cfra_analysis()
-        if not results:
-            await target.reply_text("Data CFRA tidak tersedia saat ini.")
-            return
-
-        lines = ["📊 CONTRARIAN FUNDING RATE ANALYTICS (CFRA)\n"]
-        squeeze_risk = []
-        neutral = []
-        for r in results:
-            coin = r["coin"]
-            label = r["label"]
-            action = r["action"]
-            next_f = r.get("next_funding") or "—"
-            mins = r.get("minutes_to_funding")
-            mins_str = f"{mins} mnt" if mins is not None else "—"
-            zone = r.get("zone", "UNKNOWN")
-            if zone in ("LONG_SQUEEZE_RISK", "SHORT_SQUEEZE_RISK"):
-                squeeze_risk.append(
-                    f"{r['emoji']} {coin}: {label}\n"
-                    f"   → {action}\n"
-                    f"   Next funding: {next_f} ({mins_str})"
-                )
-            else:
-                neutral.append(f"⚪ {coin}: FR {r['fr_pct']:+.4f}%" if r['fr_pct'] is not None else f"⚪ {coin}: —")
-
-        if squeeze_risk:
-            lines.append("🚨 ZONA EKSTREM:")
-            lines.extend(squeeze_risk)
-            lines.append("")
-        if neutral:
-            lines.append("✅ ZONA NETRAL:")
-            lines.append("\n".join(neutral))
-
-        lines.append(f"\n⏰ {_wib_now_label()}")
-        await target.reply_text("\n".join(lines))
-    except Exception as e:
-        logging.error("CFRA ERROR: %s", e)
-        await target.reply_text("Terjadi kesalahan memuat data CFRA.")
+    await check_funding_command(update, context)
 
 
 async def cfra_alert_job(context: ContextTypes.DEFAULT_TYPE):
@@ -8201,7 +8209,7 @@ async def _post_init_set_bot_commands(application):
                 BotCommand("performance", "Kinerja Trade (RR/PF)"),
                 BotCommand("alert_stats", "Statistik alert dan digest"),
                 BotCommand("snapshot", "Snapshot market saat ini"),
-                BotCommand("health", "Health sistem"),
+                
                 BotCommand("weekly_winrate", "Ringkasan winrate mingguan"),
                 BotCommand("shadow_stats", "Statistik shadow E3"),
                 BotCommand("shadow_promotion_check", "Cek promosi Shadow E3"),
@@ -8439,13 +8447,18 @@ def main():
             name="alert_digest_flush",
         )
         logging.info("Alert digest flush job scheduled (every 60s, first in 65s).")
-        app.job_queue.run_repeating(
-            cfra_alert_job,
-            interval=1800,
-            first=300,
-            name="cfra_alert",
-        )
-        logging.info("CFRA alert job scheduled (every 1800s).")
+        # CFRA alert dobel dengan funding_alert_checker (ambang |FR|>0.1% sama) dan
+        # dikirim force=True tanpa cooldown → default mati.
+        if os.getenv("CFRA_ALERT_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}:
+            app.job_queue.run_repeating(
+                cfra_alert_job,
+                interval=1800,
+                first=300,
+                name="cfra_alert",
+            )
+            logging.info("CFRA alert job scheduled (every 1800s).")
+        else:
+            logging.info("CFRA alert job DISABLED (CFRA_ALERT_ENABLED=false).")
         app.job_queue.run_repeating(
             macro_check_job,
             interval=3600,
