@@ -63,11 +63,9 @@ class TelegramMenuRestructureTests(IsolatedAsyncioTestCase):
         self.assertIn("🔔 Monitor Pasar", _labels(replies[-1][1]))
 
         await tb.menu_button_handler(self._update("📈 Analisis", replies), context)
-        self.assertIn("📊 Performance", _labels(replies[-1][1]))
-        await tb.menu_button_handler(self._update("📊 Performance", replies), context)
-        self.assertIn("📈 Kinerja Trade (RR/PF)", _labels(replies[-1][1]))
+        self.assertIn("🎯 Konteks Market", _labels(replies[-1][1]))
         await tb.menu_button_handler(self._update("⬅ Kembali", replies), context)
-        self.assertIn("📊 Performance", _labels(replies[-1][1]))
+        self.assertIn("📈 Analisis", _labels(replies[-1][1]))
 
     async def test_market_monitor_routes_existing_commands_from_new_location(self):
         replies = []
@@ -125,7 +123,7 @@ class TelegramMenuRetirementTests(IsolatedAsyncioTestCase):
         keyboards = [
             tb._main_menu_keyboard(), tb._market_submenu_keyboard(), tb._trading_submenu_keyboard(),
             tb._analysis_submenu_keyboard(), tb._macro_submenu_keyboard(),
-            tb._market_monitor_submenu_keyboard(), tb._performance_submenu_keyboard(),
+            tb._market_monitor_submenu_keyboard(),
             tb._system_submenu_keyboard(),
         ]
         shown = {label for kb in keyboards for label in _labels(kb)}
@@ -135,10 +133,12 @@ class TelegramMenuRetirementTests(IsolatedAsyncioTestCase):
         handlers = {
             "spot_signal_command": AsyncMock(), "predict": AsyncMock(),
             "shadow_stats_command": AsyncMock(), "check_whale_command": AsyncMock(),
+            "portfolio": AsyncMock(),
         }
         with patch.multiple(tb, **handlers):
             for label in ("📈 Saran Spot", "🔮 Prediksi Market", "🧪 Riset Shadow E3",
-                          "🐋 Monitor Whale", "📈 Open Position"):
+                          "🐋 Monitor Whale", "📈 Open Position",
+                          "📂 Posisi Aktif", "📊 Performance"):
                 replies = []
                 await tb.menu_button_handler(self._update(label, replies), SimpleNamespace(user_data={}))
                 self.assertEqual(len(replies), 1, label)
