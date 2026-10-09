@@ -26,7 +26,9 @@ def test_card_is_descriptive_without_signal_confidence_or_entry():
     assert "4.5% di bawah resistance $86,242" in out
     assert "momentum lemah, belum oversold" in out
     assert "Kondisi : ⚡ Breakdown Risk" in out
-    assert "level 30-hari berikutnya ~$78,500" in out
+    assert "🗺️ Skenario level" in out
+    assert "▲ Tembus resistance $86,242 → level 30-hari berikutnya ~$88,900" in out
+    assert "▼ Jebol support $81,038 → level 30-hari berikutnya ~$78,500" in out
     assert "Tren 1D belum ikut turun" in out
     for banned in ("EXIT", "BUY", "Confidence", "Entry", "SL ", "Target", "RR"):
         assert banned not in out, banned
@@ -82,3 +84,14 @@ def test_near_levels_has_both_sides():
     text = cc.format_near_levels(cc.near_support_rows(data), cc.near_resistance_rows(data), snapshot_ts="t")
     assert "🔻 Dekat support" in text and "BTC" in text
     assert "🔺 Dekat resistance" in text and "OM     2.0% di bawah $102" in text
+
+
+def test_card_scenario_when_support_already_broken():
+    out = cc.build_coin_condition("BTC", dict(BTC, price=80000.0), closes_1d=[78000.0 + i for i in range(40)])
+    assert "▲ Kembali di atas $81,038 → support pulih" in out
+    assert "▼ Lanjut turun → level 30-hari ~$78,010" in out
+
+
+def test_both_sideways_reads_as_range_not_misaligned():
+    out = cc.build_coin_condition("BTC", dict(BTC, trend_4h="SIDEWAYS", trend_1d="SIDEWAYS"))
+    assert "4H → · 1D →  (sama-sama sideways — range)" in out

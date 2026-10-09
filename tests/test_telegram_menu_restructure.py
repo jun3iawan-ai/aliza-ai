@@ -61,10 +61,10 @@ class TelegramMenuRestructureTests(IsolatedAsyncioTestCase):
         await tb.menu_button_handler(self._update("⬅ Kembali", replies), context)
         self.assertIn("📊 Market", _labels(replies[-1][1]))
 
-        await tb.menu_button_handler(self._update("📈 Analisis", replies), context)
+        # Menu Analisis dihapus (9 Okt 2026): Konteks Market kini di menu Market.
+        await tb.menu_button_handler(self._update("📊 Market", replies), context)
         self.assertIn("🎯 Konteks Market", _labels(replies[-1][1]))
-        await tb.menu_button_handler(self._update("⬅ Kembali", replies), context)
-        self.assertIn("📈 Analisis", _labels(replies[-1][1]))
+        self.assertNotIn("📈 Analisis", _labels(tb._main_menu_keyboard()))
 
     async def test_old_monitor_labels_route_to_new_views(self):
         context = SimpleNamespace(user_data={})
@@ -112,7 +112,7 @@ class TelegramMenuRetirementTests(IsolatedAsyncioTestCase):
     def test_retired_buttons_absent_from_every_keyboard(self):
         keyboards = [
             tb._main_menu_keyboard(), tb._market_submenu_keyboard(), tb._trading_submenu_keyboard(),
-            tb._analysis_submenu_keyboard(), tb._macro_submenu_keyboard(),
+            tb._macro_submenu_keyboard(),
             tb._system_submenu_keyboard(),
         ]
         shown = {label for kb in keyboards for label in _labels(kb)}

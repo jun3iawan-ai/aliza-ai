@@ -63,6 +63,8 @@ def avg_move_pct(closes) -> float | None:
 def _trend_phrase(t4: str, t1: str) -> str:
     if t4 == t1 and t4 in ("BULLISH", "BEARISH"):
         return "searah ⭐"
+    if t4 == t1 == "SIDEWAYS":
+        return "sama-sama sideways — range"
     if "UNKNOWN" in (t4, t1) or not t4 or not t1:
         return "data belum lengkap"
     return "belum searah"
@@ -141,15 +143,37 @@ def build_coin_condition(
     ]
 
     notes: list[str] = []
-    support_30d = None
+    support_30d = resistance_30d = None
     c1 = [x for x in (closes_1d or []) if _f(x)]
     if len(c1) >= 30:
         support_30d = min(c1[-30:])
-    if ds is not None and 0 <= ds <= NEAR_SUPPORT_MAX_PCT:
-        if support_30d is not None and sup is not None and support_30d < sup * 0.995:
-            notes.append(f"Support dekat — kalau jebol, level 30-hari berikutnya ~{fmt_price(support_30d)}")
+        resistance_30d = max(c1[-30:])
+
+    # Skenario level jika-maka (pengganti "Trigger berikutnya" di Penjelasan AI).
+    scen: list[str] = []
+    if res is not None and price is not None:
+        if price < res:
+            nxt = (f" → level 30-hari berikutnya ~{fmt_price(resistance_30d)}"
+                   if resistance_30d is not None and resistance_30d > res * 1.005 else " → ruang naik terbuka")
+            scen.append(f"▲ Tembus resistance {fmt_price(res)}{nxt}")
         else:
-            notes.append("Support dekat — perhatikan reaksi harga di level ini")
+            scen.append(f"▲ Bertahan di atas {fmt_price(res)} → breakout terkonfirmasi")
+    if sup is not None and price is not None:
+        if price >= sup:
+            nxt = (f" → level 30-hari berikutnya ~{fmt_price(support_30d)}"
+                   if support_30d is not None and support_30d < sup * 0.995 else " → ruang turun terbuka")
+            scen.append(f"▼ Jebol support {fmt_price(sup)}{nxt}")
+        else:
+            scen.append(f"▲ Kembali di atas {fmt_price(sup)} → support pulih")
+            if support_30d is not None and support_30d < price:
+                scen.append(f"▼ Lanjut turun → level 30-hari ~{fmt_price(support_30d)}")
+    if scen:
+        lines.append("")
+        lines.append("🗺️ Skenario level")
+        lines.extend(scen)
+
+    if ds is not None and 0 <= ds <= NEAR_SUPPORT_MAX_PCT:
+        notes.append("Support dekat — reaksi harga di level ini menentukan skenario ▲/▼")
     if ds is not None and ds < 0:
         notes.append("Harga sudah di bawah support jangka pendek — level lama bisa berubah jadi resistance")
     if dr is not None and 0 <= dr <= NEAR_SUPPORT_MAX_PCT:

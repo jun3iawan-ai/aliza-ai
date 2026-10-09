@@ -433,7 +433,7 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> 
 def _main_menu_keyboard():
     return ReplyKeyboardMarkup(
         [
-            ["📊 Market", "💹 Trading", "📈 Analisis"],
+            ["📊 Market", "💹 Trading"],
             ["🌍 Makro & Sentimen", "⚙️ Sistem"],
         ],
         resize_keyboard=True,
@@ -460,7 +460,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🤖 ALIZA AI TRADING TERMINAL\n"
             "Asisten AI untuk analisis dan trading crypto market.\n"
             "━━━━━━━━━━━━━━\n"
-            "📊 Market • 💹 Trading • 📈 Analisis\n"
+            "📊 Market • 💹 Trading\n"
             "🌍 Makro & Sentimen • ⚙️ Sistem\n"
             "Gunakan tombol menu untuk navigasi."
         )
@@ -474,8 +474,8 @@ def _market_submenu_keyboard():
     return ReplyKeyboardMarkup(
         [
             ["🌅 Ringkasan Pagi", "🌙 Ringkasan Malam"],
-            ["📡 Radar", "ℹ️ Info Coin"],
-            ["⚡ Scan Pasar"],
+            ["🎯 Konteks Market", "📡 Radar"],
+            ["ℹ️ Info Coin", "⚡ Scan Pasar"],
             ["⬅ Kembali"],
         ],
         resize_keyboard=True,
@@ -501,16 +501,6 @@ def _trading_submenu_keyboard():
         one_time_keyboard=False,
     )
 
-
-def _analysis_submenu_keyboard():
-    return ReplyKeyboardMarkup(
-        [
-            ["🎯 Konteks Market", "🔎 Penjelasan AI"],
-            ["⬅ Kembali"],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=False,
-    )
 
 
 def _macro_submenu_keyboard():
@@ -664,6 +654,7 @@ _RETIRED_MENU_LABELS = frozenset({
     "📈 Saran Spot", "🔎 Scan Futures", "🔮 Prediksi Market", "🐋 Monitor Whale",
     "📊 Akurasi Sinyal", "🧪 Riset Shadow E3", "🧪 Cek Promosi Shadow",
     "📂 Posisi Aktif", "📈 Buka Posisi", "📉 Tutup Posisi", "🌐 Kondisi Global",
+    "📈 Analisis", "🔎 Penjelasan AI",
     "📊 Performance", "📈 Kinerja Trade (RR/PF)", "📅 Ringkasan Mingguan",
     "🟢 Spot Trading", "📊 Futures Trading", "🎯 Sinyal & Trading", "🔎 Scan Peluang",
     "📂 Portofolio", "📈 Analisis & Skor", "📊 Performa Sinyal", "📊 Performa Trading",
@@ -699,6 +690,7 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             "📊 MARKET\n\n"
             "🌅 Ringkasan Pagi — Ringkasan harian\n"
             "🌙 Ringkasan Malam — Ringkasan sore\n"
+            "🎯 Konteks Market — skor kondisi market (tren harga, makro, sentimen, funding)\n"
             "📡 Radar — arah 4H/1D, RSI & kondisi semua coin\n"
             "ℹ️ Info Coin — teknikal, tokenomics, on-chain per coin\n"
             "⚡ Scan Pasar — gerak 1 jam, breakout, volume spike, RSI ekstrem, dekat resistance",
@@ -753,26 +745,9 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
-    # 📈 Analisis (baru) + fallback cache lama
-    if text == "📈 Analisis":
-        _set_menu_parent(context, "analysis")
-        await update.message.reply_text(
-            "📈 ANALISIS\n\n"
-            "🎯 Konteks Market — skor kondisi market (tren harga, makro, sentimen, funding, dominance)\n"
-            "🔎 Penjelasan AI — analisa AI per coin",
-            reply_markup=_analysis_submenu_keyboard(),
-        )
-        return
     # "📊 Skor Quant" digabung ke Konteks Market (komponen tren harga).
     if text in ("🎯 Konteks Market", "📊 Skor Quant"):
         await market_context_command(update, context)
-        return
-    if text == "🔎 Penjelasan AI":
-        kb = _build_coin_selector("why", MAJOR_COINS)
-        await update.message.reply_text(
-            "🔎 PENJELASAN AI\n\nPilih coin untuk melihat analisa AI.",
-            reply_markup=kb,
-        )
         return
 
     # 🌍 Makro & Sentimen
