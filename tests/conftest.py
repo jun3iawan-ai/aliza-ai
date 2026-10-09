@@ -6,6 +6,14 @@ import pytest
 from engine.alerts import notification_governor as _ngov
 from engine import state_store as _state_store
 from engine.market import economic_calendar as _ecal
+from engine.market import news_feed as _news_feed
+
+
+@pytest.fixture(autouse=True)
+def _no_live_rss(monkeypatch):
+    """Test tidak boleh mengambil RSS berita sungguhan."""
+    monkeypatch.setattr(_news_feed, "_fetch_feed", lambda source, url: [])
+    yield
 
 
 @pytest.fixture(autouse=True)

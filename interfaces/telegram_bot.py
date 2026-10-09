@@ -3457,90 +3457,30 @@ def _serper_news_fetch(query: str, num: int) -> list[dict[str, Any]]:
 
 
 def _fetch_crypto_news() -> list[dict[str, Any]]:
-    key = os.getenv("NEWSAPI_KEY", "")
-    if not key:
-        logging.warning("_fetch_crypto_news: NEWSAPI_KEY tidak ada di env")
-        return []
+    """Berita crypto real-time via RSS (engine/market/news_feed.py).
+    NewsAPI tidak dipakai lagi: paket gratis menahan artikel 24 jam sehingga
+    filter ≤3 jam selalu menghasilkan 0 artikel (audit 9 Okt 2026)."""
     try:
-        import httpx
+        from engine.market.news_feed import fetch_crypto_news
 
-        _from_dt = (datetime.now(timezone.utc) - timedelta(hours=3)).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
-        r = httpx.get(
-            "https://newsapi.org/v2/everything",
-            params={
-                "q": "bitcoin OR ethereum OR crypto",
-                "sortBy": "publishedAt",
-                "pageSize": 10,
-                "language": "en",
-                "from": _from_dt,
-                "apiKey": key,
-            },
-            timeout=8.0,
-        )
-        if r.status_code != 200:
-            logging.warning("NewsAPI crypto HTTP %s", r.status_code)
-            return []
-        articles = r.json().get("articles") or []
-        logging.info("_fetch_crypto_news: %d artikel mentah dari NewsAPI", len(articles))
-        out = []
-        for item in articles[:10]:
-            if not isinstance(item, dict):
-                continue
-            out.append({
-                "title": item.get("title", "") or "",
-                "snippet": item.get("description", "") or "",
-                "source": (item.get("source") or {}).get("name", "") or "",
-                "link": item.get("url", "") or "",
-                "time": item.get("publishedAt", "") or "",
-            })
-        return out
+        items = fetch_crypto_news()
+        logging.info("_fetch_crypto_news: %d artikel dari RSS", len(items))
+        return items
     except Exception as e:  # noqa: BLE001
         logging.warning("_fetch_crypto_news: %s", e)
         return []
 
 
 def _fetch_macro_news() -> list[dict[str, Any]]:
-    key = os.getenv("NEWSAPI_KEY", "")
-    if not key:
-        logging.warning("_fetch_macro_news: NEWSAPI_KEY tidak ada di env")
-        return []
+    """Berita macro real-time via RSS (engine/market/news_feed.py).
+    NewsAPI tidak dipakai lagi: paket gratis menahan artikel 24 jam sehingga
+    filter ≤3 jam selalu menghasilkan 0 artikel (audit 9 Okt 2026)."""
     try:
-        import httpx
+        from engine.market.news_feed import fetch_macro_news
 
-        _from_dt = (datetime.now(timezone.utc) - timedelta(hours=3)).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
-        r = httpx.get(
-            "https://newsapi.org/v2/everything",
-            params={
-                "q": "Federal Reserve OR interest rate OR inflation OR economy",
-                "sortBy": "publishedAt",
-                "pageSize": 5,
-                "language": "en",
-                "from": _from_dt,
-                "apiKey": key,
-            },
-            timeout=8.0,
-        )
-        if r.status_code != 200:
-            logging.warning("NewsAPI macro HTTP %s", r.status_code)
-            return []
-        articles = r.json().get("articles") or []
-        logging.info("_fetch_macro_news: %d artikel mentah dari NewsAPI", len(articles))
-        out = []
-        for item in articles[:5]:
-            if not isinstance(item, dict):
-                continue
-            out.append({
-                "title": item.get("title", "") or "",
-                "snippet": item.get("description", "") or "",
-                "source": (item.get("source") or {}).get("name", "") or "",
-                "link": item.get("url", "") or "",
-                "time": item.get("publishedAt", "") or "",
-            })
-        return out
+        items = fetch_macro_news()
+        logging.info("_fetch_macro_news: %d artikel dari RSS", len(items))
+        return items
     except Exception as e:  # noqa: BLE001
         logging.warning("_fetch_macro_news: %s", e)
         return []
