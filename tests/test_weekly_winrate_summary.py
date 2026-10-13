@@ -214,15 +214,29 @@ class TestWeeklyWinrateSummaryJob:
 
         dispatch_mock.assert_not_called()
 
-    def test_command_triggers_same_job(self, isolated_tracker_db, isolated_governor_state, monkeypatch):
+    def test_command_replies_disabled_and_sends_nothing(self, isolated_tracker_db, isolated_governor_state, monkeypatch):
         dispatch_mock = AsyncMock(return_value=True)
         monkeypatch.setattr(telegram_bot, "safe_dispatch", dispatch_mock)
 
+        update = MagicMock()
+        update.effective_message.reply_text = AsyncMock()
         context = MagicMock()
         context.bot_data = {"chat_id": "test-chat-id"}
-        asyncio.run(telegram_bot.weekly_winrate_summary_command(MagicMock(), context))
+        asyncio.run(telegram_bot.weekly_winrate_summary_command(update, context))
 
-        dispatch_mock.assert_called_once()
+        dispatch_mock.assert_not_called()
+        update.effective_message.reply_text.assert_awaited_once_with(telegram_bot.SIGNAL_TRACKING_DISABLED_TEXT)
+        assert "NONAKTIF" in telegram_bot.SIGNAL_TRACKING_DISABLED_TEXT
+
+    def test_signal_stats_command_disabled_and_does_not_read_stats(self, monkeypatch):
+        stats_mock = MagicMock()
+        monkeypatch.setattr(telegram_bot, "get_signal_stats", stats_mock)
+        update = MagicMock()
+        update.effective_message.reply_text = AsyncMock()
+        asyncio.run(telegram_bot.signal_stats_command(update, MagicMock()))
+
+        stats_mock.assert_not_called()
+        update.effective_message.reply_text.assert_awaited_once_with(telegram_bot.SIGNAL_TRACKING_DISABLED_TEXT)
 
 
 class TestJobScheduling:
@@ -251,32 +265,6 @@ class TestJobScheduling:
         monkeypatch.delenv("WEEKLY_WINRATE_SCHEDULE_ENABLED", raising=False)
         assert self._weekly_calls(monkeypatch) == []
 
-    def test_weekly_job_registered_monday_0810_utc(self, monkeypatch):
+    def test_weekly_job_never_scheduled_even_if_env_true(self, monkeypatch):
         monkeypatch.setenv("WEEKLY_WINRATE_SCHEDULE_ENABLED", "true")
-        app_mock = MagicMock()
-        builder_mock = MagicMock()
-        builder_mock.token.return_value = builder_mock
-        builder_mock.post_init.return_value = builder_mock
-        builder_mock.post_shutdown.return_value = builder_mock
-        builder_mock.build.return_value = app_mock
-
-        monkeypatch.setattr(telegram_bot, "BOT_TOKEN", "fake-token-for-test")
-        monkeypatch.setattr(telegram_bot, "ApplicationBuilder", MagicMock(return_value=builder_mock))
-        monkeypatch.setattr(telegram_bot, "GracefulShutdownController", MagicMock())
-        monkeypatch.setattr(telegram_bot, "init_trade_db", MagicMock())
-        monkeypatch.setattr(telegram_bot, "init_signal_tracking_db", MagicMock())
-        monkeypatch.setattr(telegram_bot, "update_market_snapshot", MagicMock())
-
-        telegram_bot.main()
-
-        weekly_calls = [
-            call
-            for call in app_mock.job_queue.run_daily.call_args_list
-            if call.args and call.args[0] is telegram_bot.weekly_winrate_summary_job
-        ]
-        assert len(weekly_calls) == 1
-        _, kwargs = weekly_calls[0]
-        assert kwargs["days"] == (0,)  # Monday only (PTB: 0=Monday)
-        assert kwargs["time"].hour == 1
-        assert kwargs["time"].minute == 10
-        assert kwargs["name"] == "weekly_winrate_summary"
+        assert self._weekly_calls(monkeypatch) == []
