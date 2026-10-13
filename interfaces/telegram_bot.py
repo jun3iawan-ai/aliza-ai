@@ -5952,6 +5952,8 @@ import re as _re_sig
 
 def _parse_and_record_signals(text: str, market_score: int = 0) -> None:
     """Parse output saran spot/futures dan simpan ke signal_tracking."""
+    if not SIGNAL_TRACKING_RECORDING_ENABLED:
+        return
     try:
         coin_blocks = _re_sig.split(r'\n(?=•\s+\w)', text)
         # Guard idempoten: kalau main_out sempat mengandung blok duplikat
@@ -6074,7 +6076,7 @@ async def morning_brief_job(context: ContextTypes.DEFAULT_TYPE):
 
     active_sig = None
     try:
-        active_sig = scan_for_signals()
+        active_sig = _scan_for_signals_gated()
     except Exception as e:
         logging.warning("morning_brief scan_for_signals: %s", e)
 
@@ -6225,7 +6227,7 @@ async def evening_summary_job(context: ContextTypes.DEFAULT_TYPE):
 
     active_sig = None
     try:
-        active_sig = scan_for_signals()
+        active_sig = _scan_for_signals_gated()
     except Exception as e:
         logging.warning("evening_summary scan_for_signals: %s", e)
 
@@ -7625,6 +7627,24 @@ SIGNAL_TRACKING_DISABLED_TEXT = (
     "Data lama tetap tersimpan di database (tidak dihapus)."
 )
 
+# Perekaman ke tabel signal_tracking DIMATIKAN (13 Okt 2026). Data lama tetap di DB.
+# Gate ini dicek di semua jalur penulisan: _parse_and_record_signals, jalur deterministik,
+# dan _run_shadow_e3. Fungsi di engine/trading/signal_tracker.py sengaja tidak diubah.
+SIGNAL_TRACKING_RECORDING_ENABLED = False
+
+# Scanner sinyal deterministik (scan_for_signals + dispatch-nya) DIMATIKAN EKSPLISIT (13 Okt 2026).
+# Sebelumnya hanya "mati" karena drawdown breaker kebetulan aktif (loss streak 41). Flag ini
+# tidak bergantung pada breaker. Efek: tidak ada sinyal trade yang dikirim; morning_brief dan
+# evening_summary memakai jalur normal `active_signal=None` (tidak ada sinyal aktif).
+DETERMINISTIC_SIGNAL_ENABLED = False
+
+
+def _scan_for_signals_gated():
+    """scan_for_signals() hanya bila DETERMINISTIC_SIGNAL_ENABLED; selain itu None."""
+    if not DETERMINISTIC_SIGNAL_ENABLED:
+        return None
+    return scan_for_signals()
+
 
 async def signal_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """NONAKTIF (13 Okt 2026): winrate sinyal menggelembung & fitur tracking tidak dipakai lagi."""
@@ -7635,24 +7655,11 @@ async def signal_stats_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def shadow_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ringkasan outcome E3 shadow, terpisah dari /signal_stats produksi."""
+    """NONAKTIF (13 Okt 2026): riset Shadow E3 dan tracking sinyal dimatikan."""
+    logging.info("COMMAND RECEIVED: /shadow_stats (nonaktif)")
     msg = update.effective_message
-    if not msg or not _authorized_chat(update):
-        return
-    try:
-        stats = get_signal_stats(source="shadow_e3")
-        lines = [
-            "🧪 Shadow E3 Stats",
-            f"N: {int(stats.get('total_signals', 0))} | WIN {int(stats.get('win', 0))} | LOSS {int(stats.get('loss', 0))} | OPEN {int(stats.get('open', 0))}",
-            f"WR: {float(stats.get('win_rate', 0)):.2f}% | Expectancy: {float(stats.get('avg_pnl', 0)):+.3f}%",
-            "Per setup:",
-        ]
-        for row in stats.get("by_setup") or []:
-            lines.append(f"- {row.get('setup')}: N={row.get('total')} W={row.get('win')} L={row.get('loss')} WR={float(row.get('win_rate', 0)):.1f}%")
-        await msg.reply_text("\n".join(lines))
-    except Exception as exc:  # noqa: BLE001
-        logging.warning("shadow_stats_command: %s", exc)
-        await msg.reply_text("Gagal membaca statistik shadow.")
+    if msg:
+        await msg.reply_text(SIGNAL_TRACKING_DISABLED_TEXT)
 
 
 # ========== WEEKLY WINRATE SUMMARY (proaktif, tanpa perlu /signal_stats manual) ==========
@@ -7816,23 +7823,11 @@ async def weekly_winrate_summary_command(update: Update, context: ContextTypes.D
 
 
 async def shadow_promotion_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Read-only: hitung status kriteria promosi shadow_e3 -> produksi
-    (FASE4_REPORT.md) dari data live. Tidak pernah mengubah SHADOW_E3_ENABLED/
-    SHADOW_E3_DISPATCH atau state apa pun -- keputusan promosi tetap manual.
-    Command terpisah dari /shadow_stats (bukan perluasan) -- lihat
-    SHADOW_PROMOTION_CHECKLIST_REPORT.md untuk alasannya."""
+    """NONAKTIF (13 Okt 2026): promosi Shadow E3 -> produksi tidak dipakai lagi."""
+    logging.info("COMMAND RECEIVED: /shadow_promotion_check (nonaktif)")
     msg = update.effective_message
-    if not msg:
-        return
-    if not _authorized_chat(update):
-        await msg.reply_text("⛔ Unauthorized.")
-        return
-    try:
-        result = evaluate_promotion_criteria(source="shadow_e3")
-        await msg.reply_text(format_promotion_check_message(result))
-    except Exception as exc:  # noqa: BLE001
-        logging.warning("shadow_promotion_check_command: %s", exc)
-        await msg.reply_text("Gagal menghitung kriteria promosi shadow.")
+    if msg:
+        await msg.reply_text(SIGNAL_TRACKING_DISABLED_TEXT)
 
 
 # ========== SNAPSHOT JOB (background, every 60s) ==========
@@ -7891,6 +7886,9 @@ async def _dispatch_and_record_deterministic_signal(sig: dict, chat_id) -> bool:
         except Exception as dd_err:
             logging.debug("drawdown check failed, defaulting to allowed: %s", dd_err)
 
+    if not DETERMINISTIC_SIGNAL_ENABLED:
+        return False
+
     sent = await process_signal(
         key,
         uni,
@@ -7908,6 +7906,8 @@ async def _dispatch_and_record_deterministic_signal(sig: dict, chat_id) -> bool:
         )
 
     try:
+        if not SIGNAL_TRACKING_RECORDING_ENABLED:
+            return True
         sig_to_record = dict(sig)
         sig_to_record.setdefault(
             "signal_time",
@@ -7950,6 +7950,8 @@ def _record_shadow_cooldown(coin: str, setup: str, side: str, now_ts: float | No
 
 async def _run_shadow_e3(snapshot: dict, chat_id) -> int:
     """Jalankan E3 riset secara terpisah; tidak pernah memanggil process_signal."""
+    if not SIGNAL_TRACKING_RECORDING_ENABLED:
+        return 0
     try:
         candidates = collect_shadow_signals(snapshot)
         dispatched = shadow_dispatch_enabled()
@@ -8075,7 +8077,7 @@ async def snapshot_job(context: ContextTypes.DEFAULT_TYPE):
 
         # High probability trade (strategy): unified gateway (risk + dedup + state)
         try:
-            sig = scan_for_signals()
+            sig = _scan_for_signals_gated()
             if sig:
                 chat_id = context.bot_data.get("chat_id")
                 await _dispatch_and_record_deterministic_signal(sig, chat_id)
@@ -8181,8 +8183,6 @@ async def _post_init_set_bot_commands(application):
                 BotCommand("alert_stats", "Statistik alert dan digest"),
                 BotCommand("snapshot", "Snapshot market saat ini"),
                 
-                BotCommand("shadow_stats", "Statistik shadow E3"),
-                BotCommand("shadow_promotion_check", "Cek promosi Shadow E3"),
             ]
         )
     except Exception as e:
@@ -8431,13 +8431,10 @@ def main():
             name="whale_alert_checker",
         )
         logging.info("Whale alert checker job scheduled (every 600s, first in 120s).")
-        app.job_queue.run_repeating(
-            signal_check_job,
-            interval=600,
-            first=150,
-            name="signal_checker",
-        )
-        logging.info("Signal checker job scheduled (every 600s, first in 150s).")
+        # signal_checker DIMATIKAN (13 Okt 2026): perekaman signal_tracking dihentikan, jadi tidak
+        # ada lagi yang perlu dievaluasi. Sekaligus mencegah baris OPEN yang tersisa tertutup
+        # WIN dan mereset loss streak drawdown breaker (yang akan membuka kembali pengiriman sinyal).
+        logging.info("Signal checker job DISABLED (tracking sinyal nonaktif).")
         app.job_queue.run_daily(
             evening_calendar_job,
             time=time(hour=14, minute=0, second=0, tzinfo=timezone.utc),

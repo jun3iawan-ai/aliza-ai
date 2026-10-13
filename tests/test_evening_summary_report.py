@@ -497,6 +497,12 @@ class ParseAndRecordSignalsIdempotencyTestCase(unittest.TestCase):
     bullet-point setup, _parse_and_record_signals must not write the same
     (coin, setup, entry, sl, tp) combination to signal_tracking twice."""
 
+    def setUp(self):
+        import interfaces.telegram_bot as _tb
+        patcher = patch.object(_tb, "SIGNAL_TRACKING_RECORDING_ENABLED", True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_duplicated_identical_coin_block_is_recorded_once(self):
         duplicated_text = (
             "🟢 SARAN SPOT (Swing 1-7 hari)\n\n"

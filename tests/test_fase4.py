@@ -1,3 +1,4 @@
+import pytest
 import asyncio
 import copy
 import json
@@ -5,6 +6,9 @@ import time
 
 from engine.alerts import notification_governor as ngov
 from engine.shadow import e3_shadow as shadow
+
+
+pytestmark = pytest.mark.usefixtures("recording_on")
 
 
 def _rows(n=15):
