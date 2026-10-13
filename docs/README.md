@@ -36,6 +36,7 @@ Folder lama `docs/cursor-ai/`, `docs/instructions/`, dan `docs/audit/` sudah dig
 - [Engine contracts](architecture/engine-contracts.md)
 - [Position sizing](architecture/position-sizing.md)
 - [Testing](architecture/testing.md)
+- [Daftar pantau dari Porto](architecture/WATCHLIST_DARI_PORTO.md)
 
 ### Runbook
 
