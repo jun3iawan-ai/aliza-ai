@@ -325,3 +325,16 @@ def test_futures_only_coin_price_comes_from_futures_ticker():
         calls.clear()
         assert ma._get_price_from_binance("BTC") is None                  # ada di spot: spot gagal tidak jatuh ke futures
         assert all("fapi" not in u for u, _ in calls)
+
+
+def test_sync_blocking_logs_summary_once_per_change(env, caplog):
+    import logging
+    f, _ = env
+    _write(f, _doc()); _support()
+    tb._WATCHLIST_LAST_LOG = None
+    with caplog.at_level(logging.INFO):
+        tb._watchlist_sync_blocking()
+        tb._watchlist_sync_blocking()                          # tidak ada perubahan -> tidak mengulang log
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("watchlist: sumber=")]
+    assert len(lines) == 1
+    assert "sumber=porto total=17 aktif=16 dilewati_tanpa_data=['BONE']" in lines[0]
