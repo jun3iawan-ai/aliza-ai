@@ -74,6 +74,7 @@ from engine.market.economic_calendar import (
 )
 from engine.market import institutional_data as inst_data
 from engine.market.market_context_engine import (
+    build_components_view,
     calculate_market_score,
     format_context_for_brief,
     map_label_to_alert_status,
@@ -2543,43 +2544,16 @@ async def market_context_command(update: Update, context: ContextTypes.DEFAULT_T
         return
     try:
         result = calculate_market_score()
-        c = result.get("components", {})
-        pt = c.get("price_trend") or {}
-        macro = c.get("macro") or {}
-        fg = c.get("fear_greed") or {}
-        fr = c.get("funding_rate") or {}
-        dom = c.get("btc_dominance") or {}
-
-        _arw = {"BULLISH": "↑", "BEARISH": "↓", "SIDEWAYS": "→"}
-        if pt.get("n"):
-            n, up, down = pt["n"], pt.get("up") or 0, pt.get("down") or 0
-            pt_label = (f"BTC 4H {_arw.get(pt.get('btc_4h'), '?')} 1D {_arw.get(pt.get('btc_1d'), '?')}"
-                        f" · {up}/{n} coin 4H naik, {down}/{n} turun")
-        else:
-            pt_label = "data tidak tersedia"
-        cpi_change, fed_rate, fed_change = macro.get("cpi_change"), macro.get("fed_rate"), macro.get("fed_change")
-        cpi_label = "—" if cpi_change is None else f"{float(cpi_change):+.2f}%"
-        fed_label = "—" if fed_rate is None else f"{float(fed_rate):.2f}%"
-        if fed_change is not None:
-            fed_label += " (naik)" if fed_change > 0 else " (turun)" if fed_change < 0 else " (tetap)"
-        fg_val, fr_val, dom_val = fg.get("value"), fr.get("avg_fr"), dom.get("value")
-        fg_label = "—" if fg_val is None else f"{float(fg_val):.0f}"
-        if fr_val is None:
-            fr_label = "—"
-        else:
-            frv = float(fr_val)
-            fr_label = f"{frv:+.4f}% " + ("(short ramai)" if frv < -0.01 else "(long ramai)" if frv > 0.01 else "(seimbang)")
-        dom_label = "—" if dom_val is None else f"{float(dom_val):.1f}%"
+        breakdown = "\n".join(
+            f"• {row['name']}: {row['score']}/{row['max']} ({row['detail']})"
+            for row in build_components_view(result)
+        )
 
         msg = (
             "🎯 Konteks Market\n\n"
             f"Total: {result.get('total_score', 50)}/100 — {result.get('label', 'Neutral')} {result.get('emoji', '⚪')}\n\n"
             "Breakdown:\n"
-            f"• Tren harga: {pt.get('score', 0)}/40 ({pt_label})\n"
-            f"• Makro: {macro.get('score', 0)}/20 (CPI: {cpi_label} | Fed: {fed_label})\n"
-            f"• Fear & Greed: {fg.get('score', 0)}/15 (nilai: {fg_label})\n"
-            f"• Funding: {fr.get('score', 0)}/15 (avg: {fr_label})\n"
-            f"• BTC Dominance: {dom.get('score', 0)}/10 (nilai: {dom_label})\n\n"
+            f"{breakdown}\n\n"
             f"{result.get('summary', 'Seimbang — belum ada arah dominan.')}\n\n"
             f"⏰ {result.get('timestamp', '—')}"
         )

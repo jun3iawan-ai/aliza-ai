@@ -127,3 +127,10 @@ def recording_on(monkeypatch):
     from interfaces import telegram_bot as _tb
     monkeypatch.setattr(_tb, "SIGNAL_TRACKING_RECORDING_ENABLED", True)
     monkeypatch.setattr(_tb, "DETERMINISTIC_SIGNAL_ENABLED", True)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_market_context_export(tmp_path, monkeypatch):
+    """Test tidak boleh menulis /var/lib/market-context/context.json produksi."""
+    monkeypatch.setenv("MARKET_CONTEXT_PATH", str(tmp_path / "market-context" / "context.json"))
+    yield
