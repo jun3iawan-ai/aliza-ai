@@ -5759,9 +5759,20 @@ def _format_watchlist_notice(notice: dict, unsupported: list) -> str:
     return msg
 
 
+_WATCHLIST_LAST_LOG: tuple | None = None
+
+
 def _watchlist_sync_blocking() -> None:
-    refresh_watchlist()
+    global _WATCHLIST_LAST_LOG
+    res = refresh_watchlist()
     coin_support.maybe_refresh()
+    symbols = res["symbols"]
+    skipped = [c for c in symbols if coin_support.is_unsupported(c)]
+    key = (tuple(symbols), res["status"], tuple(skipped))
+    if key != _WATCHLIST_LAST_LOG:   # log ringkas sekali saat pertama jalan dan tiap daftar/status berubah
+        _WATCHLIST_LAST_LOG = key
+        logging.info("watchlist: sumber=%s total=%d aktif=%d dilewati_tanpa_data=%s simbol=%s",
+                     res["status"], len(symbols), len(symbols) - len(skipped), skipped, ",".join(symbols))
 
 
 async def watchlist_sync_job(context: ContextTypes.DEFAULT_TYPE) -> None:
