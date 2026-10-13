@@ -6076,7 +6076,7 @@ async def morning_brief_job(context: ContextTypes.DEFAULT_TYPE):
 
     active_sig = None
     try:
-        active_sig = scan_for_signals()
+        active_sig = _scan_for_signals_gated()
     except Exception as e:
         logging.warning("morning_brief scan_for_signals: %s", e)
 
@@ -6227,7 +6227,7 @@ async def evening_summary_job(context: ContextTypes.DEFAULT_TYPE):
 
     active_sig = None
     try:
-        active_sig = scan_for_signals()
+        active_sig = _scan_for_signals_gated()
     except Exception as e:
         logging.warning("evening_summary scan_for_signals: %s", e)
 
@@ -7632,6 +7632,19 @@ SIGNAL_TRACKING_DISABLED_TEXT = (
 # dan _run_shadow_e3. Fungsi di engine/trading/signal_tracker.py sengaja tidak diubah.
 SIGNAL_TRACKING_RECORDING_ENABLED = False
 
+# Scanner sinyal deterministik (scan_for_signals + dispatch-nya) DIMATIKAN EKSPLISIT (13 Okt 2026).
+# Sebelumnya hanya "mati" karena drawdown breaker kebetulan aktif (loss streak 41). Flag ini
+# tidak bergantung pada breaker. Efek: tidak ada sinyal trade yang dikirim; morning_brief dan
+# evening_summary memakai jalur normal `active_signal=None` (tidak ada sinyal aktif).
+DETERMINISTIC_SIGNAL_ENABLED = False
+
+
+def _scan_for_signals_gated():
+    """scan_for_signals() hanya bila DETERMINISTIC_SIGNAL_ENABLED; selain itu None."""
+    if not DETERMINISTIC_SIGNAL_ENABLED:
+        return None
+    return scan_for_signals()
+
 
 async def signal_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """NONAKTIF (13 Okt 2026): winrate sinyal menggelembung & fitur tracking tidak dipakai lagi."""
@@ -7873,6 +7886,9 @@ async def _dispatch_and_record_deterministic_signal(sig: dict, chat_id) -> bool:
         except Exception as dd_err:
             logging.debug("drawdown check failed, defaulting to allowed: %s", dd_err)
 
+    if not DETERMINISTIC_SIGNAL_ENABLED:
+        return False
+
     sent = await process_signal(
         key,
         uni,
@@ -8061,7 +8077,7 @@ async def snapshot_job(context: ContextTypes.DEFAULT_TYPE):
 
         # High probability trade (strategy): unified gateway (risk + dedup + state)
         try:
-            sig = scan_for_signals()
+            sig = _scan_for_signals_gated()
             if sig:
                 chat_id = context.bot_data.get("chat_id")
                 await _dispatch_and_record_deterministic_signal(sig, chat_id)

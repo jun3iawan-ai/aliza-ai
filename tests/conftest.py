@@ -126,3 +126,4 @@ def recording_on(monkeypatch):
     Dipakai test yang memang menguji mekanisme perekaman/tracker."""
     from interfaces import telegram_bot as _tb
     monkeypatch.setattr(_tb, "SIGNAL_TRACKING_RECORDING_ENABLED", True)
+    monkeypatch.setattr(_tb, "DETERMINISTIC_SIGNAL_ENABLED", True)

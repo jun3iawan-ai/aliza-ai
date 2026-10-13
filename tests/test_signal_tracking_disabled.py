@@ -28,6 +28,7 @@ def test_parse_and_record_signals_writes_nothing(monkeypatch):
 
 
 def test_deterministic_dispatch_does_not_record(monkeypatch):
+    monkeypatch.setattr(telegram_bot, "DETERMINISTIC_SIGNAL_ENABLED", True)  # uji gate rekam saja
     rec = Mock()
     monkeypatch.setattr(telegram_bot, "record_signal", rec)
     monkeypatch.setattr(telegram_bot, "process_signal", AsyncMock(return_value=True))
@@ -67,3 +68,29 @@ def test_tracker_module_and_old_rows_untouched(isolated_tracker_db):
     assert row_id
     with signal_tracker._connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM signal_tracking").fetchone()[0] == 1
+
+
+def test_deterministic_scanner_flag_off_by_default():
+    assert telegram_bot.DETERMINISTIC_SIGNAL_ENABLED is False
+
+
+def test_scan_gate_does_not_call_scanner_when_off(monkeypatch):
+    scan = Mock(return_value={"coin": "BTC"})
+    monkeypatch.setattr(telegram_bot, "scan_for_signals", scan)
+    assert telegram_bot._scan_for_signals_gated() is None
+    scan.assert_not_called()
+
+
+def test_scan_gate_calls_scanner_when_on(monkeypatch):
+    scan = Mock(return_value={"coin": "BTC"})
+    monkeypatch.setattr(telegram_bot, "scan_for_signals", scan)
+    monkeypatch.setattr(telegram_bot, "DETERMINISTIC_SIGNAL_ENABLED", True)
+    assert telegram_bot._scan_for_signals_gated() == {"coin": "BTC"}
+
+
+def test_dispatch_function_refuses_when_flag_off_even_if_breaker_inactive(monkeypatch):
+    process = AsyncMock(return_value=True)
+    monkeypatch.setattr(telegram_bot, "process_signal", process)
+    sig = {"coin": "BTC", "setup": "PULLBACK LONG", "side": "LONG", "entry": 100, "sl": 99, "tp1": 102}
+    assert asyncio.run(telegram_bot._dispatch_and_record_deterministic_signal(sig, "chat")) is False
+    process.assert_not_called()
