@@ -89,12 +89,12 @@ class TelegramMenuRestructureTests(IsolatedAsyncioTestCase):
 
         commands = set_commands.await_args.args[0]
         names = {command.command for command in commands}
+        self.assertNotIn("weekly_winrate", names)  # dinonaktifkan 13 Okt 2026
         self.assertTrue(
             {
                 "performance",
                 "alert_stats",
                 "snapshot",
-                "weekly_winrate",
                 "shadow_promotion_check",
             }.issubset(names)
         )

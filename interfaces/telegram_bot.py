@@ -1271,7 +1271,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/performance\n"
             "Kinerja trade (RR/PF)\n\n"
             "/signal_stats\n"
-            "Akurasi sinyal produksi (alias: /stats)\n\n"
+            "NONAKTIF — pelacakan sinyal & winrate dimatikan (alias: /stats)\n\n"
             "⚙️ System\n"
             "/status\n"
             "Status sistem Aliza\n\n"
@@ -7618,63 +7618,20 @@ async def signal_check_job(context: ContextTypes.DEFAULT_TYPE):
         logging.warning("signal_check_job: %s", e)
 
 
+SIGNAL_TRACKING_DISABLED_TEXT = (
+    "⛔ Fitur pelacakan sinyal & winrate sudah NONAKTIF.\n"
+    "Aliza sekarang alat bantu keputusan entry: pakai /cek <coin> untuk cek entry "
+    "dan /levels untuk level kunci.\n"
+    "Data lama tetap tersimpan di database (tidak dihapus)."
+)
+
+
 async def signal_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("COMMAND RECEIVED: /signal_stats")
+    """NONAKTIF (13 Okt 2026): winrate sinyal menggelembung & fitur tracking tidak dipakai lagi."""
+    logging.info("COMMAND RECEIVED: /signal_stats (nonaktif)")
     target = update.effective_message
-    if not target:
-        return
-    try:
-        stats = get_signal_stats()
-        if int(stats.get("total_signals", 0)) == 0:
-            await target.reply_text("Belum ada data sinyal yang tercatat.")
-            return
-
-        best = stats.get("best_trade")
-        worst = stats.get("worst_trade")
-        best_line = "Best trade: —"
-        worst_line = "Worst trade: —"
-        if best:
-            best_line = (
-                f"Best trade: {best.get('coin', '—')} {best.get('setup', '—')} "
-                f"{float(best.get('pnl_pct', 0.0)):+.2f}%"
-            )
-        if worst:
-            worst_line = (
-                f"Worst trade: {worst.get('coin', '—')} {worst.get('setup', '—')} "
-                f"{float(worst.get('pnl_pct', 0.0)):+.2f}%"
-            )
-
-        lines = [
-            "📊 Signal Accuracy Stats",
-            "",
-            f"Total sinyal: {int(stats.get('total_signals', 0))}",
-            (
-                f"✅ WIN: {int(stats.get('win', 0))} | ❌ LOSS: {int(stats.get('loss', 0))} | "
-                f"⏳ Open: {int(stats.get('open', 0))} | ⌛ Expired: {int(stats.get('expired', 0))}"
-            ),
-            f"Win Rate: {float(stats.get('win_rate', 0.0)):.1f}%",
-            f"Avg P&L: {float(stats.get('avg_pnl', 0.0)):+.1f}%",
-            "",
-            best_line,
-            worst_line,
-            "",
-            "Per Coin:",
-        ]
-        by_coin = stats.get("by_coin") or []
-        if by_coin:
-            for row in by_coin:
-                lines.append(
-                    f"{row.get('coin', '—')}: {int(row.get('win', 0))}W/{int(row.get('loss', 0))}L — {float(row.get('win_rate', 0.0)):.1f}% win rate"
-                )
-        else:
-            lines.append("Belum ada data per coin.")
-        lines.append("")
-        lines.append(f"⏰ {_wib_now_label()}")
-        await target.reply_text("\n".join(lines))
-    except Exception as e:
-        logging.warning("signal_stats_command: %s", e)
-        await target.reply_text("Terjadi kesalahan saat membaca statistik sinyal.")
-
+    if target:
+        await target.reply_text(SIGNAL_TRACKING_DISABLED_TEXT)
 
 
 async def shadow_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7852,8 +7809,10 @@ async def weekly_winrate_summary_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def weekly_winrate_summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("COMMAND RECEIVED: /weekly_winrate")
-    await weekly_winrate_summary_job(context)
+    logging.info("COMMAND RECEIVED: /weekly_winrate (nonaktif)")
+    target = update.effective_message
+    if target:
+        await target.reply_text(SIGNAL_TRACKING_DISABLED_TEXT)
 
 
 async def shadow_promotion_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -8222,7 +8181,6 @@ async def _post_init_set_bot_commands(application):
                 BotCommand("alert_stats", "Statistik alert dan digest"),
                 BotCommand("snapshot", "Snapshot market saat ini"),
                 
-                BotCommand("weekly_winrate", "Ringkasan winrate mingguan"),
                 BotCommand("shadow_stats", "Statistik shadow E3"),
                 BotCommand("shadow_promotion_check", "Cek promosi Shadow E3"),
             ]
@@ -8369,22 +8327,10 @@ def main():
             name="morning_brief",
         )
         logging.info("Morning brief job scheduled (daily 01:00 UTC = 08:00 WIB).")
-        # Weekly winrate dimatikan default (9 Okt 2026): metrik sinyal bot, dan
-        # winrate llm menggelembung karena evaluator tanpa cek fill entry
-        # (lihat audit 03-analisis/23). /weekly_winrate manual tetap ada.
-        if os.getenv("WEEKLY_WINRATE_SCHEDULE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}:
-            app.job_queue.run_daily(
-                weekly_winrate_summary_job,
-                time=time(hour=1, minute=10, second=0, tzinfo=timezone.utc),
-                days=(0,),
-                name="weekly_winrate_summary",
-            )
-            logging.info(
-                "Weekly winrate summary job scheduled (Monday 01:10 UTC = 08:10 WIB, "
-                "10 minutes after morning brief to avoid dispatch overlap)."
-            )
-        else:
-            logging.info("Weekly winrate summary job DISABLED (WEEKLY_WINRATE_SCHEDULE_ENABLED=false).")
+        # Weekly winrate job DIMATIKAN PERMANEN (13 Okt 2026): Aliza tidak lagi melacak
+        # sinyal/winrate (lihat audit 03-analisis/23). Env WEEKLY_WINRATE_SCHEDULE_ENABLED
+        # sengaja tidak dibaca lagi supaya tidak bisa menyala tanpa sengaja.
+        logging.info("Weekly winrate summary job DISABLED (permanen; tracking sinyal/winrate nonaktif).")
         app.job_queue.run_daily(
             evening_summary_job,
             time=time(hour=13, minute=0, second=0, tzinfo=timezone.utc),
