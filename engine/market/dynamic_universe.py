@@ -11,7 +11,7 @@ import logging
 import requests
 import numpy as np
 
-from engine.market.market_universe import CORE_COINS, MAJOR_COINS
+from engine.market.market_universe import CORE_COINS, MAJOR_COINS, maybe_refresh_watchlist
 
 # Fallback when CoinGecko fails or returns empty; always return at least these
 FALLBACK_COINS = list(MAJOR_COINS) if MAJOR_COINS else list(CORE_COINS)
@@ -269,12 +269,13 @@ def get_dynamic_coins():
     global _last_refresh
     if (time.time() - _last_refresh) > UNIVERSE_CACHE_SEC:
         _refresh_universe()
-    result = list(_dynamic_coins) if _dynamic_coins else list(FALLBACK_COINS)
+    result = list(_dynamic_coins) if _dynamic_coins else list(MAJOR_COINS or FALLBACK_COINS)
     return result if result else list(CORE_COINS)
 
 
 def get_tradable_coins():
-    """Return fixed custom watchlist. Auto-scan disabled."""
+    """Return watchlist (dari Porto; auto-scan dinonaktifkan)."""
+    maybe_refresh_watchlist()
     return list(CORE_COINS)
 
 

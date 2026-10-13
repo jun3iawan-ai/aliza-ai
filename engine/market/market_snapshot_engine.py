@@ -23,6 +23,7 @@ from engine.market.market_universe import (
     MAJOR_COINS,
     get_polling_coins,
     get_universe_status,
+    get_analyzable_coins,
     record_coin_validation,
 )
 from engine.market.market_analyzer import get_data_coverage
@@ -87,10 +88,10 @@ def get_tradable_coins_fallback():
     try:
         coins = get_tradable_coins()
         if coins:
-            return get_polling_coins(coins)
+            return get_analyzable_coins(coins)
     except Exception as e:
         logging.warning("market_snapshot_engine get_tradable_coins: %s", e)
-    return get_polling_coins(MAJOR_COINS)
+    return get_analyzable_coins(MAJOR_COINS)
 
 
 def validate_market_data(data):
