@@ -14,6 +14,9 @@ from engine.market import market_analyzer
 from engine.trading import signal_tracker
 
 
+pytestmark = pytest.mark.usefixtures("recording_on")
+
+
 @pytest.fixture
 def isolated_tracker_db(tmp_path, monkeypatch):
     db_path = tmp_path / "signals.db"

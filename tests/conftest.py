@@ -118,3 +118,11 @@ def _isolate_brief_map_state(tmp_path, monkeypatch):
     if tb is not None and hasattr(tb, "_BRIEF_MAP_STATE_PATH"):
         monkeypatch.setattr(tb, "_BRIEF_MAP_STATE_PATH", str(tmp_path / "brief_map_state.json"))
     yield
+
+
+@pytest.fixture
+def recording_on(monkeypatch):
+    """Nyalakan perekaman signal_tracking (default di produksi: MATI sejak 13 Okt 2026).
+    Dipakai test yang memang menguji mekanisme perekaman/tracker."""
+    from interfaces import telegram_bot as _tb
+    monkeypatch.setattr(_tb, "SIGNAL_TRACKING_RECORDING_ENABLED", True)

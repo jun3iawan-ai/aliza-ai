@@ -230,43 +230,17 @@ class TestReadOnly:
         for keyword in ("INSERT INTO", "UPDATE ", "DELETE FROM"):
             assert keyword not in source, f"unexpected write statement: {keyword}"
 
-    def test_command_does_not_touch_shadow_env_flags(self, isolated_tracker_db, monkeypatch):
+
+class TestCommandDisabled:
+    def test_command_replies_disabled_and_ignores_shadow_env(self, monkeypatch):
         monkeypatch.setenv("SHADOW_E3_ENABLED", "true")
         monkeypatch.setenv("SHADOW_E3_DISPATCH", "true")
-        _bulk_seed_closed(_unique_coin_pnls([1.0] * 5))
-
         reply_mock = AsyncMock()
         update = MagicMock()
         update.effective_message = MagicMock(reply_text=reply_mock)
-        monkeypatch.setattr(telegram_bot, "_authorized_chat", lambda _update: True)
 
         asyncio.run(telegram_bot.shadow_promotion_check_command(update, MagicMock()))
 
-        assert os.environ.get("SHADOW_E3_ENABLED") == "true"
+        reply_mock.assert_called_once_with(telegram_bot.SIGNAL_TRACKING_DISABLED_TEXT)
+        assert os.environ.get("SHADOW_E3_ENABLED") == "true"   # tidak diubah
         assert os.environ.get("SHADOW_E3_DISPATCH") == "true"
-        reply_mock.assert_called_once()
-
-
-class TestCommandAuthorization:
-    def test_unauthorized_chat_gets_rejected(self, monkeypatch):
-        reply_mock = AsyncMock()
-        update = MagicMock()
-        update.effective_message = MagicMock(reply_text=reply_mock)
-        monkeypatch.setattr(telegram_bot, "_authorized_chat", lambda _update: False)
-
-        asyncio.run(telegram_bot.shadow_promotion_check_command(update, MagicMock()))
-
-        reply_mock.assert_called_once_with("⛔ Unauthorized.")
-
-    def test_authorized_chat_receives_report(self, isolated_tracker_db, monkeypatch):
-        _bulk_seed_closed(_unique_coin_pnls([1.0] * 5))
-        reply_mock = AsyncMock()
-        update = MagicMock()
-        update.effective_message = MagicMock(reply_text=reply_mock)
-        monkeypatch.setattr(telegram_bot, "_authorized_chat", lambda _update: True)
-
-        asyncio.run(telegram_bot.shadow_promotion_check_command(update, MagicMock()))
-
-        reply_mock.assert_called_once()
-        sent_text = reply_mock.call_args.args[0]
-        assert "KRITERIA PROMOSI" in sent_text
