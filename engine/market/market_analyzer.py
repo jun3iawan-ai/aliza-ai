@@ -91,23 +91,38 @@ def _safe_float(val, default=None):
         return default
 
 
+BINANCE_FUTURES_TICKER_URL = "https://fapi.binance.com/fapi/v1/ticker/price"
+
+
 def _get_price_from_binance(symbol):
-    """Fetch current price from Binance ticker. Returns float or None."""
+    """Fetch current price from Binance ticker (spot; coin futures-only -> ticker futures). Float atau None."""
     if not symbol:
         return None
+    sym = (symbol or "").upper().strip()
     try:
-        sym = (symbol or "").upper().strip()
         r = requests.get(
             BINANCE_TICKER_URL,
             params={"symbol": f"{sym}USDT"},
             headers=HEADERS,
             timeout=10,
         )
-        if r.status_code != 200:
-            return None
-        data = r.json()
-        if isinstance(data, dict) and "price" in data:
-            return _safe_float(data["price"])
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, dict) and "price" in data:
+                return _safe_float(data["price"])
+    except Exception:
+        pass
+    # Pasti tidak listing spot tapi ada perpetual (mis. FARTCOIN): pakai harga futures, bukan CoinGecko.
+    try:
+        from engine.market import coin_support
+        if coin_support.has_spot(sym) is False:
+            fut_sym = coin_support.futures_symbol(sym)
+            if fut_sym:
+                r = requests.get(BINANCE_FUTURES_TICKER_URL, params={"symbol": fut_sym}, headers=HEADERS, timeout=10)
+                if r.status_code == 200:
+                    data = r.json()
+                    if isinstance(data, dict) and "price" in data:
+                        return _safe_float(data["price"])
     except Exception:
         pass
     return None
@@ -134,13 +149,25 @@ def _extract_closed_kline_closes(data, now_ms=None):
 
 def _get_binance_klines(symbol_usdt, interval, limit=100):
     """Spot klines; fallback ke futures jika histori spot terlalu pendek."""
-    closes = _get_binance_spot_klines(symbol_usdt, interval, limit)
-    need = min(int(limit or 0), SPOT_HISTORY_MIN)
-    if len(closes) >= need:
-        return closes
     sym = (symbol_usdt or "").upper().strip()
     if not sym.endswith("USDT"):
         sym = f"{sym}USDT"
+    cache_sym = sym   # kunci cache klines selalu {COIN}USDT
+    try:
+        from engine.market import coin_support
+        no_spot = coin_support.has_spot(sym[:-4]) is False   # pasti tidak listing spot (mis. FARTCOIN)
+        fut_sym = coin_support.futures_symbol(sym[:-4]) if no_spot else None
+    except Exception:  # noqa: BLE001
+        no_spot, fut_sym = False, None
+    if no_spot:   # langsung futures; cek cache dulu supaya tidak unduh ulang tiap panggilan
+        closes = list(get_cached_klines(cache_sym, interval) or [])
+    else:
+        closes = _get_binance_spot_klines(symbol_usdt, interval, limit)
+    need = min(int(limit or 0), SPOT_HISTORY_MIN)
+    if len(closes) >= need:
+        return closes
+    if fut_sym:
+        sym = fut_sym
     try:
         r = requests.get(BINANCE_FUTURES_KLINES_URL,
                          params={"symbol": sym, "interval": interval, "limit": min(limit, 1000)},
@@ -149,7 +176,7 @@ def _get_binance_klines(symbol_usdt, interval, limit=100):
             fut = _extract_closed_kline_closes(r.json())
             if len(fut) > len(closes):
                 logging.info("klines %s %s: spot %d candle, pakai futures %d", sym, interval, len(closes), len(fut))
-                set_cached_klines(sym, interval, fut)
+                set_cached_klines(cache_sym, interval, fut)
                 return fut
     except Exception as e:  # noqa: BLE001
         logging.debug("futures klines fallback %s %s: %s", sym, interval, e)

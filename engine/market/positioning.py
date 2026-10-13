@@ -98,7 +98,7 @@ def _price_change_24h(sym: str) -> float | None:
 def fetch_coin(coin: str) -> dict[str, Any] | None:
     """Data positioning satu coin (cache 5 menit). None jika tidak ada di futures."""
     coin = str(coin).strip().upper()
-    sym = frm.SYMBOL_MAP.get(coin)
+    sym = frm.futures_symbol(coin)
     if not sym:
         return None
     now = time.time()
@@ -127,7 +127,7 @@ def fetch_coin(coin: str) -> dict[str, Any] | None:
 
 def collect(coins: list[str]) -> list[dict[str, Any]]:
     """Ambil positioning paralel untuk coin yang tersedia di Binance Futures."""
-    eligible = [c for c in coins if c in frm.SYMBOL_MAP]
+    eligible = [c for c in coins if frm.futures_symbol(c)]
     with ThreadPoolExecutor(max_workers=6) as ex:
         rows = list(ex.map(fetch_coin, eligible))
     return [r for r in rows if r]

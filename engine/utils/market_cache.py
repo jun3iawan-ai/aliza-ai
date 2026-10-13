@@ -6,7 +6,7 @@ Digunakan oleh opportunity_scanner saat snapshot sudah stale (>90s).
 import time
 
 from engine.market_signal import generate_signal
-from engine.market.market_universe import MAJOR_COINS
+from engine.market.market_universe import MAJOR_COINS, get_analyzable_coins
 
 try:
     from engine.market.dynamic_universe import get_tradable_coins
@@ -38,6 +38,7 @@ def get_all_market_data():
     coins = get_tradable_coins() if get_tradable_coins else None
     if not coins:
         coins = list(MAJOR_COINS)
+    coins = get_analyzable_coins(coins)
     out = {}
     for symbol in coins:
         data = get_market_data(symbol)

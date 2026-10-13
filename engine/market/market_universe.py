@@ -1,7 +1,7 @@
 """
 ALIZA MARKET UNIVERSE
 Daftar crypto yang dianalisa oleh Aliza.
-Fixed watchlist 21 coin.
+Watchlist = daftar coin portofolio dari bot Porto (/var/lib/porto/coins.json).
 """
 
 import logging
@@ -9,17 +9,22 @@ import os
 import threading
 import time
 
+from engine.market import watchlist_source as _wl
+
 logger = logging.getLogger(__name__)
 
-# Fixed watchlist — tidak berubah secara dynamic
-CORE_COINS = [
+# Daftar LAMA (fallback terakhir bila /var/lib/porto/coins.json belum pernah terbaca & tak ada cache).
+# Sumber utama sekarang: daftar portofolio bot Porto (lihat watchlist_source.py).
+LEGACY_CORE_COINS = (
     "BTC", "ETH", "BNB", "SOL", "XRP",
     "ADA", "SUI", "ARB", "PEPE", "JTO",
     "ETHFI", "WLD", "OM", "ASTER", "XPL",
     "TAO", "HYPE", "XAUT",
-]
-# 9 Okt 2026: BONE (tidak ada di Binance), FARTCOIN & ZEREBRO (futures-only,
-# ZEREBRO tidak likuid) dihapus dari watchlist.
+)
+
+# Tiga list ini DIPERBARUI DI TEMPAT (in-place) oleh refresh_watchlist(), sehingga modul yang
+# meng-import MAJOR_COINS / CORE_COINS langsung ikut berubah tanpa restart.
+CORE_COINS = list(LEGACY_CORE_COINS)
 
 # Tidak dipakai lagi — dynamic universe dinonaktifkan
 DEFAULT_DYNAMIC_COINS = []
@@ -98,6 +103,8 @@ def record_coin_validation(coin, valid, reason=None, now=None):
 
 def get_polling_coins(coins=None, now=None):
     """Return coins allowed by static exclusions and active cooldowns."""
+    if coins is None:
+        maybe_refresh_watchlist()
     selected = list(CORE_COINS if coins is None else coins)
     current = float(time.time() if now is None else now)
     excluded = get_universe_exclude()
@@ -136,4 +143,63 @@ def get_universe_status(coins=None, now=None):
         "fail_counts": failures,
         "fail_threshold": get_coin_fail_threshold(),
         "suspend_hours": get_coin_suspend_hours(),
+        "unsupported": [c for c in selected if _unsupported(c)],
     }
+
+
+def _unsupported(coin):
+    try:
+        from engine.market import coin_support
+        return coin_support.is_unsupported(coin)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _apply_watchlist(symbols):
+    """Ganti isi CORE/MAJOR/TRADABLE_COINS di tempat (objek list tetap sama)."""
+    new = list(symbols)
+    for lst in (CORE_COINS, MAJOR_COINS, TRADABLE_COINS):
+        if lst != new:
+            lst[:] = new
+
+
+def refresh_watchlist(force=False):
+    """Baca ulang daftar Porto bila perlu dan terapkan. Return dict hasil (symbols,status,reason,changed)."""
+    res = _wl.refresh(LEGACY_CORE_COINS, force=force)
+    _apply_watchlist(res["symbols"])
+    return res
+
+
+def maybe_refresh_watchlist():
+    """Versi aman untuk jalur panas: tidak pernah melempar, murah (stat file tiap >=5 detik)."""
+    try:
+        return refresh_watchlist()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("watchlist refresh gagal: %s", e)
+        return None
+
+
+def pending_watchlist_notice():
+    return _wl.pending_notice()
+
+
+def mark_watchlist_announced():
+    _wl.mark_announced()
+
+
+def get_watchlist_status():
+    return _wl.get_status()
+
+
+def get_analyzable_coins(coins=None, now=None):
+    """Coin pantau yang punya data (buang yang tak ada di spot MAUPUN futures Binance, mis. BONE)."""
+    try:
+        from engine.market import coin_support
+        coin_support.maybe_refresh()
+    except Exception:  # noqa: BLE001
+        pass
+    return [c for c in get_polling_coins(coins, now) if not _unsupported(c)]
+
+
+# Muat daftar saat modul pertama kali di-import (tanpa notifikasi; notifikasi dikirim job).
+maybe_refresh_watchlist()

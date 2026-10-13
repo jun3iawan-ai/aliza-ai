@@ -1,5 +1,15 @@
 """Fixture global test suite."""
+import os
 import sys
+import tempfile
+
+# Isolasi SEBELUM modul Aliza di-import: tes tidak boleh membaca /var/lib/porto/coins.json asli,
+# menulis cache produksi, atau memakai jaringan untuk cek dukungan coin.
+_TMP = tempfile.mkdtemp(prefix="aliza-test-")
+os.environ["PORTO_COINS_PATH"] = os.path.join(_TMP, "no-such-dir", "coins.json")
+os.environ["ALIZA_WATCHLIST_CACHE"] = os.path.join(_TMP, "watchlist_cache.json")
+os.environ["ALIZA_COIN_SUPPORT_CACHE"] = os.path.join(_TMP, "coin_support_cache.json")
+os.environ["ALIZA_COIN_SUPPORT_OFFLINE"] = "1"
 
 import pytest
 
@@ -134,3 +144,20 @@ def _isolate_market_context_export(tmp_path, monkeypatch):
     """Test tidak boleh menulis /var/lib/market-context/context.json produksi."""
     monkeypatch.setenv("MARKET_CONTEXT_PATH", str(tmp_path / "market-context" / "context.json"))
     yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_watchlist(tmp_path, monkeypatch):
+    """Tiap tes mulai dari daftar lama + status loader/dukungan-coin kosong (tanpa kebocoran antar tes)."""
+    from engine.market import coin_support as _cs
+    from engine.market import market_universe as _mu
+    from engine.market import watchlist_source as _wl
+    monkeypatch.setenv("ALIZA_WATCHLIST_CACHE", str(tmp_path / "watchlist_cache.json"))
+    monkeypatch.setenv("ALIZA_COIN_SUPPORT_CACHE", str(tmp_path / "coin_support_cache.json"))
+    _wl.reset_for_tests()
+    _cs.reset_for_tests()
+    _mu._apply_watchlist(_mu.LEGACY_CORE_COINS)
+    yield
+    _wl.reset_for_tests()
+    _cs.reset_for_tests()
+    _mu._apply_watchlist(_mu.LEGACY_CORE_COINS)

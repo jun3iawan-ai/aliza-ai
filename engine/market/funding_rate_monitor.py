@@ -13,6 +13,7 @@ from typing import Any
 import requests
 
 from engine.alerts import notification_governor as ngov
+from engine.market import coin_support
 
 try:
     from zoneinfo import ZoneInfo
@@ -43,7 +44,29 @@ SYMBOL_MAP = {
     "ASTER": "ASTERUSDT", "XPL": "XPLUSDT", "TAO": "TAOUSDT",
     "HYPE": "HYPEUSDT", "XAUT": "XAUTUSDT",
     "PEPE": "1000PEPEUSDT",
+    "TRX": "TRXUSDT", "ZEC": "ZECUSDT", "FARTCOIN": "FARTCOINUSDT",
 }
+
+
+def futures_symbol(coin: str) -> str | None:
+    """Simbol perpetual USDT-M untuk coin, atau None bila tidak ada futures (dilewati, bukan error).
+    Bila daftar Binance sudah diketahui (coin_support) itu yang dipakai; selain itu peta statis."""
+    c = str(coin or "").strip().upper()
+    if not c:
+        return None
+    if coin_support.known():
+        return coin_support.futures_symbol(c)
+    return SYMBOL_MAP.get(c)
+
+
+def _watchlist() -> list[str]:
+    """Coin pantau (dari Porto) yang punya futures. Coin tanpa futures dilewati rapi."""
+    try:
+        from engine.market.market_universe import get_polling_coins
+        coins = get_polling_coins()
+    except Exception:  # noqa: BLE001
+        coins = list(WATCHLIST)
+    return [c for c in coins if futures_symbol(c)]
 
 
 def classify_fr_zone(fr: float | None) -> dict:
@@ -83,7 +106,7 @@ def get_cfra_analysis() -> list[dict]:
     Return list of dict per coin yang berhasil di-fetch.
     """
     results = []
-    for coin in WATCHLIST:
+    for coin in _watchlist():
         fd = get_funding_rate_data(coin)
         if not fd:
             continue
@@ -173,7 +196,7 @@ def get_funding_rate_data(symbol: str) -> dict[str, Any] | None:
     Cache per coin TTL 15 menit.
     """
     coin = symbol.strip().upper()
-    sym = SYMBOL_MAP.get(coin)
+    sym = futures_symbol(coin)
     if not sym:
         return None
     now = time.time()
@@ -221,7 +244,7 @@ def get_open_interest(symbol: str) -> float | None:
     Cache hasil per coin TTL 15 menit (terpisah dari cache funding struct).
     """
     coin = symbol.strip().upper()
-    sym = SYMBOL_MAP.get(coin)
+    sym = futures_symbol(coin)
     if not sym:
         return None
     now = time.time()
@@ -283,7 +306,7 @@ def get_oi_delta_and_ls_ratio(coins: list[str]) -> dict[str, dict[str, Any]]:
 
     for raw in coins:
         coin = str(raw).strip().upper()
-        sym = SYMBOL_MAP.get(coin)
+        sym = futures_symbol(coin)
         if not sym:
             out[coin] = {"oi_delta_pct": None, "ls_ratio": None}
             continue
@@ -335,7 +358,7 @@ def get_all_funding_data() -> dict[str, dict[str, Any]]:
     next_funding_time sebagai string untuk brief / tabel.
     """
     out: dict[str, dict[str, Any]] = {}
-    for coin in WATCHLIST:
+    for coin in _watchlist():
         fd = get_funding_rate_data(coin)
         if not fd:
             continue
@@ -383,7 +406,7 @@ def format_funding_section_for_brief() -> str:
     data = get_all_funding_data()
     oi_ls_map: dict[str, dict[str, Any]] = {}
     try:
-        oi_ls_map = get_oi_delta_and_ls_ratio(list(WATCHLIST))
+        oi_ls_map = get_oi_delta_and_ls_ratio(list(_watchlist()))
     except Exception as e:
         logger.debug("format_funding_section_for_brief get_oi_delta_and_ls_ratio: %s", e)
         oi_ls_map = {}
@@ -391,7 +414,7 @@ def format_funding_section_for_brief() -> str:
     lines = ["🔄 Funding Rate & OI"]
     if not data:
         return "🔄 Funding Rate & OI\nData tidak tersedia"
-    for coin in WATCHLIST:
+    for coin in _watchlist():
         row = data.get(coin)
         if not row:
             continue
@@ -421,10 +444,10 @@ def format_funding_section_for_brief() -> str:
     # Auto-interpret funding divergence
     interpretations = []
     if data:
-        neg_coins = [c for c in WATCHLIST if data.get(c) and (data[c].get("funding_rate") or 0) < -0.0003]
-        pos_coins = [c for c in WATCHLIST if data.get(c) and (data[c].get("funding_rate") or 0) > 0.0003]
-        extreme_neg = [c for c in WATCHLIST if data.get(c) and (data[c].get("funding_rate") or 0) < -0.005]
-        extreme_pos = [c for c in WATCHLIST if data.get(c) and (data[c].get("funding_rate") or 0) > 0.005]
+        neg_coins = [c for c in _watchlist() if data.get(c) and (data[c].get("funding_rate") or 0) < -0.0003]
+        pos_coins = [c for c in _watchlist() if data.get(c) and (data[c].get("funding_rate") or 0) > 0.0003]
+        extreme_neg = [c for c in _watchlist() if data.get(c) and (data[c].get("funding_rate") or 0) < -0.005]
+        extreme_pos = [c for c in _watchlist() if data.get(c) and (data[c].get("funding_rate") or 0) > 0.005]
 
         if extreme_neg:
             coins_str = ", ".join(extreme_neg)
@@ -444,7 +467,7 @@ def format_funding_section_for_brief() -> str:
             interpretations.append("✅ FR semua coin netral — tidak ada positioning ekstrem")
 
         ls_notes: list[str] = []
-        for c in WATCHLIST:
+        for c in _watchlist():
             ls_v = (oi_ls_map.get(c) or {}).get("ls_ratio")
             if ls_v is not None:
                 try:
@@ -465,7 +488,7 @@ def format_funding_table_for_command() -> str:
     """Tabel singkat untuk /check_funding."""
     data = get_all_funding_data()
     block = ["📌 Funding & Open Interest (Binance USDT-M)"]
-    for coin in WATCHLIST:
+    for coin in _watchlist():
         row = data.get(coin)
         if not row:
             block.append(f"{coin}  —")

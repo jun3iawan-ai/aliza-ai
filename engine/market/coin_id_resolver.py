@@ -1,6 +1,6 @@
 """
 Resolver symbol → CoinGecko ID.
-Prioritas: 1) dynamic_universe.get_coin_id(symbol)  2) COINGECKO_IDS[symbol].
+Prioritas: 1) COINGECKO_IDS (statis)  2) dynamic_universe.get_coin_id(symbol).
 Agar coin dari dynamic universe dapat dianalisis dengan benar.
 """
 
@@ -31,6 +31,8 @@ COINGECKO_IDS = {
     "FARTCOIN": "fartcoin",
     "HYPE": "hyperliquid",
     "ZEREBRO": "zerebro",
+    "TRX": "tron",
+    "ZEC": "zcash",
     "XAUT": "tether-gold",
 }
 
@@ -38,12 +40,17 @@ COINGECKO_IDS = {
 def resolve_coin_id(symbol):
     """
     Resolve symbol (e.g. BTC, ETH) ke CoinGecko coin_id.
-    Prioritas: 1) dynamic_universe.get_coin_id(symbol)  2) COINGECKO_IDS.get(symbol).
+    Prioritas: 1) COINGECKO_IDS (peta statis watchlist)  2) dynamic_universe.get_coin_id(symbol).
+    Statis lebih dulu: get_coin_id() bisa memicu refresh universe CoinGecko (puluhan request, sering 429)
+    untuk simbol yang belum ada di peta dinamis — mahal dan tidak perlu untuk coin watchlist.
     Return str coin_id atau None jika tidak ditemukan.
     """
     if not symbol:
         return None
     sym = (symbol or "").strip().upper()
+    static = COINGECKO_IDS.get(sym)
+    if static:
+        return static
     if _dynamic_get_coin_id:
         try:
             coin_id = _dynamic_get_coin_id(sym)
@@ -51,4 +58,4 @@ def resolve_coin_id(symbol):
                 return coin_id
         except Exception:
             pass
-    return COINGECKO_IDS.get(sym)
+    return None

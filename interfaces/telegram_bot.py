@@ -87,7 +87,14 @@ from engine.market.market_radar_pro_analyzer import (
     format_radar_pro_report,
     format_radar_report,
 )
-from engine.market.market_universe import MAJOR_COINS
+from engine.market.market_universe import (
+    MAJOR_COINS,
+    get_analyzable_coins,
+    mark_watchlist_announced,
+    pending_watchlist_notice,
+    refresh_watchlist,
+)
+from engine.market import coin_support
 from engine.market.coin_condition import (
     build_coin_condition,
     format_near_levels,
@@ -272,7 +279,9 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.WARNING)
 
-ALLOWED_COINS = get_tradable_coins() if get_tradable_coins else list(MAJOR_COINS)
+def _allowed_coins() -> list:
+    """Coin yang boleh dipakai di perintah (ikut daftar pantau Porto, selalu terbaru)."""
+    return get_tradable_coins() if get_tradable_coins else list(MAJOR_COINS)
 
 # Persistent cache — menyimpan nilai terakhir yang berhasil di-fetch (brief header)
 _BRIEF_DATA_CACHE: dict[str, Any] = {
@@ -1097,7 +1106,7 @@ async def menu_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     # Info Coin digabung ke Analisis Coin (tokenomics ikut di kartu kondisi).
     if text in ("🔍 Analisis Coin", "ℹ️ Info Coin"):
-        kb = _build_coin_selector("cond", MAJOR_COINS)
+        kb = _build_coin_selector("cond", get_analyzable_coins(MAJOR_COINS))
         await update.message.reply_text(
             "🔍 ANALISIS COIN\n\nPilih coin untuk melihat kartu kondisinya.",
             reply_markup=kb,
@@ -1510,7 +1519,7 @@ def _get_market_report_text(symbol):
     if not data:
         return None, "Market snapshot belum tersedia. Tunggu beberapa saat."
     symbol = (symbol or "BTC").upper()
-    if symbol not in ALLOWED_COINS:
+    if symbol not in _allowed_coins():
         return None, "Coin tidak tersedia."
     if symbol not in data:
         return None, f"Market data tidak tersedia untuk {symbol}."
@@ -1868,7 +1877,7 @@ async def entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
             coin = (opp.get("coin") or "").upper()
         else:
             coin = arg.upper()
-        if coin not in ALLOWED_COINS:
+        if coin not in _allowed_coins():
             await msg.reply_text("Coin tidak tersedia.")
             return
         setup = entry_price = sl = tp1 = tp2 = None
@@ -2399,7 +2408,7 @@ def _system_status_text(context=None) -> str:
             age = int((datetime.utcnow() - ts).total_seconds())
         except (TypeError, ValueError, AttributeError):
             age = None
-    universe = list(MAJOR_COINS)
+    universe = get_analyzable_coins(MAJOR_COINS)
     n = len(data)
     missing = [c for c in universe if c not in data]
     if age is None or age > 300:
@@ -5738,6 +5747,51 @@ def _format_market_context_alert_message(
     return "\n".join(lines)
 
 
+def _format_watchlist_notice(notice: dict, unsupported: list) -> str:
+    parts = []
+    if notice["added"]:
+        parts.append(f"+{len(notice['added'])} ({', '.join(notice['added'])})")
+    if notice["removed"]:
+        parts.append(f"−{len(notice['removed'])} ({', '.join(notice['removed'])})")
+    msg = f"📋 Daftar pantau diperbarui dari Porto: {', '.join(parts)} — total {notice['total']} coin."
+    if unsupported:
+        msg += f"\nℹ️ Tanpa data Binance (dilewati): {', '.join(unsupported)}."
+    return msg
+
+
+def _watchlist_sync_blocking() -> None:
+    refresh_watchlist()
+    coin_support.maybe_refresh()
+
+
+async def watchlist_sync_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Segarkan daftar pantau dari Porto; kirim 1 notifikasi tiap daftar berubah."""
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, _watchlist_sync_blocking)
+        notice = pending_watchlist_notice()
+        if not notice:
+            return
+        chat_id = None
+        try:
+            if context and getattr(context, "bot_data", None):
+                chat_id = context.bot_data.get("chat_id")
+        except Exception:
+            chat_id = None
+        if not chat_id:
+            chat_id = DEFAULT_CHAT_ID
+        if not chat_id:
+            logging.warning("watchlist_sync: notifikasi tertunda, chat_id belum ada")
+            return
+        unsupported = [c for c in notice["symbols"] if coin_support.is_unsupported(c)]
+        sent = await safe_dispatch(_format_watchlist_notice(notice, unsupported), chat_id=chat_id, force=True)
+        if sent:
+            mark_watchlist_announced()
+        else:
+            logging.warning("watchlist_sync: notifikasi belum terkirim; dicoba lagi siklus berikutnya")
+    except Exception as e:
+        logging.exception("watchlist_sync_job: %s", e)
+
+
 async def market_context_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Alert once when the persisted three-state market context changes."""
     try:
@@ -6531,7 +6585,7 @@ async def check_funding_command(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         from engine.market.positioning import collect, format_positioning
         data = (get_market_snapshot() or {}).get("data") or {}
-        universe = list(data.keys()) or list(MAJOR_COINS)
+        universe = list(data.keys()) or get_analyzable_coins(MAJOR_COINS)
         rows = await asyncio.get_running_loop().run_in_executor(None, collect, universe)
         got = {r["coin"] for r in rows}
         missing = [c for c in universe if c not in got]
@@ -8327,6 +8381,13 @@ def main():
             name="market_context_alert",
         )
         logging.info("Market context alert job scheduled (every 900s, first in 200s).")
+        app.job_queue.run_repeating(
+            watchlist_sync_job,
+            interval=60,
+            first=20,
+            name="watchlist_sync",
+        )
+        logging.info("Watchlist sync job scheduled (every 60s, first in 20s).")
         app.job_queue.run_repeating(
             trend_reversal_checker,
             interval=300,
