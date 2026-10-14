@@ -82,6 +82,7 @@ from engine.market.market_context_engine import (
 import engine.market.market_snapshot_engine as snapshot_state
 from engine.market.market_intelligence import analyze_market_environment
 from engine.market.market_report_formatter import format_market_report
+from engine.market.market_context_export import refresh_radar as refresh_radar_export
 from engine.market.market_radar_pro_analyzer import (
     generate_radar_pro,
     format_radar_pro_report,
@@ -8052,6 +8053,9 @@ async def snapshot_job(context: ContextTypes.DEFAULT_TYPE):
                         with snapshot_state._snapshot_lock:
                             snapshot_state.CB_ALERT_SENT = True
             return
+        # Radar -> context.json (dibaca Porto); best-effort, tidak pernah melempar.
+        await loop.run_in_executor(None, refresh_radar_export)
+
         with snapshot_state._snapshot_lock:
             cb_active = snapshot_state.CIRCUIT_BREAKER_ACTIVE
             cb_alert_sent = snapshot_state.CB_ALERT_SENT

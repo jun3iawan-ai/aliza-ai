@@ -45,7 +45,7 @@ def _trend_arrow(trend):
     return ""
 
 
-def generate_radar_pro():
+def generate_radar_pro(snapshot=None):
     """
     Bangun list radar per coin dari snapshot dengan label intelligence.
     Return list of dict: {"coin": str, "trend": str, "trend_alignment": str, "label": str, "crash_risk": bool}.
@@ -54,7 +54,8 @@ def generate_radar_pro():
     if not get_market_snapshot:
         return radar_data
 
-    snapshot = get_market_snapshot()
+    if snapshot is None:
+        snapshot = get_market_snapshot()
     markets = snapshot.get("data") or {}
     if not markets:
         return radar_data
