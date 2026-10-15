@@ -72,3 +72,9 @@ Hasil nyata pasca-deploy: `context.json` 16:44:37 -> skor 54, `2/16 coin 4H naik
 ## 8. Opsi nanti (tidak dikerjakan)
 - BONE via MEXC (Porto memakai MEXC untuk BONE): butuh sumber harga/klines baru; dicatat sebagai opsi, bukan rencana.
 - Menjadikan subset mayor ikut daftar Porto: mengubah makna skor funding (meme coin ikut dirata-ratakan) — perlu keputusan terpisah.
+
+## 9. Platform di coins.json (15 Okt 2026)
+- Loader hanya membaca `symbols` (dedup, urutan asli); isi `coins[]` (`platform`, `venue`, `chain`, `price_source`) tidak divalidasi,
+  jadi platform baru seperti `tokocrypto` (selain `metamask`, `indodax`) dan simbol yang sama dari beberapa platform (mis. JTO) aman.
+- Coin Tokocrypto dianalisis lewat data Binance bila ada di sana; yang tidak ada di Binance dilewati seperti BONE.
+- Dikunci oleh `tests/test_watchlist_platform.py`.
