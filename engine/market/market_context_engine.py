@@ -155,9 +155,15 @@ def _calculate_market_score() -> dict[str, Any]:
         cpi_change = _safe_float((cpi or {}).get("change") if isinstance(cpi, dict) else None)
         fed_rate = _safe_float((fed or {}).get("value") if isinstance(fed, dict) else None)
         fed_change = _safe_float((fed or {}).get("change") if isinstance(fed, dict) else None)
+        # cpi_change = inflasi BULANAN (MoM); YoY ada di cpi["value"]. Skor tetap memakai MoM (lihat catatan di docs).
+        cpi_d, fed_d = (cpi if isinstance(cpi, dict) else {}), (fed if isinstance(fed, dict) else {})
+        ages = [d.get("age_sec") for d in (cpi_d, fed_d)
+                if d.get("stale") and isinstance(d.get("age_sec"), (int, float))]
+        extra = {"cpi_yoy": _safe_float(cpi_d.get("value")), "cpi_yoy_prev": _safe_float(cpi_d.get("prev_value")),
+                 "stale_sec": max(ages) if ages else None}
         if cpi_change is None or fed_rate is None:
             components["macro"] = {"score": 10, "cpi_change": cpi_change, "fed_rate": fed_rate,
-                                   "fed_change": fed_change, "max": 20}
+                                   "fed_change": fed_change, "max": 20, **extra}
             failed_components += 1
             failed_keys.add("macro")
         else:
@@ -172,7 +178,7 @@ def _calculate_market_score() -> dict[str, Any]:
             else:
                 s = 4
             components["macro"] = {"score": s, "cpi_change": cpi_change, "fed_rate": fed_rate,
-                                   "fed_change": fed_change, "max": 20}
+                                   "fed_change": fed_change, "max": 20, **extra}
     except Exception as e:  # noqa: BLE001
         failed_components += 1
         failed_keys.add("macro")
@@ -290,6 +296,18 @@ def calculate_market_score() -> dict[str, Any]:
 _ARROW = {"BULLISH": "↑", "BEARISH": "↓", "SIDEWAYS": "→"}
 
 
+def _stale_suffix(stale_sec: Any) -> str:
+    """' | data cache N jam/hari' bila makro memakai data terakhir yang berhasil (FRED sedang gagal)."""
+    try:
+        sec = float(stale_sec)
+    except (TypeError, ValueError):
+        return ""
+    if sec <= 0:
+        return ""
+    hours = sec / 3600
+    return f" | data cache {max(1, round(hours))} jam" if hours < 48 else f" | data cache {int(hours // 24)} hari"
+
+
 def build_components_view(result: dict[str, Any]) -> list[dict[str, Any]]:
     """Baris breakdown (nama, skor, max, detail) — SATU sumber untuk pesan Telegram
     /market_context dan context.json."""
@@ -308,6 +326,8 @@ def build_components_view(result: dict[str, Any]) -> list[dict[str, Any]]:
         pt_label = "data tidak tersedia"
     cpi_change, fed_rate, fed_change = macro.get("cpi_change"), macro.get("fed_rate"), macro.get("fed_change")
     cpi_label = "—" if cpi_change is None else f"{float(cpi_change):+.2f}%"
+    if cpi_change is not None and macro.get("cpi_yoy") is not None:
+        cpi_label += f" (YoY {float(macro['cpi_yoy']):.2f}%)"
     fed_label = "—" if fed_rate is None else f"{float(fed_rate):.2f}%"
     if fed_change is not None:
         fed_label += " (naik)" if fed_change > 0 else " (turun)" if fed_change < 0 else " (tetap)"
@@ -325,7 +345,8 @@ def build_components_view(result: dict[str, Any]) -> list[dict[str, Any]]:
         {"key": "trend", "name": "Tren harga", "score": pt.get("score", 0), "max": _MAX["price_trend"], "detail": pt_label,
          "ok": bool(ok.get("price_trend", True))},
         {"key": "macro", "name": "Makro", "score": macro.get("score", 0), "max": _MAX["macro"],
-         "detail": f"CPI: {cpi_label} | Fed: {fed_label}", "ok": bool(ok.get("macro", True))},
+         "detail": f"CPI MoM: {cpi_label} | Fed: {fed_label}{_stale_suffix(macro.get('stale_sec'))}",
+         "ok": bool(ok.get("macro", True))},
         {"key": "fng", "name": "Fear & Greed", "score": fg.get("score", 0), "max": _MAX["fear_greed"],
          "detail": f"nilai: {fg_label}", "ok": bool(ok.get("fear_greed", True))},
         {"key": "funding", "name": "Funding", "score": fr.get("score", 0), "max": _MAX["funding_rate"],

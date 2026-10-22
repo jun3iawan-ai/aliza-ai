@@ -86,7 +86,7 @@ def _legacy_message(result):
         f"Total: {result.get('total_score', 50)}/100 — {result.get('label', 'Neutral')} {result.get('emoji', '⚪')}\n\n"
         "Breakdown:\n"
         f"• Tren harga: {pt.get('score', 0)}/40 ({pt_label})\n"
-        f"• Makro: {macro.get('score', 0)}/20 (CPI: {cpi_label} | Fed: {fed_label})\n"
+        f"• Makro: {macro.get('score', 0)}/20 (CPI MoM: {cpi_label} | Fed: {fed_label})\n"
         f"• Fear & Greed: {fg.get('score', 0)}/15 (nilai: {fg_label})\n"
         f"• Funding: {fr.get('score', 0)}/15 (avg: {fr_label})\n"
         f"• BTC Dominance: {dom.get('score', 0)}/10 (nilai: {dom_label})\n\n"
@@ -140,7 +140,7 @@ def test_payload_matches_spec_example():
     assert (p["score"], p["max"], p["label"], p["label_text"]) == (55, 100, "neutral", "Neutral")
     assert p["components"][0] == {"key": "trend", "name": "Tren harga", "score": 24, "max": 40,
                                   "detail": "BTC 4H ↑ 1D → · 3/18 coin 4H naik, 4/18 turun", "ok": True}
-    assert p["components"][1]["detail"] == "CPI: +0.40% | Fed: 3.75% (naik)"
+    assert p["components"][1]["detail"] == "CPI MoM: +0.40% | Fed: 3.75% (naik)"
     assert p["components"][2]["detail"] == "nilai: 57"
     assert p["components"][3]["detail"] == "avg: +0.0034% (seimbang)"
     assert p["components"][4]["detail"] == "nilai: 59.8%"
