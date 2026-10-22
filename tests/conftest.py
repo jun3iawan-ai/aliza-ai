@@ -10,6 +10,7 @@ os.environ["PORTO_COINS_PATH"] = os.path.join(_TMP, "no-such-dir", "coins.json")
 os.environ["ALIZA_WATCHLIST_CACHE"] = os.path.join(_TMP, "watchlist_cache.json")
 os.environ["ALIZA_COIN_SUPPORT_CACHE"] = os.path.join(_TMP, "coin_support_cache.json")
 os.environ["ALIZA_COIN_SUPPORT_OFFLINE"] = "1"
+os.environ["ALIZA_MACRO_CACHE"] = os.path.join(_TMP, "macro_last_good.json")
 
 import pytest
 
@@ -20,6 +21,20 @@ from engine.market import news_feed as _news_feed
 from engine.market import key_levels as _key_levels
 from engine import user_config as _user_config
 from engine.alerts import user_alerts as _user_alerts
+
+
+@pytest.fixture(autouse=True)
+def _isolate_macro_monitor(monkeypatch):
+    """Cache makro (memori+disk) bersih tiap tes; retry tidak benar-benar tidur."""
+    from engine.market import macro_monitor as _mm
+    _mm.reset_for_tests()
+    monkeypatch.setattr(_mm, "_sleep", lambda s: None)
+    try:
+        os.unlink(_mm._cache_path())
+    except OSError:
+        pass
+    yield
+    _mm.reset_for_tests()
 
 
 @pytest.fixture(autouse=True)
