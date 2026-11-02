@@ -29,7 +29,7 @@ RETRY_DELAYS = (2.0, 5.0)
 FAIL_BACKOFF_SEC = 60   # setelah gagal total, jangan hajar FRED lagi selama ini (pakai last-good)
 MAX_STALE_SEC = 7 * 86400   # last-good dipakai maksimal 7 hari (data CPI/FEDFUNDS bulanan)
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-FETCH_LIMIT = 15  # cukup untuk YoY + 1 bulan sebelumnya (butuh indeks 0–13)
+FETCH_LIMIT = 16  # cukup untuk YoY + 1 bulan sebelumnya (butuh indeks 0–13)
 CACHE_TTL_SEC = 6 * 3600
 
 MACRO_SERIES: dict[str, dict[str, Any]] = {
@@ -241,6 +241,36 @@ def _parse_valid_series(obs: list[dict[str, Any]]) -> list[tuple[str, float]]:
     return out
 
 
+def _month_index(dt: str) -> int | None:
+    try:
+        return int(dt[:4]) * 12 + int(dt[5:7]) - 1
+    except (TypeError, ValueError):
+        return None
+
+
+def _yoy_base(pts: list[tuple[str, float]], dt: str) -> tuple[float, bool] | None:
+    """Nilai pembanding YoY untuk bulan `dt`: observasi bulan yang sama tahun lalu.
+    Return (nilai, diinterpolasi). Kalau bulan itu kosong (mis. CPI Okt-2025 tak terbit), interpolasi
+    geometrik antara observasi terdekat sebelum dan sesudahnya (maks 3 bulan dari target); selain itu None."""
+    now = _month_index(dt)
+    if now is None:
+        return None
+    by_m: dict[int, float] = {}
+    for d, v in pts:
+        mi = _month_index(d)
+        if mi is not None and v > 0:
+            by_m[mi] = v
+    tgt = now - 12
+    if tgt in by_m:
+        return by_m[tgt], False
+    lo = next((m for m in range(tgt - 1, tgt - 4, -1) if m in by_m), None)
+    hi = next((m for m in range(tgt + 1, tgt + 4) if m in by_m), None)
+    if lo is None or hi is None:
+        return None
+    w = (tgt - lo) / (hi - lo)
+    return by_m[lo] * (by_m[hi] / by_m[lo]) ** w, True
+
+
 def get_macro_data(
     series_id: str, transform: str, bypass_cache: bool = False
 ) -> dict[str, Any] | None:
@@ -262,17 +292,14 @@ def get_macro_data(
         return None
 
     def yoy_at(idx_now: int) -> float | None:
-        if idx_now + 12 >= len(pts):
+        # YoY = bandingkan dengan observasi BULAN YANG SAMA tahun lalu (cari lewat tanggal, bukan urutan:
+        # FRED bisa punya bulan kosong, mis. CPI Okt-2025 tidak terbit -> hitung per-urutan jadi 13 bulan).
+        base = _yoy_base(pts, pts[idx_now][0])
+        if base is None or base[0] == 0:
             return None
-        v_now = pts[idx_now][1]
-        v_12 = pts[idx_now + 12][1]
-        if v_12 == 0:
-            return None
-        return (v_now - v_12) / v_12 * 100.0
+        return (pts[idx_now][1] - base[0]) / base[0] * 100.0
 
     if transform == "pct_change_yoy":
-        if len(pts) < 14:
-            return None
         yoy = yoy_at(0)
         mom_pct = None
         if pts[1][1] != 0:
@@ -287,6 +314,9 @@ def get_macro_data(
             "prev_date": pts[1][0],
             "change": float(mom_pct) if mom_pct is not None else 0.0,
         }
+        base0 = _yoy_base(pts, pts[0][0])
+        if base0 is not None and base0[1]:
+            out["yoy_interpolated"] = True     # bulan pembanding kosong di FRED -> diinterpolasi dari bulan di kiri-kanannya
     elif transform == "mom_change":
         # PAYEMS: selisih level (ribu pekerjaan) antar bulan
         ch = pts[0][1] - pts[1][1]

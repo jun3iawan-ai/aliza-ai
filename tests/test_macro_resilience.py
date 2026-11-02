@@ -13,7 +13,11 @@ from engine.market import market_context_engine as mce
 
 def _obs(n=15, start=100.0, step=0.5):
     """desc seperti FRED: tanggal terbaru dulu."""
-    return [{"date": f"2026-{(15 - i) % 12 + 1:02d}-01", "value": str(start + (n - 1 - i) * step)} for i in range(n)]
+    out = []
+    for i in range(n):                         # bulan berurutan mundur dari 2026-09
+        mi = 2026 * 12 + 8 - i
+        out.append({"date": f"{mi // 12}-{mi % 12 + 1:02d}-01", "value": str(start + (n - 1 - i) * step)})
+    return out
 
 
 class _Resp:
@@ -189,3 +193,39 @@ def test_tanpa_data_sama_sekali_netral_dan_ok_false():
 def test_yoy_tidak_ada_detail_tanpa_kurung_yoy():
     r = _macro_result({"change": 0.3}, {"value": 3.5, "change": 0.0})
     assert next(c for c in mce.build_components_view(r) if c["key"] == "macro")["detail"] == "CPI MoM: +0.30% | Fed: 3.50% (tetap)"
+
+
+# ---------------- YoY pakai bulan yang sama (bukan urutan) ----------------
+# Indeks CPIAUCSL sebenarnya dari FRED (rilis 21 Okt 2026): Okt-2025 kosong karena shutdown.
+_CPI_REAL = [("2026-09-01", "336.298"), ("2026-08-01", "334.131"), ("2026-07-01", "332.813"), ("2026-06-01", "332.568"),
+             ("2026-05-01", "333.979"), ("2026-04-01", "332.407"), ("2026-03-01", "330.293"), ("2026-02-01", "327.460"),
+             ("2026-01-01", "326.588"), ("2025-12-01", "326.031"), ("2025-11-01", "325.063"), ("2025-10-01", "."),
+             ("2025-09-01", "324.245"), ("2025-08-01", "323.291"), ("2025-07-01", "322.169")]
+
+
+def _cpi_obs(rows):
+    return [{"date": d, "value": v} for d, v in rows]
+
+
+def test_yoy_cpi_dengan_bulan_kosong_pakai_bulan_yang_sama(monkeypatch):
+    _install(monkeypatch, [_Resp(200, {"observations": _cpi_obs(_CPI_REAL)})])
+    d = mm.get_macro_data("CPIAUCSL", "pct_change_yoy")
+    assert d["value"] == pytest.approx(3.72, abs=0.005)       # Sep-26 vs Sep-25 (dulu salah 4.02 = vs Agu-25)
+    assert d["prev_value"] == pytest.approx(3.35, abs=0.005)  # Agu-26 vs Agu-25 (dulu salah 3.71)
+    assert d["change"] == pytest.approx(0.649, abs=0.005)
+    assert "yoy_interpolated" not in d
+
+
+def test_yoy_cpi_bulan_pembanding_kosong_diinterpolasi(monkeypatch):
+    rows = [("2026-10-01", "338.000")] + _CPI_REAL[:14]       # Okt-26 rilis; pembanding Okt-25 kosong
+    _install(monkeypatch, [_Resp(200, {"observations": _cpi_obs(rows)})])
+    d = mm.get_macro_data("CPIAUCSL", "pct_change_yoy")
+    base = (324.245 * 325.063) ** 0.5                         # interpolasi geometrik Sep-25 & Nov-25
+    assert d["value"] == pytest.approx((338.0 / base - 1) * 100, abs=0.005)
+    assert d["yoy_interpolated"] is True and d["prev_value"] == pytest.approx(3.72, abs=0.005)
+
+
+def test_yoy_tanpa_pembanding_sama_sekali_none(monkeypatch):
+    rows = [("2026-09-01", "336.298"), ("2026-08-01", "334.131"), ("2026-07-01", "332.813")]
+    _install(monkeypatch, [_Resp(200, {"observations": _cpi_obs(rows)})])
+    assert mm.get_macro_data("CPIAUCSL", "pct_change_yoy") is None
