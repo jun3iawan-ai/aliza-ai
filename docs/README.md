@@ -39,6 +39,7 @@ Folder lama `docs/cursor-ai/`, `docs/instructions/`, dan `docs/audit/` sudah dig
 - [Daftar pantau dari Porto](architecture/WATCHLIST_DARI_PORTO.md)
 - [Ekspor radar ke Porto](architecture/RADAR_EXPORT_KE_PORTO.md)
 - [Makro: label CPI dan ketahanan FRED](architecture/MAKRO_CPI_DAN_KETAHANAN_FRED.md)
+- [Dev lokal (WSL2) dan alur deploy](runbooks/dev-lokal-wsl2.md)
 
 ### Runbook
 
