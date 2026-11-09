@@ -311,7 +311,7 @@ class StaticSourcePolicyTests(unittest.TestCase):
 
         for path in ROOT.rglob("*.py"):
             relative = path.relative_to(ROOT)
-            if any(part in {".git", "venv", "docs"} for part in relative.parts):
+            if any(part in {".git", "venv", ".venv", "docs"} for part in relative.parts):
                 continue
             if path == helper or path.name.startswith("test_"):
                 continue
