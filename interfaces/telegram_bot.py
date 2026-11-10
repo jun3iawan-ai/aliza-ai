@@ -5888,33 +5888,76 @@ async def siklus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await target.reply_text("Terjadi kesalahan.")
 
 
-async def btc_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Harian 07:00 WIB: hitung ulang Siklus BTC; kirim notifikasi HANYA saat zona berubah."""
+def _btc_cycle_chat_id(context) -> str | int | None:
+    chat_id = None
     try:
-        prev = ngov.get_value("btc_cycle", "zone")
-        loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, btc_cycle.refresh)
-        cur = result["zone"]
-        if prev is None:   # observasi pertama = baseline, tanpa alert
-            ngov.set_value("btc_cycle", "zone", cur)
-            return
-        if not btc_cycle.zone_changed(prev, cur):
-            return
+        if context and getattr(context, "bot_data", None):
+            chat_id = context.bot_data.get("chat_id")
+    except Exception:
         chat_id = None
+    return chat_id or DEFAULT_CHAT_ID
+
+
+async def _btc_cycle_stale_check(context, today) -> None:
+    """Data siklus tidak segar: kirim peringatan SEKALI setelah STALE_ALERT_DAYS hari."""
+    last_fresh = ngov.get_value("btc_cycle", "last_fresh")
+    if last_fresh is None:   # belum pernah ada data segar tercatat: mulai hitung dari sekarang
+        ngov.set_value("btc_cycle", "last_fresh", today.isoformat())
+        return
+    days = btc_cycle.stale_days(last_fresh, today)
+    if days is None or days < btc_cycle.STALE_ALERT_DAYS or ngov.get_value("btc_cycle", "stale_warned"):
+        return
+    chat_id = _btc_cycle_chat_id(context)
+    if not chat_id:
+        logging.warning("btc_cycle stale warning skipped: no chat_id")
+        return
+    if await safe_dispatch(btc_cycle.format_stale_warning(days, str(last_fresh)), chat_id=chat_id, force=True):
+        ngov.set_value("btc_cycle", "stale_warned", True)
+
+
+async def btc_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Harian 07:05 WIB: hitung ulang Siklus BTC; alert HANYA bila zona baru bertahan CONFIRM_DAYS hari data.
+    Data gagal/usang >= STALE_ALERT_DAYS hari -> satu peringatan; pulih -> satu pesan pemulihan."""
+    try:
+        today = datetime.now(timezone.utc).date()
+        confirmed = ngov.get_value("btc_cycle", "zone")
+        pending = ngov.get_value("btc_cycle", "pending")
+        loop = asyncio.get_running_loop()
         try:
-            if context and getattr(context, "bot_data", None):
-                chat_id = context.bot_data.get("chat_id")
-        except Exception:
-            chat_id = None
-        chat_id = chat_id or DEFAULT_CHAT_ID
+            result = await loop.run_in_executor(None, btc_cycle.refresh)
+        except Exception as e:
+            logging.warning("btc_cycle_job: refresh gagal: %s", e)
+            await _btc_cycle_stale_check(context, today)
+            return
+        if not btc_cycle.is_fresh(result["asof"], today):
+            logging.warning("btc_cycle_job: data usang (asof %s)", result["asof"])
+            await _btc_cycle_stale_check(context, today)
+            return
+        ngov.set_value("btc_cycle", "last_fresh", result["asof"])
+        if ngov.get_value("btc_cycle", "stale_warned"):
+            chat_id = _btc_cycle_chat_id(context)
+            if chat_id and await safe_dispatch(btc_cycle.format_recovery(), chat_id=chat_id, force=True):
+                ngov.set_value("btc_cycle", "stale_warned", False)
+        cur = result["zone"]
+        if confirmed is None:   # observasi pertama = baseline, tanpa alert
+            ngov.set_value("btc_cycle", "zone", cur)
+            ngov.set_value("btc_cycle", "pending", None)
+            return
+        new_pending, alert_from = btc_cycle.advance_zone(confirmed, pending, cur, result["asof"])
+        if new_pending != pending:
+            ngov.set_value("btc_cycle", "pending", new_pending)
+        if alert_from is None:
+            return
+        chat_id = _btc_cycle_chat_id(context)
         if not chat_id:
             logging.warning("btc_cycle_job skipped: no chat_id")
             return
-        sent = await safe_dispatch(btc_cycle.format_telegram(result, changed_from=str(prev)), chat_id=chat_id, force=True)
-        if sent:
+        msg = btc_cycle.format_telegram(result, changed_from=str(alert_from), stable_days=new_pending["days"])
+        if await safe_dispatch(msg, chat_id=chat_id, force=True):
             ngov.set_value("btc_cycle", "zone", cur)
+            ngov.set_value("btc_cycle", "pending", None)
         else:
-            logging.warning("btc_cycle alert tidak terkirim; state tidak diubah")
+            logging.warning("btc_cycle alert tidak terkirim; zona terkonfirmasi tidak diubah (dicoba lagi besok)")
     except Exception as e:
         logging.exception("btc_cycle_job: %s", e)
 

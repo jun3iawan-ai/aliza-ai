@@ -224,6 +224,59 @@ def zone_changed(prev: str | None, cur: str) -> bool:
     return prev is not None and prev != cur
 
 
+CONFIRM_DAYS = 3   # zona baru harus bertahan N hari data berbeda sebelum alert (anti bolak-balik)
+
+
+def advance_zone(confirmed: str | None, pending: dict | None, cur: str, asof: str,
+                 need: int = CONFIRM_DAYS) -> tuple[dict | None, str | None]:
+    """Mesin konfirmasi zona. Return (pending_baru, zona_asal_untuk_alert).
+
+    - cur == confirmed -> pending dibuang (perubahan sementara tidak pernah dialert).
+    - cur != confirmed -> hitung hari DATA berbeda (``asof``) berturut-turut untuk zona itu;
+      menjalankan job dua kali pada data yang sama tidak menambah hitungan.
+    - alert hanya bila hitungan >= need; pemanggil mengubah ``confirmed`` HANYA setelah kirim sukses.
+    """
+    if confirmed is None or cur == confirmed:
+        return None, None
+    p = pending if isinstance(pending, dict) else {}
+    if p.get("zone") == cur:
+        days = int(p.get("days") or 1)
+        if p.get("asof") != asof:
+            days += 1
+    else:
+        days = 1
+    new = {"zone": cur, "asof": asof, "days": days}
+    return new, (confirmed if days >= need else None)
+
+
+STALE_ALERT_DAYS = 3    # data siklus tidak segar >= N hari -> peringatan (sekali)
+FRESH_MAX_LAG_DAYS = 2  # data dianggap segar bila tanggal data (asof) tertinggal <= N hari dari hari ini (UTC)
+
+
+def is_fresh(asof: str, today: date, max_lag: int = FRESH_MAX_LAG_DAYS) -> bool:
+    try:
+        return (today - date.fromisoformat(asof)).days <= max_lag
+    except (TypeError, ValueError):
+        return False
+
+
+def stale_days(last_fresh: str | None, today: date) -> int | None:
+    """Umur (hari) sejak terakhir data segar; None bila belum pernah tercatat."""
+    try:
+        return (today - date.fromisoformat(last_fresh)).days  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def format_stale_warning(days: int, last_fresh: str | None) -> str:
+    return (f"⚠️ Data Siklus BTC tidak diperbarui {days} hari (terakhir segar: {last_fresh or 'tidak diketahui'}). "
+            "Sumber (Coin Metrics/FRED) mungkin down; zona di /siklus bisa usang. Alert zona ditahan sampai data pulih.")
+
+
+def format_recovery() -> str:
+    return "✅ Data Siklus BTC kembali diperbarui."
+
+
 def age_hours(result: dict[str, Any]) -> float | None:
     try:
         return (datetime.now(WIB) - datetime.fromisoformat(result["ts"])).total_seconds() / 3600
@@ -236,11 +289,12 @@ _ICON = {"akumulasi": "🟢", "netral": "🟡", "rawan_puncak": "🔴"}
 _NAMES = {"mvrv_lt1": "MVRV < 1", "vix_gt30": "VIX > 30", "hash_ribbon": "Hash ribbon pulih", "dma_breakout": "Breakout MA128/200"}
 
 
-def format_telegram(r: dict[str, Any], *, changed_from: str | None = None) -> str:
+def format_telegram(r: dict[str, Any], *, changed_from: str | None = None, stable_days: int | None = None) -> str:
     p = r["puncak"]
     lines = []
     if changed_from:
-        lines.append(f"🔔 Zona siklus BTC berubah: {ZONES.get(changed_from, changed_from)} → {r['zone_label']}")
+        tail = f" (bertahan {stable_days} hari)" if stable_days else ""
+        lines.append(f"🔔 Zona siklus BTC berubah: {ZONES.get(changed_from, changed_from)} → {r['zone_label']}{tail}")
     lines += [
         f"{_ICON[r['zone']]} Siklus BTC: {r['zone_label']} (data {r['asof']})",
         f"Harga ${r['price']:,.0f} | Mayer {r['mayer']} | {'di atas' if r['above_ma200'] else 'di bawah'} MA200 (${r['ma200']:,.0f})",
