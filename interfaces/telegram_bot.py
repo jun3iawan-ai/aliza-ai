@@ -83,6 +83,7 @@ import engine.market.market_snapshot_engine as snapshot_state
 from engine.market.market_intelligence import analyze_market_environment
 from engine.market.market_report_formatter import format_market_report
 from engine.market.market_context_export import refresh_radar as refresh_radar_export
+from engine.market import btc_cycle
 from engine.market.market_radar_pro_analyzer import (
     generate_radar_pro,
     format_radar_pro_report,
@@ -1249,6 +1250,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Melihat kondisi market coin\n\n"
             "/radar\n"
             "Radar trend semua coin\n\n"
+            "/siklus\n"
+            "Konteks siklus BTC (zona dasar/puncak, bukan sinyal entry)\n\n"
             "/radarpro\n"
             "Radar dengan AI intelligence label\n\n"
             "/marketstate\n"
@@ -5854,6 +5857,68 @@ async def market_context_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logging.exception("market_context_alert_job: %s", e)
 
 
+# ========== SIKLUS BTC (konteks jangka panjang, bukan sinyal entry) ==========
+
+CYCLE_STALE_HOURS = 26
+
+
+async def siklus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("COMMAND RECEIVED: /siklus")
+    target = _reply_target(update)
+    if not target:
+        return
+    last = None
+    try:
+        last = btc_cycle.load_last()
+        age = btc_cycle.age_hours(last) if last else None
+        note = ""
+        if last is None or age is None or age > CYCLE_STALE_HOURS:
+            try:
+                loop = asyncio.get_running_loop()
+                last = await loop.run_in_executor(None, btc_cycle.refresh)
+            except Exception as e:
+                logging.warning("siklus: refresh gagal: %s", e)
+                if last is None:
+                    await target.reply_text("Data siklus BTC belum tersedia (sumber data gagal). Coba lagi nanti.")
+                    return
+                note = f"\n\n⚠️ Sumber data gagal, ini data cache ({age:.0f} jam lalu)." if age is not None else "\n\n⚠️ Data cache."
+        await target.reply_text(btc_cycle.format_telegram(last) + note)
+    except Exception as e:
+        logging.error("SIKLUS ERROR: %s", e)
+        await target.reply_text("Terjadi kesalahan.")
+
+
+async def btc_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Harian 07:00 WIB: hitung ulang Siklus BTC; kirim notifikasi HANYA saat zona berubah."""
+    try:
+        prev = ngov.get_value("btc_cycle", "zone")
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, btc_cycle.refresh)
+        cur = result["zone"]
+        if prev is None:   # observasi pertama = baseline, tanpa alert
+            ngov.set_value("btc_cycle", "zone", cur)
+            return
+        if not btc_cycle.zone_changed(prev, cur):
+            return
+        chat_id = None
+        try:
+            if context and getattr(context, "bot_data", None):
+                chat_id = context.bot_data.get("chat_id")
+        except Exception:
+            chat_id = None
+        chat_id = chat_id or DEFAULT_CHAT_ID
+        if not chat_id:
+            logging.warning("btc_cycle_job skipped: no chat_id")
+            return
+        sent = await safe_dispatch(btc_cycle.format_telegram(result, changed_from=str(prev)), chat_id=chat_id, force=True)
+        if sent:
+            ngov.set_value("btc_cycle", "zone", cur)
+        else:
+            logging.warning("btc_cycle alert tidak terkirim; state tidak diubah")
+    except Exception as e:
+        logging.exception("btc_cycle_job: %s", e)
+
+
 _STRONG_ALIGNMENT_DIRECTIONS = {
     "STRONG_BULLISH": "BULLISH",
     "STRONG_BEARISH": "BEARISH",
@@ -8272,6 +8337,7 @@ def main():
     app.add_handler(CommandHandler("why", why_command))
     app.add_handler(CommandHandler("spot", spot_command))
     app.add_handler(CommandHandler("btc", btc_command))
+    app.add_handler(CommandHandler("siklus", siklus_command))
     app.add_handler(CommandHandler("market", market))
     app.add_handler(CallbackQueryHandler(coin_selector_callback))
     app.add_handler(CommandHandler("radar", radar))
@@ -8364,6 +8430,12 @@ def main():
             name="breaking_news_checker",
         )
         logging.info("Breaking news job scheduled (every 3600s, first in 300s).")
+        app.job_queue.run_daily(
+            btc_cycle_job,
+            time=time(hour=0, minute=5, second=0, tzinfo=timezone.utc),
+            name="btc_cycle",
+        )
+        logging.info("BTC cycle job scheduled (daily 00:05 UTC = 07:05 WIB).")
         app.job_queue.run_daily(
             morning_brief_job,
             time=time(hour=1, minute=0, second=0, tzinfo=timezone.utc),

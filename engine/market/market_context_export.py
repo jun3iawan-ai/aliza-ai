@@ -36,8 +36,9 @@ def context_path() -> str:
     return os.getenv("MARKET_CONTEXT_PATH") or DEFAULT_PATH
 
 
-def build_payload(result: dict[str, Any], radar: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Bangun payload v1 dari hasil calculate_market_score(). ``radar`` opsional (field tambahan, v tetap 1)."""
+def build_payload(result: dict[str, Any], radar: dict[str, Any] | None = None,
+                  cycle: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Bangun payload v1 dari hasil calculate_market_score(). ``radar`` dan ``cycle`` opsional (field tambahan, v tetap 1)."""
     label_text = str(result.get("label") or "Neutral")
     score = int(result.get("total_score", 50))
     ts = result.get("timestamp_iso") or datetime.now(timezone(timedelta(hours=7))).isoformat(timespec="seconds")
@@ -60,6 +61,8 @@ def build_payload(result: dict[str, Any], radar: dict[str, Any] | None = None) -
     }
     if radar is not None:
         payload["radar"] = radar
+    if cycle is not None:
+        payload["cycle"] = cycle
     return payload
 
 
@@ -126,11 +129,22 @@ def export_context(result: dict[str, Any], path: str | None = None) -> bool:
             if radar is None:   # gagal/belum ada snapshot -> radar terakhir, ts lamanya
                 prev = (_read_json(path) or {}).get("radar")
                 radar = prev if isinstance(prev, dict) else None
-            _write_unlocked(path, _dumps(build_payload(result, radar)))
+            _write_unlocked(path, _dumps(build_payload(result, radar, _cycle_view_safe())))
         return True
     except Exception as e:  # noqa: BLE001 — ekspor tidak boleh mengganggu perhitungan skor
         logger.warning("market_context_export gagal (file lama dipertahankan): %s", e)
         return False
+
+
+def _cycle_view_safe() -> dict[str, Any] | None:
+    """Ringkasan Siklus BTC dari cache harian; gagal/belum ada -> None (field `cycle` tidak ditulis)."""
+    try:
+        from engine.market import btc_cycle
+
+        return btc_cycle.export_view(btc_cycle.load_last())
+    except Exception as e:  # noqa: BLE001
+        logger.debug("market_context_export: cycle tidak tersedia: %s", e)
+        return None
 
 
 def refresh_radar(path: str | None = None) -> bool:
