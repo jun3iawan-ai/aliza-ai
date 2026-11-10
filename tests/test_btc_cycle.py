@@ -154,3 +154,42 @@ def test_perintah_dan_job_terdaftar():
     src = (pathlib.Path(__file__).resolve().parents[1] / "interfaces" / "telegram_bot.py").read_text(encoding="utf-8")
     assert 'CommandHandler("siklus", siklus_command)' in src
     assert "btc_cycle_job," in src and 'name="btc_cycle"' in src
+
+
+def test_advance_zone_butuh_3_hari_data_berbeda():
+    adv = bc.advance_zone
+    p, a = adv("netral", None, "akumulasi", "2026-12-01")
+    assert a is None and p["days"] == 1
+    p, a = adv("netral", p, "akumulasi", "2026-12-01")        # job diulang, data sama -> tidak menambah
+    assert a is None and p["days"] == 1
+    p, a = adv("netral", p, "akumulasi", "2026-12-02")
+    assert a is None and p["days"] == 2
+    p, a = adv("netral", p, "akumulasi", "2026-12-03")
+    assert a == "netral" and p["days"] == 3
+
+
+def test_advance_zone_bolak_balik_tidak_pernah_alert():
+    p, a = bc.advance_zone("netral", None, "akumulasi", "2026-12-01")
+    p, a = bc.advance_zone("netral", p, "akumulasi", "2026-12-02")
+    p, a = bc.advance_zone("netral", p, "netral", "2026-12-03")   # kembali -> pending dibuang
+    assert p is None and a is None
+    p, a = bc.advance_zone("netral", p, "akumulasi", "2026-12-04")
+    assert a is None and p["days"] == 1                           # hitungan mulai dari awal
+
+
+def test_advance_zone_ganti_calon_mereset_dan_baseline():
+    p, _ = bc.advance_zone("netral", None, "akumulasi", "2026-12-01")
+    p, a = bc.advance_zone("netral", p, "rawan_puncak", "2026-12-02")
+    assert p["zone"] == "rawan_puncak" and p["days"] == 1 and a is None
+    assert bc.advance_zone(None, None, "netral", "2026-12-01") == (None, None)
+
+
+def test_advance_zone_kirim_gagal_dicoba_lagi_hari_berikut():
+    p = {"zone": "akumulasi", "asof": "2026-12-03", "days": 3}
+    p2, a = bc.advance_zone("netral", p, "akumulasi", "2026-12-04")   # confirmed belum diubah
+    assert a == "netral" and p2["days"] == 4
+
+
+def test_format_menyebut_hari_bertahan():
+    r = bc.compute_cycle(_frame(np.linspace(100, 160, 600)))
+    assert "(bertahan 3 hari)" in bc.format_telegram(r, changed_from="akumulasi", stable_days=3)

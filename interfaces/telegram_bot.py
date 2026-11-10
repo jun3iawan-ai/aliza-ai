@@ -5889,16 +5889,21 @@ async def siklus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def btc_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Harian 07:00 WIB: hitung ulang Siklus BTC; kirim notifikasi HANYA saat zona berubah."""
+    """Harian 07:05 WIB: hitung ulang Siklus BTC; alert HANYA bila zona baru bertahan CONFIRM_DAYS hari data."""
     try:
-        prev = ngov.get_value("btc_cycle", "zone")
+        confirmed = ngov.get_value("btc_cycle", "zone")
+        pending = ngov.get_value("btc_cycle", "pending")
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, btc_cycle.refresh)
         cur = result["zone"]
-        if prev is None:   # observasi pertama = baseline, tanpa alert
+        if confirmed is None:   # observasi pertama = baseline, tanpa alert
             ngov.set_value("btc_cycle", "zone", cur)
+            ngov.set_value("btc_cycle", "pending", None)
             return
-        if not btc_cycle.zone_changed(prev, cur):
+        new_pending, alert_from = btc_cycle.advance_zone(confirmed, pending, cur, result["asof"])
+        if new_pending != pending:
+            ngov.set_value("btc_cycle", "pending", new_pending)
+        if alert_from is None:
             return
         chat_id = None
         try:
@@ -5910,11 +5915,13 @@ async def btc_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         if not chat_id:
             logging.warning("btc_cycle_job skipped: no chat_id")
             return
-        sent = await safe_dispatch(btc_cycle.format_telegram(result, changed_from=str(prev)), chat_id=chat_id, force=True)
+        msg = btc_cycle.format_telegram(result, changed_from=str(alert_from), stable_days=new_pending["days"])
+        sent = await safe_dispatch(msg, chat_id=chat_id, force=True)
         if sent:
             ngov.set_value("btc_cycle", "zone", cur)
+            ngov.set_value("btc_cycle", "pending", None)
         else:
-            logging.warning("btc_cycle alert tidak terkirim; state tidak diubah")
+            logging.warning("btc_cycle alert tidak terkirim; zona terkonfirmasi tidak diubah (dicoba lagi besok)")
     except Exception as e:
         logging.exception("btc_cycle_job: %s", e)
 
