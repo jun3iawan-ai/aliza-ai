@@ -193,3 +193,18 @@ def test_advance_zone_kirim_gagal_dicoba_lagi_hari_berikut():
 def test_format_menyebut_hari_bertahan():
     r = bc.compute_cycle(_frame(np.linspace(100, 160, 600)))
     assert "(bertahan 3 hari)" in bc.format_telegram(r, changed_from="akumulasi", stable_days=3)
+
+
+def test_is_fresh_dan_stale_days():
+    from datetime import date
+
+    today = date(2026, 12, 10)
+    assert bc.is_fresh("2026-12-09", today) and bc.is_fresh("2026-12-08", today)
+    assert not bc.is_fresh("2026-12-07", today) and not bc.is_fresh("bukan-tanggal", today)
+    assert bc.stale_days("2026-12-07", today) == 3
+    assert bc.stale_days(None, today) is None and bc.stale_days("xx", today) is None
+
+
+def test_pesan_peringatan_dan_pemulihan():
+    assert "3 hari" in bc.format_stale_warning(3, "2026-12-07") and "2026-12-07" in bc.format_stale_warning(3, "2026-12-07")
+    assert "kembali diperbarui" in bc.format_recovery()

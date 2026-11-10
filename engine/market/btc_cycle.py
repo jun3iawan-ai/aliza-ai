@@ -249,6 +249,34 @@ def advance_zone(confirmed: str | None, pending: dict | None, cur: str, asof: st
     return new, (confirmed if days >= need else None)
 
 
+STALE_ALERT_DAYS = 3    # data siklus tidak segar >= N hari -> peringatan (sekali)
+FRESH_MAX_LAG_DAYS = 2  # data dianggap segar bila tanggal data (asof) tertinggal <= N hari dari hari ini (UTC)
+
+
+def is_fresh(asof: str, today: date, max_lag: int = FRESH_MAX_LAG_DAYS) -> bool:
+    try:
+        return (today - date.fromisoformat(asof)).days <= max_lag
+    except (TypeError, ValueError):
+        return False
+
+
+def stale_days(last_fresh: str | None, today: date) -> int | None:
+    """Umur (hari) sejak terakhir data segar; None bila belum pernah tercatat."""
+    try:
+        return (today - date.fromisoformat(last_fresh)).days  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def format_stale_warning(days: int, last_fresh: str | None) -> str:
+    return (f"⚠️ Data Siklus BTC tidak diperbarui {days} hari (terakhir segar: {last_fresh or 'tidak diketahui'}). "
+            "Sumber (Coin Metrics/FRED) mungkin down; zona di /siklus bisa usang. Alert zona ditahan sampai data pulih.")
+
+
+def format_recovery() -> str:
+    return "✅ Data Siklus BTC kembali diperbarui."
+
+
 def age_hours(result: dict[str, Any]) -> float | None:
     try:
         return (datetime.now(WIB) - datetime.fromisoformat(result["ts"])).total_seconds() / 3600
