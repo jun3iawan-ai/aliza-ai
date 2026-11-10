@@ -95,3 +95,8 @@ cp .env.example .env     # isi sendiri; JANGAN salin .env produksi
 
 ## 11. Kondisi awal terverifikasi (9 Nov 2026)
 `main` di GitHub = VPS = `660dd6e`; working tree VPS bersih; 575 tes lulus di clone bersih.
+
+## 12. Terverifikasi di WSL asli (10 Nov 2026)
+- Ubuntu 22.04 (WSL2), Python 3.10, `pytest -q`: 575 passed dalam 85 dtk.
+- Ubuntu 26.04 (Python 3.14) tidak dipakai karena tidak sama dengan VPS.
+- `wsl --install -d Ubuntu-22.04` sempat gagal (0x80072f78); berhasil dengan `--web-download` setelah `wsl --update`.
